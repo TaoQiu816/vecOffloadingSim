@@ -83,6 +83,7 @@ def main():
     RSU_DIM = TC.RSU_INPUT_DIM
 
     # 初始化 MAPPO Agent (包含 Actor-Critic 网络)
+    #
     agent = MAPPOAgent(
         task_dim=TASK_DIM,
         veh_dim=VEH_DIM,
@@ -186,6 +187,7 @@ def main():
             )
 
             # H. 过程统计 (Statistics)
+            # 这里的逻辑是将所有车辆的奖励求和再取平均，这已经是"全体平均奖励"的计算方式
             step_r = sum(rewards) / Cfg.NUM_VEHICLES
             ep_reward += step_r
 
@@ -291,7 +293,10 @@ def main():
         # --- 汇总本 Episode 数据 ---
         duration = time.time() - ep_start_time
         avg_assigned_cpu = stats['assigned_cpu_sum'] / total_decisions
+
+        # [修改] 增加平均奖励记录
         avg_step_reward = ep_reward / total_steps
+
         avg_power = stats['power_sum'] / total_decisions
         avg_veh_queue = stats['queue_len_sum'] / total_decisions
         avg_rsu_queue = stats['rsu_queue_sum'] / total_steps
@@ -300,16 +305,29 @@ def main():
         pct_rsu = (stats['rsu_cnt'] / total_decisions) * 100
         pct_v2v = (stats['neighbor_cnt'] / total_decisions) * 100
 
-        # 系统成功率 (所有 DAG 完成才算成功？或者按车辆维度统计)
-        # 这里统计完成了所有子任务的车辆比例
+        # --- 成功率统计 (Success Rates) ---
+
+        # 1. 车辆级成功率 (Vehicle Success Rate)
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
-        success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
+        veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
+
+        # 2. [新增] 子任务级成功率 (Subtask Success Rate)
+        total_subtasks = 0
+        completed_subtasks = 0
+        for v in env.vehicles:
+            total_subtasks += v.task_dag.num_subtasks
+            # 统计状态为 3 (DONE) 的节点数。假设 3 代表完成状态
+            # 如果您的环境中状态码不同，请调整此处的 '== 3'
+            completed_subtasks += np.sum(v.task_dag.status == 3)
+
+        subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
 
         # --- 控制台输出 (Console Log) ---
+        # [修改] 增加 Sub% (子任务成功率), AvgQ (平均队列), Pwr (平均功率)
         if episode == 1 or episode % 10 == 0:
             header = (
-                f"{'Ep':<5} | {'Reward':<8} | {'Succ%':<6} | {'MA_F':<5} | "
-                f"{'Loc%':<5} {'RSU%':<5} {'V2V%':<5} | {'Gap':<6} | {'Time':<5}"
+                f"{'Ep':<5} | {'Reward':<8} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} | "
+                f"{'Loc%':<4} {'RSU%':<4} {'V2V%':<4} | {'AvgQ':<5} {'Pwr':<5} | {'Loss':<6} | {'Time':<4}"
             )
             print("-" * len(header))
             print(header)
@@ -317,11 +335,12 @@ def main():
 
         print(f"{episode:<5d} | "
               f"{ep_reward:<8.2f} | "
-              f"{success_rate:<6.1f} | "
-              f"{fairness_index:<5.2f} | "
-              f"{pct_local:<5.1f} {pct_rsu:<5.1f} {pct_v2v:<5.1f} | "
-              f"{reward_gap:<6.1f} | "
-              f"{duration:<5.1f}")
+              f"{veh_success_rate:<5.1f} {subtask_success_rate:<5.1f} | "
+              f"{fairness_index:<4.2f} | "
+              f"{pct_local:<4.1f} {pct_rsu:<4.1f} {pct_v2v:<4.1f} | "
+              f"{avg_veh_queue:<5.2f} {avg_power:<5.2f} | "
+              f"{update_loss:<6.3f} | "
+              f"{duration:<4.1f}")
 
         # --- 记录到 Tensorboard / CSV ---
         recorder.log_step(step_logs_buffer)
@@ -330,13 +349,15 @@ def main():
         episode_metrics = {
             "episode": episode,
             "total_reward": ep_reward,
-            "avg_step_reward": avg_step_reward,
+            "avg_step_reward": avg_step_reward,  # [新增] 每步平均奖励
             "loss": update_loss,
-            "success_rate": success_rate,
+            "veh_success_rate": veh_success_rate,
+            "subtask_success_rate": subtask_success_rate,  # [新增] 子任务成功率
             "pct_local": pct_local,
             "pct_rsu": pct_rsu,
             "pct_v2v": pct_v2v,
             "avg_power": avg_power,
+            "avg_queue_len": avg_veh_queue,  # [新增] 平均队列长度
             "ma_fairness": fairness_index,  # 公平性
             "ma_reward_gap": reward_gap,  # 贫富差距
             "ma_collaboration": collaboration_rate,  # 协作程度
