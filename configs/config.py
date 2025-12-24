@@ -43,7 +43,7 @@ class SystemConfig:
     C_LIGHT = 3e8  # 光速
 
     # 带宽 (Hz)
-    BW_V2I = 20e6  # 20 MHz
+    BW_V2I = 25e6  # 25 MHz
     BW_V2V = 10e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
 
     # 噪声参数
@@ -82,7 +82,7 @@ class SystemConfig:
     # F_VEHICLE = 1.0 * 1e9  # 车辆: 1 GHz
     MAX_VEHICLE_CPU_FREQ = 3.0e9  # 最大 CPU 频率，2 GHz
     MIN_VEHICLE_CPU_FREQ = 1.0e9  # 最小 CPU 频率，1 GHz
-    F_RSU = 20.0 * 1e9  # RSU: 20 GHz (20倍于车辆)
+    F_RSU = 25.0 * 1e9  # RSU: 20 GHz (20倍于车辆)
     # 2. 依然保留 F_VEHICLE，但将其注释为“基准参考值”
     # 这样既能满足代码的调用需求（不报错），又不影响你每辆车的随机性
     F_VEHICLE = 2.0e9             # 设为平均值 2 GHz
@@ -95,11 +95,11 @@ class SystemConfig:
     # =========================================================================
     # 通信范围
     RSU_RANGE = 1000.0  # RSU 覆盖半径 (m)
-    V2V_RANGE = 250.0  # V2V 通信半径 (m) (DVTP等文献常用值)
+    V2V_RANGE = 300.0  # V2V 通信半径 (m) (DVTP等文献常用值)
 
     # 队列约束 (拥堵控制)
-    VEHICLE_QUEUE_LIMIT = 6  # 车辆任务队列上限 (避免排队过长)
-    RSU_QUEUE_LIMIT = 25  # RSU 全局队列上限
+    VEHICLE_QUEUE_LIMIT = 10  # 车辆任务队列上限 (避免排队过长)
+    RSU_QUEUE_LIMIT = 50  # RSU 全局队列上限
 
     # =========================================================================
     # 5. DAG 任务生成参数 (Task Generation)
@@ -135,16 +135,20 @@ class SystemConfig:
     # Deadline 因子
     # Deadline = (Total_Comp / F_VEHICLE) * Factor
     # 0.8 ~ 1.5: 涵盖了"本地无法完成"到"本地勉强完成"的范围
-    DEADLINE_FACTOR_MIN = 0.8
-    DEADLINE_FACTOR_MAX = 1.5
-    # 兼容旧代码单一值
-    DEADLINE_FACTOR = 1.2  # 默认平均值
+    # DEADLINE_FACTOR_MIN = 0.8
+    # DEADLINE_FACTOR_MAX = 1.5
+    # # 兼容旧代码单一值
+    # DEADLINE_FACTOR = 1.2  # 默认平均值
+    # [修改] Deadline 更加宽容一点，减少因物理环境不可能完成导致的“无助感”
+    DEADLINE_FACTOR_MIN = 0.8  # 0.8
+    DEADLINE_FACTOR_MAX = 1.5  # 1.5
+    DEADLINE_FACTOR = 1.4
 
     # =========================================================================
     # 6. 强化学习归一化常量 (RL Normalization)
     # =========================================================================
     # 资源特征归一化
-    NORM_MAX_CPU = 20.0 * 1e9  # 基准: RSU 频率
+    NORM_MAX_CPU = 25.0 * 1e9  # 基准: RSU 频率
     NORM_MAX_COMP = 1.2 * 1e8  # 适应 1e8 的计算量
     NORM_MAX_DATA = 5.0 * 1e6  # 适应约 4e6 bit 的数据量
 
@@ -155,12 +159,27 @@ class SystemConfig:
     # 负载/等待时间归一化
     NORM_MAX_WAIT_TIME = 1.0
 
-    # 奖励函数缩放
-    # 适应 PPO 的 Value Loss 范围
-    REWARD_SCALE = 1.0
+    # 1. 任务失败惩罚
+    # 保持 -50.0 没问题，这是一个巨大的“死亡惩罚”，平均到20辆车上是 -2.5，
+    # 相比于单步奖励 (0.1~0.5) 依然非常有震慑力。
+    PENALTY_FAILURE = -50.0
+
+    # 2. 拥堵惩罚权重 (W_QUEUE)
+    # [关键修改] 从 0.5 降到 0.05
+    # 逻辑: 40 个排队任务 * 0.05 = -2.0。
+    # 这样惩罚量级(2.0) 和 收益量级(后面会放大到 1.0) 就在同一个数量级了。
+    W_QUEUE = 0.05
+
+    # 3. 奖励缩放 (REWARD_SCALE)
+    # [关键修改] 放大时间收益。
+    # 原始 cft_diff 只有 0.1s 左右。我们需要把它放大 10 倍甚至 20 倍，
+    # 让 Agent 觉得"节省时间"是有利可图的。
+    # 建议设置为 10.0 或 20.0
+    REWARD_SCALE = 10.0
+
 
     # =========================================================================
-    # 7. 辅助方法
+    # 8. 辅助方法
     # =========================================================================
     @staticmethod
     def dbm2watt(dbm):

@@ -46,19 +46,19 @@ class TrainConfig:
     # =========================
     # 3. PPO 算法参数 (Algorithm)
     # =========================
-    GAMMA = 0.999  # 折扣因子 (关注长期收益)
+    GAMMA = 0.99  # 折扣因子 (关注长期收益)
     GAE_LAMBDA = 0.95  # GAE 平滑因子 (平衡偏差与方差)
 
     CLIP_PARAM = 0.2  # PPO 裁剪阈值 (epsilon)
 
     PPO_EPOCH = 4  # 每次 Update 迭代多少轮
-    MINI_BATCH_SIZE = 256  # 每次迭代的 Mini-batch 大小
+    MINI_BATCH_SIZE = 512  # 每次迭代的 Mini-batch 大小
 
     # 熵正则化系数 (Entropy Coefficient)：值越大，策略越随机；值越小，策略越确定。
     # Reward 曲线完全是平的（不上升），说明探索不够，可以改到 0.02。
     # 如果发现 Reward 震荡极其剧烈且无法稳定，改到 0.005。
     # 0.01 是标准值。如果发现 Agent 过早收敛到单一动作，增大此值 (e.g., 0.05)
-    ENTROPY_COEF = 0.01
+    ENTROPY_COEF = 0.03
 
     # 价值函数损失系数
     VF_COEF = 0.5

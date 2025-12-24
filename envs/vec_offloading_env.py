@@ -184,19 +184,32 @@ class VecOffloadingEnv(gym.Env):
         # 我们使用基于关键路径的 CFT 估算，更能体现 DAG 的并行优势
         current_global_cft = self._calculate_global_cft_critical_path()
 
-        # 变化量: 正值代表时间缩短 (好)，负值代表时间增加 (坏)
+        # A. 时延收益 (正值)
+        # 假设 cft_diff = 0.1s (全系统节省了 0.1秒)
         cft_diff = self.last_global_cft - current_global_cft
 
-        # 归一化与缩放
-        #step_reward = (cft_diff / len(self.vehicles)) * Cfg.REWARD_SCALE
-        # 修正方案 B (推荐): 直接用总增益
-        step_reward = cft_diff * Cfg.REWARD_SCALE  # (假设 Scale=0.1 -> Reward=0.1，合理)
+        # B. 拥堵惩罚 (负值)
+        # 假设 total_queue = 40
+        total_vehicle_queue = sum([v.task_queue_len for v in self.vehicles])
+        total_rsu_queue = self.rsu_queue_curr
+        total_sys_queue = total_vehicle_queue + total_rsu_queue
+
+        # C. 计算 全局总奖励 (Global Sum Reward)
+        # 逻辑: (0.1s * 10.0) - (40 * 0.05) = 1.0 - 2.0 = -1.0
+        # 这样正负抵消后的数值非常健康
+        global_reward = (cft_diff * Cfg.REWARD_SCALE) - (total_sys_queue * Cfg.W_QUEUE)
+
+        # D. [核心修改] 对所有车辆取平均 (Mean Reward)
+        # PPO 喜欢这个数值！
+        # 如果 N=20: -1.0 / 20 = -0.05 (单步微小惩罚，正常)
+        # 如果任务失败: -50 / 20 = -2.5 (瞬间剧痛，正常)
+        avg_reward = global_reward / len(self.vehicles)
+
+        # 广播给每个智能体
+        rewards = [avg_reward] * len(self.vehicles)
 
         # 更新基准
         self.last_global_cft = current_global_cft
-
-        # 广播全作奖励 (Cooperative Reward)
-        rewards = [step_reward] * len(self.vehicles)
 
         # 终止条件 (由外部 Max Steps 控制，此处默认 False)
         done = False
@@ -427,17 +440,20 @@ class VecOffloadingEnv(gym.Env):
         """
         total_cft = 0.0
 
+        # [新增] 获取失败惩罚的绝对值 (转换为时间惩罚)
+        # 逻辑: 假设 Penalty=-50, Scale=1.0, 相当于增加了 50秒 的虚拟耗时
+        # 这样 Critic 网络会给导致失败的状态打极低的分
+        fail_penalty_equivalent_time = abs(Cfg.PENALTY_FAILURE)
+
         for v in self.vehicles:
             if v.task_dag.is_failed:
-                # [修改建议] 将 1000.0 改为 10.0
-                # 理由：正常任务耗时约 0.1~0.5s，10.0 已经是巨大的惩罚 (相当于耗时增加了几十倍)
-                # 避免 -1000 这种数值导致 PPO Critic 网络梯度爆炸
-                total_cft += (self.time + 10.0)  # 失败惩罚
+                # [修改位置] 不再硬编码 10.0，而是使用 Config 参数
+                # 原代码: total_cft += (self.time + 10.0)
+                total_cft += (self.time + fail_penalty_equivalent_time)
                 continue
 
-            # 如果已经完成
             if v.task_dag.is_finished:
-                total_cft += self.time  # 已完成任务贡献当前时间
+                total_cft += self.time
                 continue
 
             # --- DAG 关键路径估算 ---
