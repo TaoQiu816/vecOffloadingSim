@@ -227,18 +227,14 @@ class VecOffloadingEnv(gym.Env):
 
     def _get_obs(self):
         """
-        [观测生成]
-        生成包含 DAG 状态、物理环境、邻居信息及 Mask 的综合观测。
-
-        修改记录:
-        - [关键修正] node_feats 维度修正为 7，严格对齐 GraphBuilder 和 TrainConfig。
-        - [特征顺序] [comp, data, status, in_degree, out_degree, t_rem, urgency]
-        - [容错处理] 增加了 out_degree 的现场计算，防止 DAGTask 类未更新导致的 AttributeError。
+        [观测生成] - Final Corrected Version
+        修正了 RSU 和 Neighbor 等待时间计算中的物理量纲错误。
         """
         obs_list = []
 
         # RSU 全局负载归一化
-        rsu_wait_time = (self.rsu_queue_curr * Cfg.MEAN_DATA_SIZE) / Cfg.F_RSU
+        # [修正 1] 使用 MEAN_COMP_LOAD (Cycles) / F_RSU (Hz) = Seconds
+        rsu_wait_time = (self.rsu_queue_curr * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
         rsu_load_norm = np.clip(rsu_wait_time / Cfg.NORM_MAX_WAIT_TIME, 0.0, 1.0)
 
         # RSU 是否满载 (Mask 用)
@@ -250,67 +246,58 @@ class VecOffloadingEnv(gym.Env):
             # =========================================================
             num_nodes = v.task_dag.num_subtasks
 
-            # A. 时间相关特征 (标量 -> 向量广播)
+            # A. 时间相关特征
             elapsed = self.time - v.task_dag.start_time
             t_rem = v.task_dag.deadline - elapsed
             t_total = v.task_dag.deadline if v.task_dag.deadline > 0 else 1.0
 
-            # 标量计算
             val_t_rem = np.clip(t_rem, -10.0, 10.0)
             val_urgency = np.clip(t_rem / t_total, 0.0, 1.0) if t_rem > 0 else 0.0
 
-            # 广播为数组 [N]
             feat_t_rem = np.full(num_nodes, val_t_rem)
             feat_urgency = np.full(num_nodes, val_urgency)
 
-            # B. 拓扑特征 (数组)
-            # 入度 (In-Degree)
+            # B. 拓扑特征
             feat_in_degree = v.task_dag.in_degree
 
-            # [关键] 出度 (Out-Degree)
-            # 容错逻辑: 如果 DAGTask 对象还没更新 out_degree 属性，则现场计算
+            # 容错处理
             if hasattr(v.task_dag, 'out_degree'):
                 feat_out_degree = v.task_dag.out_degree
             else:
-                # axis=1 行和 = 出度
                 feat_out_degree = np.sum(v.task_dag.adj, axis=1)
 
-            # C. 特征堆叠 (Stacking)
-            # 必须与 TrainConfig.TASK_INPUT_DIM = 7 严格一致
+            # C. 特征堆叠
             node_feats = np.stack([
-                v.task_dag.rem_comp / Cfg.NORM_MAX_COMP,  # 1. 剩余计算量
-                v.task_dag.rem_data / Cfg.NORM_MAX_DATA,  # 2. 剩余数据量
-                v.task_dag.status,  # 3. 状态
-                feat_in_degree,  # 4. 入度
-                feat_out_degree,  # 5. 出度 [新增/修复]
-                feat_t_rem,  # 6. 剩余时间
-                feat_urgency  # 7. 紧迫度
+                v.task_dag.rem_comp / Cfg.NORM_MAX_COMP,
+                v.task_dag.rem_data / Cfg.NORM_MAX_DATA,
+                v.task_dag.status,
+                feat_in_degree,
+                feat_out_degree,
+                feat_t_rem,
+                feat_urgency
             ], axis=1)
 
             # =========================================================
             # 2. Self Info (自身状态) -> [6 Dim]
             # =========================================================
-            # 预估 V2I 速率用于观测
             dist_rsu = np.linalg.norm(v.pos - Cfg.RSU_POS)
             est_v2i_rate = self._simulate_channel_rate(dist_rsu, 'V2I')
 
-            # 本地等待时间
+            # [正确] 这里您写对了，使用了 MEAN_COMP_LOAD
             self_wait = (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
 
             self_info = np.array([
-                v.vel[0] / Cfg.MAX_VELOCITY, v.vel[1] / Cfg.MAX_VELOCITY,  # 归一化速度
-                np.clip(self_wait / Cfg.NORM_MAX_WAIT_TIME, 0, 1),  # 本地负载
-                v.cpu_freq / Cfg.NORM_MAX_CPU,  # 本地算力
-                np.clip(est_v2i_rate / Cfg.NORM_MAX_RATE_V2I, 0, 1),  # V2I 信道质量
-                v.pos[0] / Cfg.MAP_SIZE, v.pos[1] / Cfg.MAP_SIZE  # 绝对位置
+                v.vel[0] / Cfg.MAX_VELOCITY, v.vel[1] / Cfg.MAX_VELOCITY,
+                np.clip(self_wait / Cfg.NORM_MAX_WAIT_TIME, 0, 1),
+                v.cpu_freq / Cfg.NORM_MAX_CPU,
+                np.clip(est_v2i_rate / Cfg.NORM_MAX_RATE_V2I, 0, 1),
+                v.pos[0] / Cfg.MAP_SIZE, v.pos[1] / Cfg.MAP_SIZE
             ], dtype=np.float32)
 
             # =========================================================
             # 3. Neighbor Info (邻居信息)
             # =========================================================
             neighbors = []
-            # valid_targets_base: [Local, RSU, Neighbor_1, Neighbor_2, ...]
-            # 1 表示物理可达 (距离范围内)，0 表示不可达
             valid_targets_base = [1, 1]
 
             for other in self.vehicles:
@@ -318,13 +305,11 @@ class VecOffloadingEnv(gym.Env):
 
                 dist = np.linalg.norm(v.pos - other.pos)
                 if dist <= Cfg.V2V_RANGE:
-                    # 相对位置 & 速度
                     rel_pos = (other.pos - v.pos) / Cfg.V2V_RANGE
 
-                    # 邻居负载
-                    n_wait = (other.task_queue_len * Cfg.MEAN_DATA_SIZE) / other.cpu_freq
+                    # [修正 2] 邻居负载计算错误修正: Data -> Comp
+                    n_wait = (other.task_queue_len * Cfg.MEAN_COMP_LOAD) / other.cpu_freq
 
-                    # 邻居 V2V 速率估算
                     est_v2v_rate = self._simulate_channel_rate(dist, 'V2V')
 
                     neighbors.append([
@@ -332,71 +317,54 @@ class VecOffloadingEnv(gym.Env):
                         rel_pos[0], rel_pos[1],
                         other.vel[0], other.vel[1],
                         np.clip(n_wait / Cfg.NORM_MAX_WAIT_TIME, 0, 1),
-                        other.cpu_freq / Cfg.NORM_MAX_CPU, # 这里已正确使用邻居的个体频率
+                        other.cpu_freq / Cfg.NORM_MAX_CPU,
                         np.clip(est_v2v_rate / Cfg.NORM_MAX_RATE_V2V, 0, 1)
                     ])
-                    valid_targets_base.append(1)  # 可达
+                    valid_targets_base.append(1)
                 else:
-                    valid_targets_base.append(0)  # 不可达
+                    valid_targets_base.append(0)
 
             neighbors = np.array(neighbors) if neighbors else np.zeros((0, 8))
 
             # =========================================================
-            # 4. Mask Generation (不合法动作屏蔽)
+            # 4. Mask Generation
             # =========================================================
-            # 最终 Mask 矩阵: [Num_Subtasks, Num_Targets]
             num_targets = len(valid_targets_base)
-
-            # A. Task Mask (DAG 依赖): 入度 > 0 或已完成的任务不能被调度
-            task_schedulable = v.task_dag.get_action_mask()  # 返回 [Num_Subtasks] bool 数组
-
-            # B. Target Mask (物理约束)
-            # 基础物理连接掩码 (距离范围)
+            task_schedulable = v.task_dag.get_action_mask()
             target_mask_row = np.array(valid_targets_base, dtype=bool)
 
-            # [Congestion Control] RSU 拥堵
+            # RSU 拥堵
             if rsu_is_full:
-                target_mask_row[1] = False  # 禁止卸载到 RSU
+                target_mask_row[1] = False
 
-            # [Mobility Management] 移动性约束 (Time-to-Leave)
-            # 如果 (离开 RSU 范围时间) < (预计传输时间)，则屏蔽 RSU
+            # TTL 移动性约束
             speed = np.linalg.norm(v.vel)
             if speed > 0.1:
                 time_to_leave = (Cfg.RSU_RANGE - dist_rsu) / speed
-                avg_data_size = np.mean(v.task_dag.rem_data)  # 估算数据量
+                avg_data_size = np.mean(v.task_dag.rem_data)
                 est_trans_time = avg_data_size / max(est_v2i_rate, 1e-6)
-
                 if time_to_leave < est_trans_time:
-                    target_mask_row[1] = False  # 还没传完就跑出去了，禁止动作
+                    target_mask_row[1] = False
 
-            # [Congestion Control] 邻居拥堵
-            # 遍历 valid_targets_base 从 index 2 开始 (Neighbors)
-            # 这里的逻辑是: valid_targets_base 的顺序对应 self.vehicles 列表(跳过自己)
+            # 邻居拥堵
             candidate_vehs = [x for x in self.vehicles if x.id != v.id]
-
             for i in range(2, num_targets):
                 if valid_targets_base[i] == 1:
-                    # 映射回 candidate_vehs 的索引
                     target_veh_idx = i - 2
                     if target_veh_idx < len(candidate_vehs):
                         n_veh = candidate_vehs[target_veh_idx]
-                        # 如果邻居队列满了，Mask 掉
                         if n_veh.task_queue_len >= Cfg.VEHICLE_QUEUE_LIMIT:
                             target_mask_row[i] = False
 
-            # 组合 Mask
-            # 形状: [Num_Subtasks, Num_Targets]
             final_mask = np.tile(target_mask_row, (num_nodes, 1))
-
-            # 应用 Task Mask (行屏蔽)
             for t_idx in range(num_nodes):
                 if not task_schedulable[t_idx]:
-                    final_mask[t_idx, :] = False  # 该任务不可被调度
+                    final_mask[t_idx, :] = False
 
             obs_list.append({
                 'node_x': node_feats,
                 'self_info': self_info,
-                'rsu_info': [rsu_load_norm],  # 维度 [1] -> 对应 Config.RSU_INPUT_DIM = 1
+                'rsu_info': [rsu_load_norm],  # [1] 维，正确
                 'adj': v.task_dag.adj,
                 'neighbors': neighbors,
                 'task_mask': task_schedulable,
