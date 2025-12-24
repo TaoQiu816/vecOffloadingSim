@@ -1,143 +1,19 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.data import Batch
 from torch_geometric.nn import global_mean_pool
 
+# =========================================================================
+# 1. 导入依赖与配置
+# =========================================================================
+# [关键修改] 从 models.encoders 导入独立的编码器类
+# 这确保了我们使用的是包含 Fallback 机制和 Edge Feature 支持的最新版本
 from models.encoders import DAGTaskEncoder, HeteroTopologyEncoder
 
+# [关键修改] 引入配置类，用于获取 EDGE_INPUT_DIM
+from configs.train_config import TrainConfig as TC
 
-# # =========================================================================
-# # 1. 高级图编码器 (Encoders)
-# # [说明] 这里使用上一轮修复后的"Robust"版本，支持边特征和动态层数
-# # =========================================================================
-#
-# class DAGTaskEncoder(nn.Module):
-#     """
-#     [DAG 任务编码器 - 增强版]
-#     使用 ModuleList 支持动态层数，确保 Critic 能提取深层特征。
-#     """
-#
-#     def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2, heads=2):
-#         super(DAGTaskEncoder, self).__init__()
-#
-#         self.layers = nn.ModuleList()
-#         self.norms = nn.ModuleList()
-#         self.num_layers = num_layers
-#
-#         # Layer 1
-#         self.layers.append(GATv2Conv(input_dim, hidden_dim, heads=heads, concat=True))
-#         self.norms.append(LayerNorm(hidden_dim * heads))
-#
-#         # Middle Layers
-#         mid_dim = hidden_dim * heads
-#         for _ in range(num_layers - 2):
-#             self.layers.append(GATv2Conv(mid_dim, hidden_dim, heads=heads, concat=True))
-#             self.norms.append(LayerNorm(mid_dim))
-#
-#         # Last Layer
-#         self.layers.append(GATv2Conv(mid_dim, output_dim, heads=1, concat=False))
-#         self.last_norm = LayerNorm(output_dim)
-#
-#     def forward(self, x, edge_index, batch=None):
-#         for i in range(self.num_layers - 1):
-#             x = self.layers[i](x, edge_index)
-#             x = self.norms[i](x)
-#             x = F.elu(x)
-#             x = F.dropout(x, p=0.2, training=self.training)
-#
-#         node_emb = self.layers[-1](x, edge_index)
-#
-#         # Global Pooling
-#         if batch is not None:
-#             graph_emb = global_mean_pool(node_emb, batch)
-#         else:
-#             graph_emb = node_emb.mean(dim=0, keepdim=True)
-#
-#         return node_emb, graph_emb
-#
-#
-# class HeteroTopologyEncoder(nn.Module):
-#     """
-#     [异构网络拓扑编码器 - 完整修复版]
-#
-#     关键修正:
-#     1. [新增] 接收 edge_dim 参数，启用边特征 (带宽/算力比)。
-#     2. [新增] Fallback 线性层，防止无边情况下维度不匹配。
-#     3. [修正] V2I/I2V 禁止自环，V2V 允许自环。
-#     """
-#
-#     def __init__(self, vehicle_dim, rsu_dim, hidden_dim, output_dim, heads=2, num_layers=2):
-#         super(HeteroTopologyEncoder, self).__init__()
-#
-#         # 引用 Config 中的边特征维度 (通常为 2)
-#         edge_dim = TrainConfig.EDGE_INPUT_DIM
-#         self.num_layers = num_layers
-#
-#         # [新增] 兜底投影层 (处理孤立节点)
-#         self.veh_fallback = nn.Linear(vehicle_dim, output_dim)
-#         self.rsu_fallback = nn.Linear(rsu_dim, output_dim)
-#
-#         self.layers = nn.ModuleList()
-#
-#         # --- Layer 1 ---
-#         self.layers.append(HeteroConv({
-#             ('vehicle', 'v2v', 'vehicle'): GATv2Conv(
-#                 vehicle_dim, hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=True
-#             ),
-#             ('vehicle', 'v2i', 'rsu'): GATv2Conv(
-#                 (vehicle_dim, rsu_dim), hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=False
-#             ),
-#             ('rsu', 'i2v', 'vehicle'): GATv2Conv(
-#                 (rsu_dim, vehicle_dim), hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=False
-#             ),
-#         }, aggr='sum'))
-#
-#         # --- Middle & Last Layers ---
-#         mid_dim = hidden_dim * heads
-#         for i in range(1, num_layers):
-#             is_last = (i == num_layers - 1)
-#             out_d = output_dim if is_last else hidden_dim
-#             n_heads = 1 if is_last else heads
-#             do_concat = not is_last
-#
-#             self.layers.append(HeteroConv({
-#                 ('vehicle', 'v2v', 'vehicle'): GATv2Conv(
-#                     mid_dim, out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=True
-#                 ),
-#                 ('vehicle', 'v2i', 'rsu'): GATv2Conv(
-#                     (mid_dim, mid_dim), out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=False
-#                 ),
-#                 ('rsu', 'i2v', 'vehicle'): GATv2Conv(
-#                     (mid_dim, mid_dim), out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=False
-#                 ),
-#             }, aggr='sum'))
-#
-#         self.ln_veh = LayerNorm(output_dim)
-#         self.ln_rsu = LayerNorm(output_dim)
-#
-#     def forward(self, x_dict, edge_index_dict, edge_attr_dict):
-#         # [关键] 鲁棒性检查: 如果没有边，直接使用线性投影
-#         has_edges = len(edge_index_dict) > 0 and any(e.size(1) > 0 for e in edge_index_dict.values())
-#
-#         if not has_edges:
-#             out = {}
-#             if 'vehicle' in x_dict: out['vehicle'] = self.veh_fallback(x_dict['vehicle'])
-#             if 'rsu' in x_dict: out['rsu'] = self.rsu_fallback(x_dict['rsu'])
-#             return out
-#
-#         x = x_dict
-#         for i, conv in enumerate(self.layers):
-#             # 必须传入 edge_attr_dict
-#             x = conv(x, edge_index_dict, edge_attr_dict=edge_attr_dict)
-#
-#             if i < self.num_layers - 1:
-#                 x = {key: F.elu(val) for key, val in x.items()}
-#                 # x = {key: F.dropout(val, p=0.2, training=self.training) for key, val in x.items()}
-#
-#         if 'vehicle' in x: x['vehicle'] = self.ln_veh(x['vehicle'])
-#         if 'rsu' in x: x['rsu'] = self.ln_rsu(x['rsu'])
-#
-#         return x
-#
 
 # =========================================================================
 # 2. 策略网络 (Actor & Critic)
@@ -145,8 +21,14 @@ from models.encoders import DAGTaskEncoder, HeteroTopologyEncoder
 
 class TransformerHybridActor(nn.Module):
     """
-    [Actor]
-    融合 DAG 特征与网络拓扑特征，输出卸载决策和功率控制。
+    [Actor 网络]
+    融合 DAG 任务特征与网络拓扑特征，输出卸载决策(离散)和功率控制(连续)。
+
+    架构流程:
+    1. Task Encoder -> 提取任务节点特征和全局特征
+    2. Topo Encoder -> 提取车辆和 RSU 的拓扑特征 (含边特征)
+    3. Attention -> 计算任务与目标节点的匹配分数 (Logits)
+    4. Power Head -> 基于任务和自身状态输出传输功率
     """
 
     def __init__(self, task_feat_dim, veh_feat_dim, rsu_feat_dim,
@@ -154,13 +36,32 @@ class TransformerHybridActor(nn.Module):
         super(TransformerHybridActor, self).__init__()
 
         self.embed_dim = embed_dim
-        # Encoders (使用上面的增强版)
-        self.task_encoder = DAGTaskEncoder(task_feat_dim, embed_dim, embed_dim, num_layers=num_layers)
-        self.topo_encoder = HeteroTopologyEncoder(veh_feat_dim, rsu_feat_dim, embed_dim, embed_dim,
-                                                  num_layers=num_layers)
 
-        # Power Head (功率控制)
-        # 输入: Task Global (Embed) + Self State (Embed)
+        # --- 1. DAG Encoder ---
+        # 使用导入的 DAGTaskEncoder
+        self.task_encoder = DAGTaskEncoder(
+            input_dim=task_feat_dim,
+            hidden_dim=embed_dim,
+            output_dim=embed_dim,
+            num_layers=num_layers,
+            heads=num_heads
+        )
+
+        # --- 2. Topology Encoder ---
+        # [关键修复] 显式传入 edge_dim=TC.EDGE_INPUT_DIM
+        # 对应 models/encoders.py 中 __init__(..., edge_dim, ...) 的签名
+        self.topo_encoder = HeteroTopologyEncoder(
+            vehicle_dim=veh_feat_dim,
+            rsu_dim=rsu_feat_dim,
+            edge_dim=TC.EDGE_INPUT_DIM,  # <--- 必须传入此参数，否则会报错缺少参数
+            hidden_dim=embed_dim,
+            output_dim=embed_dim,
+            num_layers=num_layers,
+            heads=num_heads
+        )
+
+        # --- 3. Power Head (功率控制) ---
+        # 输入: Task Global (Embed) + Self State (Embed) -> 2 * Embed
         self.power_head = nn.Sequential(
             nn.Linear(embed_dim * 2, 32),
             nn.ReLU(),
@@ -169,6 +70,13 @@ class TransformerHybridActor(nn.Module):
         )
 
     def forward(self, dag_batch, topo_batch, candidates_mask=None):
+        """
+        前向传播
+        Args:
+            dag_batch: PyG Batch (任务图)
+            topo_batch: PyG Hetero Batch (拓扑图)
+            candidates_mask: 可选的动作掩码
+        """
         batch_size = dag_batch.num_graphs
 
         # 1. Encoding
@@ -176,7 +84,7 @@ class TransformerHybridActor(nn.Module):
         task_node_emb, task_global_emb = self.task_encoder(dag_batch.x, dag_batch.edge_index, dag_batch.batch)
 
         # Topology: {'vehicle': [Total_Veh, Dim], 'rsu': ...}
-        # [关键] 传入 edge_attr_dict 以利用边特征
+        # [关键] 传入 edge_attr_dict 以利用边特征 (带宽/算力比)
         topo_node_dict = self.topo_encoder(
             topo_batch.x_dict,
             topo_batch.edge_index_dict,
@@ -194,17 +102,17 @@ class TransformerHybridActor(nn.Module):
         rsu_ptr = topo_batch['rsu'].ptr
 
         for i in range(batch_size):
-            # --- A. 任务侧 ---
+            # --- A. 任务侧数据切片 ---
             t_start, t_end = dag_ptr[i], dag_ptr[i + 1]
             curr_task_emb = task_node_emb[t_start:t_end]  # [Num_Sub, Dim]
 
-            # 获取 Mask
+            # 获取 Mask (逻辑依赖 Mask)
             if hasattr(dag_batch, 'mask'):
                 curr_task_mask = dag_batch.mask[t_start:t_end]
             else:
                 curr_task_mask = torch.ones(curr_task_emb.size(0), dtype=torch.bool, device=curr_task_emb.device)
 
-            # 获取物理可达 Mask (Target Mask)
+            # 获取 Mask (物理可达 Target Mask)
             if hasattr(dag_batch, 'target_mask'):
                 tm = dag_batch.target_mask[t_start:t_end]
                 # 确保维度是 [Num_Sub, Num_Targets]
@@ -212,7 +120,7 @@ class TransformerHybridActor(nn.Module):
             else:
                 curr_target_mask = None
 
-            # --- B. 拓扑侧 ---
+            # --- B. 拓扑侧数据切片 ---
             v_start, v_end = veh_ptr[i], veh_ptr[i + 1]
             r_start, r_end = rsu_ptr[i], rsu_ptr[i + 1]
             curr_veh_emb = veh_emb[v_start:v_end]
@@ -259,7 +167,7 @@ class TransformerHybridActor(nn.Module):
 
 class TransformerHybridCritic(nn.Module):
     """
-    [Critic]
+    [Critic 网络]
     评估状态价值 V(s)。
     """
 
@@ -267,11 +175,28 @@ class TransformerHybridCritic(nn.Module):
                  embed_dim=64, num_heads=4, num_layers=2):
         super(TransformerHybridCritic, self).__init__()
 
-        self.task_encoder = DAGTaskEncoder(task_feat_dim, embed_dim, embed_dim, num_layers=num_layers)
-        self.topo_encoder = HeteroTopologyEncoder(veh_feat_dim, rsu_feat_dim, embed_dim, embed_dim,
-                                                  num_layers=num_layers)
+        # 1. DAG Encoder
+        self.task_encoder = DAGTaskEncoder(
+            input_dim=task_feat_dim,
+            hidden_dim=embed_dim,
+            output_dim=embed_dim,
+            num_layers=num_layers,
+            heads=num_heads
+        )
 
-        # Value Head
+        # 2. Topology Encoder
+        # [关键修复] 显式传入 edge_dim=TC.EDGE_INPUT_DIM
+        self.topo_encoder = HeteroTopologyEncoder(
+            vehicle_dim=veh_feat_dim,
+            rsu_dim=rsu_feat_dim,
+            edge_dim=TC.EDGE_INPUT_DIM,  # <--- 必须传入此参数
+            hidden_dim=embed_dim,
+            output_dim=embed_dim,
+            num_layers=num_layers,
+            heads=num_heads
+        )
+
+        # 3. Value Head
         self.value_head = nn.Sequential(
             nn.Linear(embed_dim * 2, 32),
             nn.ReLU(),
