@@ -323,23 +323,24 @@ def main():
         subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
 
         # --- 控制台输出 (Console Log) ---
-        # [修改] 增加 Sub% (子任务成功率), AvgQ (平均队列), Pwr (平均功率)
+        # [修改] 增加 AvgR (平均步奖励), CPU (平均分配算力 GHz)
+        # [修改] 优化了打印列宽，避免数据粘连
         if episode == 1 or episode % 10 == 0:
             header = (
-                f"{'Ep':<5} | {'Reward':<8} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} | "
-                f"{'Loc%':<4} {'RSU%':<4} {'V2V%':<4} | {'AvgQ':<5} {'Pwr':<5} | {'Loss':<6} | {'Time':<4}"
+                f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} {'CPU':<4} | "
+                f"{'Loc%':<5} {'RSU%':<5} {'V2V%':<5} | {'AvgQ':<6} {'Pwr':<5} | {'Loss':<8} | {'Time':<4}"
             )
             print("-" * len(header))
             print(header)
             print("-" * len(header))
 
         print(f"{episode:<5d} | "
-              f"{ep_reward:<8.2f} | "
+              f"{ep_reward:<9.2f} {avg_step_reward:<7.3f} | "
               f"{veh_success_rate:<5.1f} {subtask_success_rate:<5.1f} | "
-              f"{fairness_index:<4.2f} | "
-              f"{pct_local:<4.1f} {pct_rsu:<4.1f} {pct_v2v:<4.1f} | "
-              f"{avg_veh_queue:<5.2f} {avg_power:<5.2f} | "
-              f"{update_loss:<6.3f} | "
+              f"{fairness_index:<4.2f} {avg_assigned_cpu/1e9:<4.2f} | "
+              f"{pct_local:<5.1f} {pct_rsu:<5.1f} {pct_v2v:<5.1f} | "
+              f"{avg_veh_queue:<6.2f} {avg_power:<5.2f} | "
+              f"{update_loss:<8.3f} | "
               f"{duration:<4.1f}")
 
         # --- 记录到 Tensorboard / CSV ---
