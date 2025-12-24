@@ -15,27 +15,26 @@ class TrainConfig:
 
     # Vehicle: [vx, vy, queue, cap, pos_x, pos_y]
     VEH_INPUT_DIM = 7
-    EDGE_INPUT_DIM = 2  # 从 1 修改为 2
+    EDGE_INPUT_DIM = 2  # 修改为 2
 
     # RSU: [load, pos_x, pos_y]
     RSU_INPUT_DIM = 7
 
     # 隐藏层维度 (Transformer & GNN)
-    # 论文常用: 64 或 128
-    EMBED_DIM = 64
+    EMBED_DIM = 256
 
     # 注意力头数 (Heads)
-    NUM_HEADS = 4
+    NUM_HEADS = 8
 
     # Transformer 层数
-    NUM_LAYERS = 2
+    NUM_LAYERS = 4
 
     # =========================
     # 2. 优化器参数 (Optimizer)
     # =========================
     # 学习率 (Actor 通常比 Critic 小)
-    LR_ACTOR = 3e-4  # 3e-4 是 PPO 的黄金初始值
-    LR_CRITIC = 1e-3  # Critic 需要更快收敛
+    LR_ACTOR = 1e-4  # 降低学习率以求稳定
+    LR_CRITIC = 3e-4  # Critic 需要更快收敛
 
     # 学习率衰减
     USE_LR_DECAY = True
@@ -47,15 +46,17 @@ class TrainConfig:
     # =========================
     # 3. PPO 算法参数 (Algorithm)
     # =========================
-    GAMMA = 0.99  # 折扣因子 (关注长期收益)
+    GAMMA = 0.999  # 折扣因子 (关注长期收益)
     GAE_LAMBDA = 0.95  # GAE 平滑因子 (平衡偏差与方差)
 
     CLIP_PARAM = 0.2  # PPO 裁剪阈值 (epsilon)
 
     PPO_EPOCH = 4  # 每次 Update 迭代多少轮
-    MINI_BATCH_SIZE = 64  # 每次迭代的 Mini-batch 大小
+    MINI_BATCH_SIZE = 256  # 每次迭代的 Mini-batch 大小
 
-    # 熵正则化系数 (Entropy Coefficient)
+    # 熵正则化系数 (Entropy Coefficient)：值越大，策略越随机；值越小，策略越确定。
+    # Reward 曲线完全是平的（不上升），说明探索不够，可以改到 0.02。
+    # 如果发现 Reward 震荡极其剧烈且无法稳定，改到 0.005。
     # 0.01 是标准值。如果发现 Agent 过早收敛到单一动作，增大此值 (e.g., 0.05)
     ENTROPY_COEF = 0.01
 
@@ -66,7 +67,7 @@ class TrainConfig:
     # 4. 训练流程参数 (Training Loop)
     # =========================
     MAX_EPISODES = 3000  # 总训练轮次 (建议至少 2000-5000)
-    MAX_STEPS = 50  # 每个 Episode 的步数 (与 SystemConfig 保持一致)
+    MAX_STEPS = 100  # 每个 Episode 的步数 (与 SystemConfig 保持一致)
 
     # 评估与保存
     LOG_INTERVAL = 10  # 每多少轮打印一次日志

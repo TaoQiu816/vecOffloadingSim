@@ -23,11 +23,11 @@ class SystemConfig:
     # =========================================================================
     SEED = 42  # 随机种子
     NUM_VEHICLES = 20  # 车辆总数 (DVTP: 10-50)
-    MAP_SIZE = 1000.0  # 区域大小 (1000m x 1000m)
-    RSU_POS = np.array([500.0, 500.0])  # RSU 坐标 (地图中心)
+    MAP_SIZE = 2000.0  # 区域大小 (2000m x 2000m)
+    RSU_POS = np.array([1000.0, 1000.0])  # RSU 坐标 (地图中心)
 
     DT = 0.1  # 仿真时间步长 (s) (标准车联网仿真步长)
-    MAX_STEPS = 50  # 每个 Episode 步数 (50 * 0.1s = 5s, 适合快速验证)
+    MAX_STEPS = 100  # 每个 Episode 步数
 
     # 车辆移动性参数
     VEL_MIN = 10.0  # 最小速度 (m/s) ~ 36 km/h
@@ -43,8 +43,8 @@ class SystemConfig:
     C_LIGHT = 3e8  # 光速
 
     # 带宽 (Hz)
-    BW_V2I = 10e6  # V2I 带宽 (10 MHz)
-    BW_V2V = 10e6  # V2V 带宽 (通常也是 10 MHz，也可设为 5 MHz)
+    BW_V2I = 20e6  # 20 MHz
+    BW_V2V = 10e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
 
     # 噪声参数
     # 噪声功率谱密度 (dBm/Hz) -> -174 + Noise Figure (e.g., 9dB)
@@ -58,7 +58,7 @@ class SystemConfig:
     # 发射功率 (dBm) -> IEEE 802.11p Class C (23dBm) / LTE-V2X (23dBm)
     # 范围放宽至 20-27 dBm (100mW - 500mW)
     TX_POWER_MIN_DBM = 20
-    TX_POWER_MAX_DBM = 27
+    TX_POWER_MAX_DBM = 30
 
     # 路径损耗模型参数 (Urban Scenario)
     # PL = Alpha + Beta * log10(d) + Shadowing
@@ -94,34 +94,37 @@ class SystemConfig:
     # 4. 物理约束与掩码 (Constraints & Masking)
     # =========================================================================
     # 通信范围
-    RSU_RANGE = 500.0  # RSU 覆盖半径 (m)
-    V2V_RANGE = 200.0  # V2V 通信半径 (m) (DVTP等文献常用值)
+    RSU_RANGE = 1000.0  # RSU 覆盖半径 (m)
+    V2V_RANGE = 250.0  # V2V 通信半径 (m) (DVTP等文献常用值)
 
     # 队列约束 (拥堵控制)
-    VEHICLE_QUEUE_LIMIT = 3  # 车辆任务队列上限 (避免排队过长)
-    RSU_QUEUE_LIMIT = 20  # RSU 全局队列上限
+    VEHICLE_QUEUE_LIMIT = 6  # 车辆任务队列上限 (避免排队过长)
+    RSU_QUEUE_LIMIT = 25  # RSU 全局队列上限
 
     # =========================================================================
     # 5. DAG 任务生成参数 (Task Generation)
     # 目标: 生成时延敏感型任务，迫使 Agent 进行卸载
     # =========================================================================
     # 任务节点数范围
-    MIN_NODES = 5
-    MAX_NODES = 10
+    MIN_NODES = 12
+    MAX_NODES = 16
 
     # 单个子任务数据量 (Bits) -> 1 Mbit ~ 3 Mbit
-    MIN_DATA = 1.0 * 1e6
-    MAX_DATA = 3.0 * 1e6
+    # 明确乘以 8，转换为 bit
+    MIN_DATA = 50 * 1024 * 8  # 50 KB -> bits
+    MAX_DATA = 500 * 1024 * 8  # 500 KB -> bits
+
+    # 对应文献 100 KB ~ 500 KB（边传输量）
+    MIN_EDGE_DATA = 100 * 1024 * 8
+    MAX_EDGE_DATA = 500 * 1024 * 8
 
     # 单个子任务计算量 (Cycles)
-    # 0.5 Gcycles @ 1GHz = 0.5s (本地)
-    # 1.5 Gcycles @ 1GHz = 1.5s (本地)
-    MIN_COMP = 0.5 * 1e9
-    MAX_COMP = 1.5 * 1e9
+    MIN_COMP = 1.0 * 1e7
+    MAX_COMP = 1.0 * 1e8
 
     # 统计参考值
     MEAN_DATA_SIZE = (MIN_DATA + MAX_DATA) / 2
-    MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2
+    MEAN_COMP_LOAD: float = (MIN_COMP + MAX_COMP) / 2
 
     # DAG 结构参数
     DAG_FAT = 0.6  # 宽度
@@ -142,19 +145,19 @@ class SystemConfig:
     # =========================================================================
     # 资源特征归一化
     NORM_MAX_CPU = 20.0 * 1e9  # 基准: RSU 频率
-    NORM_MAX_COMP = 2.0 * 1e9  # 略大于 MAX_COMP
-    NORM_MAX_DATA = 5.0 * 1e6  # 略大于 MAX_DATA
+    NORM_MAX_COMP = 1.2 * 1e8  # 适应 1e8 的计算量
+    NORM_MAX_DATA = 5.0 * 1e6  # 适应约 4e6 bit 的数据量
 
     # 速率特征归一化
     NORM_MAX_RATE_V2I = 50e6  # 50 Mbps
     NORM_MAX_RATE_V2V = 20e6  # 20 Mbps
 
     # 负载/等待时间归一化
-    NORM_MAX_WAIT_TIME = 5.0
+    NORM_MAX_WAIT_TIME = 1.0
 
     # 奖励函数缩放
-    # 之前是 10.0, 现改为 0.1 以适应 PPO 的 Value Loss 范围
-    REWARD_SCALE = 0.1
+    # 适应 PPO 的 Value Loss 范围
+    REWARD_SCALE = 1.0
 
     # =========================================================================
     # 7. 辅助方法

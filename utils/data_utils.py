@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from torch_geometric.data import Data, HeteroData, Batch
 from configs.config import SystemConfig as Cfg
+from configs.train_config import TrainConfig as TC
 
 
 def process_env_obs(obs_list, device):
@@ -20,6 +21,7 @@ def process_env_obs(obs_list, device):
     - RSU:      [1, 7] (补齐到与Vehicle一致)
     """
     num_vehicles = len(obs_list)
+    edge_dim = TC.EDGE_INPUT_DIM
 
     # 容器
     dag_data_list = []
@@ -134,12 +136,22 @@ def process_env_obs(obs_list, device):
             u = torch.cat([src, dst])
             v = torch.cat([dst, src])
             local_topo['vehicle', 'v2v', 'vehicle'].edge_index = torch.stack([u, v])
+            # [关键修复] 填充 V2V edge_attr (全 1 或 0 占位，防止维度报错)
+            num_edges = u.size(0)
+            local_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.ones((num_edges, edge_dim), dtype=torch.float32)
         else:
             local_topo['vehicle', 'v2v', 'vehicle'].edge_index = torch.empty((2, 0), dtype=torch.long)
+            local_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.empty((0, edge_dim), dtype=torch.float32)
 
         # V2I (Self <-> RSU)
+        # V2I Edges (Self <-> RSU)
+        # 正向
         local_topo['vehicle', 'v2i', 'rsu'].edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+        local_topo['vehicle', 'v2i', 'rsu'].edge_attr = torch.ones((1, edge_dim), dtype=torch.float32)
+
+        # 反向 (I2V)
         local_topo['rsu', 'i2v', 'vehicle'].edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+        local_topo['rsu', 'i2v', 'vehicle'].edge_attr = torch.ones((1, edge_dim), dtype=torch.float32)
 
         local_topo_list.append(local_topo)
 
@@ -167,31 +179,44 @@ def process_env_obs(obs_list, device):
             g_v2v_dst.append(nbr_id)
 
     # 转 Tensor
+    # V2V 填充
     if g_v2v_src:
-        global_topo['vehicle', 'v2v', 'vehicle'].edge_index = torch.tensor([g_v2v_src, g_v2v_dst], dtype=torch.long)
+        edge_index = torch.tensor([g_v2v_src, g_v2v_dst], dtype=torch.long)
+        global_topo['vehicle', 'v2v', 'vehicle'].edge_index = edge_index
+        # [关键修复]
+        num_e = len(g_v2v_src)
+        global_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.ones((num_e, edge_dim), dtype=torch.float32)
     else:
         global_topo['vehicle', 'v2v', 'vehicle'].edge_index = torch.empty((2, 0), dtype=torch.long)
+        global_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.empty((0, edge_dim), dtype=torch.float32)
 
+    # V2I 填充
     if g_v2i_src:
-        global_topo['vehicle', 'v2i', 'rsu'].edge_index = torch.tensor([g_v2i_src, g_v2i_dst], dtype=torch.long)
-        global_topo['rsu', 'i2v', 'vehicle'].edge_index = torch.tensor([g_v2i_dst, g_v2i_src], dtype=torch.long)
+        # V2I
+        edge_index = torch.tensor([g_v2i_src, g_v2i_dst], dtype=torch.long)
+        global_topo['vehicle', 'v2i', 'rsu'].edge_index = edge_index
+        global_topo['vehicle', 'v2i', 'rsu'].edge_attr = torch.ones((len(g_v2i_src), edge_dim), dtype=torch.float32)
+
+        # I2V (反向)
+        edge_index_rev = torch.tensor([g_v2i_dst, g_v2i_src], dtype=torch.long)
+        global_topo['rsu', 'i2v', 'vehicle'].edge_index = edge_index_rev
+        global_topo['rsu', 'i2v', 'vehicle'].edge_attr = torch.ones((len(g_v2i_dst), edge_dim), dtype=torch.float32)
     else:
-        empty = torch.empty((2, 0), dtype=torch.long)
-        global_topo['vehicle', 'v2i', 'rsu'].edge_index = empty
-        global_topo['rsu', 'i2v', 'vehicle'].edge_index = empty
+        empty_idx = torch.empty((2, 0), dtype=torch.long)
+        empty_attr = torch.empty((0, edge_dim), dtype=torch.float32)
 
-    # =========================================================================
-    # Part 3: 批处理与设备转移
-    # =========================================================================
-    dag_batch = Batch.from_data_list(dag_data_list).to(device)
-    local_topo_batch = Batch.from_data_list(local_topo_list).to(device)
+        global_topo['vehicle', 'v2i', 'rsu'].edge_index = empty_idx
+        global_topo['vehicle', 'v2i', 'rsu'].edge_attr = empty_attr
 
-    # Global Topo 只有一个，直接 to device
-    global_topo = global_topo.to(device)
+        global_topo['rsu', 'i2v', 'vehicle'].edge_index = empty_idx
+        global_topo['rsu', 'i2v', 'vehicle'].edge_attr = empty_attr
 
-    # data_utils.py 结尾
-    dag_batch = Batch.from_data_list(dag_data_list).to(device)
-    local_topo_batch = Batch.from_data_list(local_topo_list).to(device)
-    global_topo = global_topo.to(device)
+        # =========================================================================
+        # Part 3: 批处理与设备转移
+        # =========================================================================
+        dag_batch = Batch.from_data_list(dag_data_list).to(device)
+        local_topo_batch = Batch.from_data_list(local_topo_list).to(device)
+        global_topo = global_topo.to(device)
 
-    return dag_batch, local_topo_batch, global_topo, None
+        # 返回3个值，去除多余的 None
+        return dag_batch, local_topo_batch, global_topo

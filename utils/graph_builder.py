@@ -145,7 +145,7 @@ class GraphBuilder:
             n_vel = v.vel / Cfg.MAX_VELOCITY
 
             # [异构算力修复] 基于个体频率计算排队负载
-            wait_time = (v.task_queue_len * Cfg.MEAN_DATA_SIZE) / v.cpu_freq
+            wait_time = (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
             n_load = np.clip(wait_time / Cfg.NORM_MAX_WAIT_TIME, 0, 1)
             n_cpu = v.cpu_freq / Cfg.NORM_MAX_CPU
 
@@ -167,7 +167,7 @@ class GraphBuilder:
 
         # RSU 特征 (固定算力 Cfg.F_RSU)
         r_pos = Cfg.RSU_POS / Cfg.MAP_SIZE
-        r_wait = (rsu_queue_len * Cfg.MEAN_DATA_SIZE) / Cfg.F_RSU
+        r_wait = (rsu_queue_len * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
         r_load = np.clip(r_wait / Cfg.NORM_MAX_WAIT_TIME, 0, 1)
         r_cpu = Cfg.F_RSU / Cfg.NORM_MAX_CPU
         r_feat = [[r_pos[0], r_pos[1], 0.0, 0.0, r_load, r_cpu, 1.0]]
@@ -223,14 +223,27 @@ class GraphBuilder:
                 n_cpu_ratio = np.clip(cpu_ratio, 0.0, 10.0) / 10.0  # RSU优势通常很大
                 v2i_attr_list.append([n_rate, n_cpu_ratio])
 
-            data['vehicle', 'v2i', 'rsu'].edge_index = torch.tensor(np.array([src_v2i, dst_v2i]), dtype=torch.long)
-            data['vehicle', 'v2i', 'rsu'].edge_attr = torch.tensor(v2i_attr_list, dtype=torch.float32)
+                # V2I 正向边
+                data['vehicle', 'v2i', 'rsu'].edge_index = torch.tensor(np.array([src_v2i, dst_v2i]), dtype=torch.long)
+                data['vehicle', 'v2i', 'rsu'].edge_attr = torch.tensor(v2i_attr_list, dtype=torch.float32)
 
-            # 反向边 I2V 通常不承载卸载决策，保持 1 维或对齐即可
-            data['rsu', 'i2v', 'vehicle'].edge_index = torch.tensor(np.array([dst_v2i, src_v2i]), dtype=torch.long)
-        else:
-            data['vehicle', 'v2i', 'rsu'].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data['vehicle', 'v2i', 'rsu'].edge_attr = torch.empty((0, 2), dtype=torch.float32)
-            data['rsu', 'i2v', 'vehicle'].edge_index = torch.empty((2, 0), dtype=torch.long)
+                # --- [关键修复] I2V 反向边 ---
+                # 必须为反向边也填充 edge_attr，保持维度 [E, 2]，否则 GNN 可能会崩溃
+                data['rsu', 'i2v', 'vehicle'].edge_index = torch.tensor(np.array([dst_v2i, src_v2i]), dtype=torch.long)
 
-        return data
+                # 直接复用 v2i 的属性即可满足维度要求 (下行速率通常与上行相关，算力比取倒数或保持占位均可)
+                # 这里简单复用以保证形状匹配
+                data['rsu', 'i2v', 'vehicle'].edge_attr = torch.tensor(v2i_attr_list, dtype=torch.float32)
+
+            else:
+                # 空数据处理：必须同时处理 V2I 和 I2V
+                empty_idx = torch.empty((2, 0), dtype=torch.long)
+                empty_attr = torch.empty((0, 2), dtype=torch.float32)
+
+                data['vehicle', 'v2i', 'rsu'].edge_index = empty_idx
+                data['vehicle', 'v2i', 'rsu'].edge_attr = empty_attr
+
+                data['rsu', 'i2v', 'vehicle'].edge_index = empty_idx
+                data['rsu', 'i2v', 'vehicle'].edge_attr = empty_attr
+
+            return data

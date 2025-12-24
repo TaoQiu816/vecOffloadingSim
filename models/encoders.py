@@ -8,54 +8,52 @@ class DAGTaskEncoder(nn.Module):
     """
     [DAG 任务编码器]
 
-    功能:
-    1. 提取每个子任务的节点特征 (用于动作 Mask 和 Transformer Query)。
-    2. 提取整个 DAG 的全局特征 (用于 Critic 价值评估和功率控制)。
-
+    功能: 提取 DAG 任务的节点级特征和图级特征。
     架构: GATv2 (动态注意力) + Global Pooling
-    理由: GATv2 比普通 GAT 更强，能处理"对于不同查询节点，邻居的重要性是动态变化"的情况。
+    配置: 支持动态层数 (num_layers)，使用 ModuleList 构建。
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim, heads=2):
-        super(DAGTaskEncoder, self).__init__()
-
-        # 第一层 GATv2: 聚合一阶邻居 (前驱/后继)
-        # concat=True -> 输出维度: hidden_dim * heads
-        self.conv1 = GATv2Conv(input_dim, hidden_dim, heads=heads, concat=True)
-
-        # LayerNorm: 防止层数加深后梯度消失/爆炸，加速收敛
-        self.ln1 = LayerNorm(hidden_dim * heads)
-
-        # 第二层 GATv2: 聚合二阶邻居
-        # concat=False -> 输出维度: output_dim
-        self.conv2 = GATv2Conv(hidden_dim * heads, output_dim, heads=1, concat=False)
-
-    def forward(self, x, edge_index, batch=None):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2, heads=2, edge_dim=0):
         """
         Args:
-            x: 节点特征矩阵 [Total_Nodes, Input_Dim]
-            edge_index: 边索引 [2, Num_Edges]
-            batch: (可选) PyG batch 向量，指示每个节点属于哪个图 [Total_Nodes]
-
-        Returns:
-            node_emb: [Total_Nodes, Output_Dim] (节点级特征)
-            graph_emb: [Batch_Size, Output_Dim] (图级特征)
+            edge_dim: 即使 DAG 暂时不用边特征，保留此接口以保持 GATv2Conv 调用的兼容性 (设为 None 或 0)。
         """
-        # Layer 1
-        x = self.conv1(x, edge_index)
-        x = self.ln1(x)
-        x = F.elu(x)  # ELU 通常比 ReLU 在 GNN 中表现更好
-        x = F.dropout(x, p=0.2, training=self.training)
+        super(DAGTaskEncoder, self).__init__()
 
-        # Layer 2
-        node_emb = self.conv2(x, edge_index)
+        self.layers = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        self.num_layers = num_layers
 
-        # Global Pooling (聚合图级特征)
+        # --- Layer 1: Input -> Hidden ---
+        # DAG 边特征通常为空，故 edge_dim=None
+        self.layers.append(GATv2Conv(input_dim, hidden_dim, heads=heads, concat=True, edge_dim=None))
+        self.norms.append(LayerNorm(hidden_dim * heads))
+
+        # --- Layer 2..N-1: Hidden -> Hidden ---
+        mid_dim = hidden_dim * heads
+        for _ in range(num_layers - 2):
+            self.layers.append(GATv2Conv(mid_dim, hidden_dim, heads=heads, concat=True, edge_dim=None))
+            self.norms.append(LayerNorm(mid_dim))
+
+        # --- Layer N: Hidden -> Output ---
+        self.layers.append(GATv2Conv(mid_dim, output_dim, heads=1, concat=False, edge_dim=None))
+        self.last_norm = LayerNorm(output_dim)
+
+    def forward(self, x, edge_index, batch=None):
+        # 循环前 N-1 层
+        for i in range(self.num_layers - 1):
+            x = self.layers[i](x, edge_index)
+            x = self.norms[i](x)
+            x = F.elu(x)
+            x = F.dropout(x, p=0.2, training=self.training)
+
+        # 最后一层
+        node_emb = self.layers[-1](x, edge_index)
+
+        # Global Pooling (图级特征)
         if batch is not None:
-            # 使用 Mean Pooling 获取图的整体语义
             graph_emb = global_mean_pool(node_emb, batch)
         else:
-            # 如果没有 batch (单图推断)，直接取平均
             graph_emb = node_emb.mean(dim=0, keepdim=True)
 
         return node_emb, graph_emb
@@ -63,83 +61,87 @@ class DAGTaskEncoder(nn.Module):
 
 class HeteroTopologyEncoder(nn.Module):
     """
-    [异构网络拓扑编码器]
+    [异构网络拓扑编码器 - 完整修复版]
 
-    功能: 处理 V2X 网络中的异构节点 (Vehicle, RSU) 和异构边 (V2V, V2I, I2V)。
-    架构: HeteroConv (PyG 异构图卷积)
-
-    输入数据说明:
-    由于 Vehicle 和 RSU 的特征维度不同 (self_info=6, rsu_info=1)，
-    我们需要 HeteroConv 来分别处理它们的投影。
+    关键特性:
+    1. edge_dim 参数化: 从外部接收边特征维度，不硬编码 Config。
+    2. Fallback 机制: 处理孤立节点 (无边) 的情况。
+    3. 异构图处理: 区分 V2V (自环) 和 V2I/I2V (无自环)。
     """
 
-    def __init__(self, vehicle_dim, rsu_dim, hidden_dim, output_dim, heads=2):
+    def __init__(self, vehicle_dim, rsu_dim, edge_dim, hidden_dim, output_dim, num_layers=2, heads=2):
+        """
+        Args:
+            edge_dim (int): 边特征维度 (必须传入，对应 Bandwidth 和 CpuRatio)。
+        """
         super(HeteroTopologyEncoder, self).__init__()
 
-        # --- 第一层异构卷积 ---
-        # 针对每种边类型定义不同的 GAT 算子
-        self.conv1 = HeteroConv({
+        self.num_layers = num_layers
 
-            # 1. V2V (Vehicle-to-Vehicle): 同构交互
-            # 车辆间交换位置、负载、速度信息
-            ('vehicle', 'v2v', 'vehicle'): GATv2Conv(vehicle_dim, hidden_dim,
-                                                     heads=heads, concat=True, add_self_loops=True),
+        # [新增] 兜底投影层 (处理孤立节点，防止维度不匹配)
+        self.veh_fallback = nn.Linear(vehicle_dim, output_dim)
+        self.rsu_fallback = nn.Linear(rsu_dim, output_dim)
 
-            # 2. V2I (Vehicle-to-RSU): 上报信息
-            # 车辆将自身状态传给 RSU (RSU 聚合周围车辆信息)
-            # (-1, -1) 表示 Lazy Init，PyG 会根据输入自动推断源/目标维度
-            ('vehicle', 'v2i', 'rsu'): GATv2Conv((vehicle_dim, rsu_dim), hidden_dim,
-                                                 heads=heads, concat=True, add_self_loops=False),
+        self.layers = nn.ModuleList()
 
-            # 3. I2V (RSU-to-Vehicle): 广播/反馈
-            # RSU 将全局拥堵信息反馈给车辆
-            ('rsu', 'i2v', 'vehicle'): GATv2Conv((rsu_dim, vehicle_dim), hidden_dim,
-                                                 heads=heads, concat=True, add_self_loops=False),
+        # --- Layer 1 ---
+        # 必须显式传入 edge_dim
+        self.layers.append(HeteroConv({
+            ('vehicle', 'v2v', 'vehicle'): GATv2Conv(
+                vehicle_dim, hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=True
+            ),
+            ('vehicle', 'v2i', 'rsu'): GATv2Conv(
+                (vehicle_dim, rsu_dim), hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=False
+            ),
+            ('rsu', 'i2v', 'vehicle'): GATv2Conv(
+                (rsu_dim, vehicle_dim), hidden_dim, heads=heads, edge_dim=edge_dim, concat=True, add_self_loops=False
+            ),
+        }, aggr='sum'))
 
-        }, aggr='sum')  # Sum 聚合能模拟无线信道的"叠加干扰"特性
+        # --- Middle & Last Layers ---
+        mid_dim = hidden_dim * heads
+        for i in range(1, num_layers):
+            is_last = (i == num_layers - 1)
+            out_d = output_dim if is_last else hidden_dim
+            n_heads = 1 if is_last else heads
+            do_concat = not is_last
 
-        # 中间层维度 (concat=True 后)
-        in_dim_l2 = hidden_dim * heads
+            self.layers.append(HeteroConv({
+                ('vehicle', 'v2v', 'vehicle'): GATv2Conv(
+                    mid_dim, out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=True
+                ),
+                ('vehicle', 'v2i', 'rsu'): GATv2Conv(
+                    (mid_dim, mid_dim), out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=False
+                ),
+                ('rsu', 'i2v', 'vehicle'): GATv2Conv(
+                    (mid_dim, mid_dim), out_d, heads=n_heads, edge_dim=edge_dim, concat=do_concat, add_self_loops=False
+                ),
+            }, aggr='sum'))
 
-        # --- 第二层异构卷积 ---
-        self.conv2 = HeteroConv({
-            ('vehicle', 'v2v', 'vehicle'): GATv2Conv(in_dim_l2, output_dim, heads=1, concat=False),
-            ('vehicle', 'v2i', 'rsu'): GATv2Conv(in_dim_l2, output_dim, heads=1, concat=False),
-            ('rsu', 'i2v', 'vehicle'): GATv2Conv(in_dim_l2, output_dim, heads=1, concat=False),
-        }, aggr='sum')
-
-        # 归一化层 (针对不同类型的节点分别归一化)
         self.ln_veh = LayerNorm(output_dim)
         self.ln_rsu = LayerNorm(output_dim)
 
-    def forward(self, x_dict, edge_index_dict):
-        """
-        Args:
-            x_dict (dict): {'vehicle': [N_v, 6], 'rsu': [N_r, 1]}
-            edge_index_dict (dict): {('vehicle','v2v','vehicle'): [2, E], ...}
+    def forward(self, x_dict, edge_index_dict, edge_attr_dict):
+        # [关键] 鲁棒性检查: 如果没有边，直接使用线性投影
+        has_edges = len(edge_index_dict) > 0 and any(e.size(1) > 0 for e in edge_index_dict.values())
 
-        Returns:
-            out_dict (dict): {'vehicle': [N_v, Out_Dim], 'rsu': [N_r, Out_Dim]}
-            这些 Embedding 将被传入 Transformer 作为 Key/Value
-        """
-        # [鲁棒性检查] 防止某些 Episode 中没有 V2V 边导致 Crash
-        if len(edge_index_dict) == 0:
-            # 如果没有边，直接做一个线性投影返回 (Skip Connection)
-            # 注意: 这里简化处理，实际工程中最好保留投影层
-            return x_dict
+        if not has_edges:
+            out = {}
+            if 'vehicle' in x_dict: out['vehicle'] = self.veh_fallback(x_dict['vehicle'])
+            if 'rsu' in x_dict: out['rsu'] = self.rsu_fallback(x_dict['rsu'])
+            return out
 
-            # Layer 1
-        x_dict = self.conv1(x_dict, edge_index_dict)
-        x_dict = {key: F.elu(x) for key, x in x_dict.items()}
-        x_dict = {key: F.dropout(x, p=0.2, training=self.training) for key, x in x_dict.items()}
+        x = x_dict
+        for i, conv in enumerate(self.layers):
+            # 必须传入 edge_attr_dict
+            x = conv(x, edge_index_dict, edge_attr_dict=edge_attr_dict)
 
-        # Layer 2
-        x_dict = self.conv2(x_dict, edge_index_dict)
+            if i < self.num_layers - 1:
+                x = {key: F.elu(val) for key, val in x.items()}
+                # dropout 可选
+                # x = {key: F.dropout(val, p=0.2, training=self.training) for key, val in x.items()}
 
-        # Layer Norm (分类处理)
-        if 'vehicle' in x_dict:
-            x_dict['vehicle'] = self.ln_veh(x_dict['vehicle'])
-        if 'rsu' in x_dict:
-            x_dict['rsu'] = self.ln_rsu(x_dict['rsu'])
+        if 'vehicle' in x: x['vehicle'] = self.ln_veh(x['vehicle'])
+        if 'rsu' in x: x['rsu'] = self.ln_rsu(x['rsu'])
 
-        return x_dict
+        return x

@@ -1,6 +1,7 @@
 import numpy as np
 from configs.config import SystemConfig as Cfg
 
+
 class Vehicle:
     def __init__(self, v_id, pos):
         """
@@ -15,7 +16,8 @@ class Vehicle:
         self.pos = np.array(pos, dtype=float)
 
         # --- 移动性初始化 (Mobility Model) ---
-        speed = np.random.uniform(10.0, 20.0)  # 车辆速度 (随机生成在 [10, 20] m/s 之间)
+        # [修正] 使用 Config 中的参数，而不是硬编码 10.0/20.0
+        speed = np.random.uniform(Cfg.VEL_MIN, Cfg.VEL_MAX)
         angle = np.random.uniform(0, 2 * np.pi)  # 随机方向
         self.vel = np.array([speed * np.cos(angle), speed * np.sin(angle)])
 
@@ -26,15 +28,17 @@ class Vehicle:
         # --- 任务状态 ---
         self.task_dag = None  # 车辆的 DAG 任务
         self.curr_subtask = None  # 当前正在处理的子任务 ID
-        self.curr_target = None  # 当前任务的卸载目标 ('Local', 'RSU', neighbor_id)
+
+        # [关键修正] 初始化为 'Local'，防止 Env.reset() 计算 CFT 时报错
+        self.curr_target = 'Local'
 
         # --- 通信状态 ---
         self.tx_power_dbm = Cfg.TX_POWER_MIN_DBM  # 发射功率 (受 RL 动作控制)
         self.last_target = None  # 记录上一次动作 (用于日志或调试)
 
         # --- CPU 频率初始化 ---
-        # 从配置文件中读取最小和最大 CPU 频率，并生成一个随机值
-        self.cpu_freq = np.random.uniform(Cfg.MIN_VEHICLE_CPU_FREQ, Cfg.MAX_VEHICLE_CPU_FREQ)  # Hz (单位为Hz)
+        # 异构算力：从配置范围中随机采样
+        self.cpu_freq = np.random.uniform(Cfg.MIN_VEHICLE_CPU_FREQ, Cfg.MAX_VEHICLE_CPU_FREQ)
 
     @property
     def is_queue_full(self):

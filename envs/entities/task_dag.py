@@ -102,7 +102,8 @@ class DAGTask:
 
     def step_progress(self, subtask_id, comp_speed, comm_speed, dt):
         """
-        推进单个子任务的进度
+        [修复版] 推进单个子任务的进度
+        修复了"传输完成后立即返回导致时间浪费"的 Bug。
 
         Args:
             subtask_id: 子任务索引
@@ -116,32 +117,44 @@ class DAGTask:
         if self.status[subtask_id] != 2:
             return False  # 非 RUNNING 状态不更新
 
+        # 用于记录当前 step 剩余可用的时间
+        # 初始为完整的时间步长
+        remaining_dt = dt
+
+        # ==========================================
         # 1. 传输阶段 (Transmission)
-        # 如果还有数据没传完，优先扣除数据
-        # 注意: 如果是 Local 执行，comm_speed 应该非常大，使得 rem_data 瞬间为 0
+        # ==========================================
         if self.rem_data[subtask_id] > 0:
-            transmitted = comm_speed * dt
-            self.rem_data[subtask_id] -= transmitted
+            # 计算传完剩余数据需要多少时间
+            # 加上 1e-9 防止除零
+            time_to_finish_data = self.rem_data[subtask_id] / (comm_speed + 1e-9)
 
-            # 如果这步传输耗尽了时间 (传输没完成)，则不进行计算
-            # 简化逻辑: 只要还在传数据，本 step 就不算计算
-            if self.rem_data[subtask_id] > 0:
-                return False
+            if time_to_finish_data > remaining_dt:
+                # 情况 A: 本 step 时间不够传完数据
+                transmitted = comm_speed * remaining_dt
+                self.rem_data[subtask_id] -= transmitted
+                return False  # 时间耗尽，仍在传输，直接返回
             else:
+                # 情况 B: 本 step 内可以传完数据
+                # 扣除传输消耗的时间，保留剩余时间给计算阶段
                 self.rem_data[subtask_id] = 0.0
-                # 数据传完了，本 step 剩余时间忽略，下个 step 开始全速计算
-                return False
+                remaining_dt -= time_to_finish_data
+                # 【关键修改】不要 return False，继续向下执行计算逻辑！
 
+        # ==========================================
         # 2. 计算阶段 (Computation)
-        if self.rem_comp[subtask_id] > 0:
-            computed = comp_speed * dt
+        # ==========================================
+        # 只有当数据传输完成（rem_data == 0）且还有剩余时间时，才进行计算
+        if self.rem_comp[subtask_id] > 0 and remaining_dt > 0:
+            # 利用剩余时间进行计算
+            computed = comp_speed * remaining_dt
             self.rem_comp[subtask_id] -= computed
 
             # 如果计算完成
             if self.rem_comp[subtask_id] <= 0:
                 self.rem_comp[subtask_id] = 0.0
                 self._mark_done(subtask_id)
-                return True
+                return True # 任务在本 step 完成
 
         return False
 

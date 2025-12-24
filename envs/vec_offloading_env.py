@@ -148,8 +148,9 @@ class VecOffloadingEnv(gym.Env):
                 c_spd = rates_v2i.get(v.id, 1e-6)  # 获取 V2I 速率
             elif isinstance(tgt, int):
                 # V2V 情况
-                comp_spd = v.cpu_freq  # 使用车辆的 CPU 频率代替固定值
                 target_veh = self.vehicles[tgt]
+                comp_spd = target_veh.cpu_freq  # ✅ 修正：使用"目标邻居"的算力
+
                 # 计算点对点 V2V 速率
                 c_spd = self.channel.compute_one_rate(v, target_veh.pos, link_type='V2V')
 
@@ -187,7 +188,9 @@ class VecOffloadingEnv(gym.Env):
         cft_diff = self.last_global_cft - current_global_cft
 
         # 归一化与缩放
-        step_reward = (cft_diff / len(self.vehicles)) * Cfg.REWARD_SCALE
+        #step_reward = (cft_diff / len(self.vehicles)) * Cfg.REWARD_SCALE
+        # 修正方案 B (推荐): 直接用总增益
+        step_reward = cft_diff * Cfg.REWARD_SCALE  # (假设 Scale=0.1 -> Reward=0.1，合理)
 
         # 更新基准
         self.last_global_cft = current_global_cft
@@ -426,7 +429,10 @@ class VecOffloadingEnv(gym.Env):
 
         for v in self.vehicles:
             if v.task_dag.is_failed:
-                total_cft += (self.time + 1000.0)  # 失败惩罚
+                # [修改建议] 将 1000.0 改为 10.0
+                # 理由：正常任务耗时约 0.1~0.5s，10.0 已经是巨大的惩罚 (相当于耗时增加了几十倍)
+                # 避免 -1000 这种数值导致 PPO Critic 网络梯度爆炸
+                total_cft += (self.time + 10.0)  # 失败惩罚
                 continue
 
             # 如果已经完成
@@ -465,13 +471,17 @@ class VecOffloadingEnv(gym.Env):
             comm_speed = max(comm_speed, 1e-6)
 
             for i in range(v.task_dag.num_subtasks):
-                # 仅计算未完成的任务
-                if v.task_dag.status[i] != 3:  # 3 is DONE
+                if v.task_dag.status[i] == 3:  # DONE
+                    exec_times[i] = 0.0
+                elif i == v.curr_subtask:  # 当前正在调度的任务，使用当前动作的速率
                     t_trans = rem_datas[i] / comm_speed
                     t_comp = rem_comps[i] / proc_speed
                     exec_times[i] = t_trans + t_comp
-                else:
-                    exec_times[i] = 0.0
+                else:  # 未来任务：默认按本地计算估算 (Baseline)
+                    # 这样奖励函数反映的是：当前动作相比于“默认本地”带来的增量收益
+                    t_trans = 0.0  # 本地无传输
+                    t_comp = rem_comps[i] / v.cpu_freq  # 本地算力
+                    exec_times[i] = t_trans + t_comp
 
             # 3. 计算关键路径 (最长路径)
             # 简单的动态规划: Earliest Finish Time (EFT)
