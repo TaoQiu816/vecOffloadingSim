@@ -124,26 +124,27 @@ class MAPPOAgent:
             action_power_logprob = dist_continuous.log_prob(action_power_sample).sum(dim=-1)
 
             # --- C. 动作后处理 ---
-            # 截断到 [0.01, 1.0] 用于环境执行，但 Buffer 存原始 sample
             action_power_clamped = torch.clamp(action_power_sample, 0.01, 1.0)
 
+            # [新增关键修正] 计算联合 LogProb
+            # 原因: PPO 更新时计算 ratios 需要 (log_d + log_p) - old_log_total
+            # 如果不在此处合并，Buffer 可能会存错，导致 Loss 爆炸
+            logprob_total = action_discrete_logprob + action_power_logprob
+
         return {
-            'action_d': action_discrete,  # 离散动作索引 (Tensor)
-            'action_p': action_power_sample,  # 原始采样功率 (Tensor, for Buffer)
-            'power_val': action_power_clamped,  # 截断后功率 (Tensor, for Env)
+            'action_d': action_discrete,
+            'action_p': action_power_sample,
+            'power_val': action_power_clamped,
             'logprob_d': action_discrete_logprob,
-            'logprob_p': action_power_logprob
+            'logprob_p': action_power_logprob,
+            'logprob_total': logprob_total  # [新增] 存入 Buffer 供 update 使用
         }
 
     def get_value(self, dag_list, topo_list):
-        """
-        [辅助] 获取状态价值 V(s) 用于 GAE 计算
-        """
+        """[辅助] 获取状态价值"""
         dag_batch = Batch.from_data_list(dag_list).to(self.device)
         topo_batch = Batch.from_data_list(topo_list).to(self.device)
-
         with torch.no_grad():
-            # Critic Forward -> [Batch, 1] -> [Batch]
             values = self.critic(dag_batch, topo_batch).squeeze(-1)
         return values
 
@@ -221,6 +222,7 @@ class MAPPOAgent:
                     mb_act_d = mb_act_d.squeeze(-1)
 
                 # 处理 Logprobs 维度 [Batch, 1] -> [Batch]
+                # [关键修正] 确保 old_logprobs 是一维的 [Batch]
                 mb_old_logprobs = mb_old_logprobs.to(self.device)
                 if mb_old_logprobs.dim() > 1:
                     mb_old_logprobs = mb_old_logprobs.squeeze(-1)
@@ -255,6 +257,8 @@ class MAPPOAgent:
                 total_new_logprob = new_logprobs_d + new_logprobs_p
 
                 # D. 概率比率 (Importance Sampling Ratio)
+                # [关键修正] 确保维度对齐，防止 broadcasting 错误导致 ratio 异常
+                # mb_old_logprobs 必须是在 select_action 里计算好的 'logprob_total'
                 ratios = torch.exp(total_new_logprob - mb_old_logprobs)
 
                 # E. PPO Clip Loss
@@ -276,9 +280,15 @@ class MAPPOAgent:
                 # 梯度裁剪 (防止梯度爆炸)
                 nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-
                 self.optimizer.step()
 
                 avg_loss += loss.item()
+                # [新增关键修正] 显式释放 PyG Batch 对象，解决 27G 内存泄漏
+                # PyG 的 Batch 对象比较重，且容易在 Loop 中残留引用
+                del mb_dag, mb_topo, logits, raw_power
+
+        # [新增] 每一轮 update 结束后清理缓存
+        if self.device == 'cuda':
+            torch.cuda.empty_cache()
 
         return avg_loss / self.K_epochs

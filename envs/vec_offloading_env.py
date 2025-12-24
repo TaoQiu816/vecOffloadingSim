@@ -188,24 +188,30 @@ class VecOffloadingEnv(gym.Env):
         # 假设 cft_diff = 0.1s (全系统节省了 0.1秒)
         cft_diff = self.last_global_cft - current_global_cft
 
-        # B. 拥堵惩罚 (负值)
-        # 假设 total_queue = 40
-        total_vehicle_queue = sum([v.task_queue_len for v in self.vehicles])
-        total_rsu_queue = self.rsu_queue_curr
-        total_sys_queue = total_vehicle_queue + total_rsu_queue
+        # B. [修改] 拥堵惩罚 (从 队列长度 改为 等效等待时间)
+        # 原因: 量纲统一 (秒)，更能反映真实负载压力
 
-        # C. 计算 全局总奖励 (Global Sum Reward)
-        # 逻辑: (0.1s * 10.0) - (40 * 0.05) = 1.0 - 2.0 = -1.0
-        # 这样正负抵消后的数值非常健康
-        global_reward = (cft_diff * Cfg.REWARD_SCALE) - (total_sys_queue * Cfg.W_QUEUE)
+        # 计算所有车辆的本地等待时间 (秒)
+        # logic: sum(queue_len * data_size / cpu_freq)
+        total_veh_wait_time = sum([
+            (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
+            for v in self.vehicles
+        ])
 
-        # D. [核心修改] 对所有车辆取平均 (Mean Reward)
-        # PPO 喜欢这个数值！
-        # 如果 N=20: -1.0 / 20 = -0.05 (单步微小惩罚，正常)
-        # 如果任务失败: -50 / 20 = -2.5 (瞬间剧痛，正常)
+        # 计算 RSU 的等待时间 (秒)
+        rsu_wait_time = (self.rsu_queue_curr * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
+
+        total_sys_wait_time = total_veh_wait_time + rsu_wait_time
+
+        # C. 计算 全局总奖励
+        # 此时 W_QUEUE 的物理意义变成了: "每 1秒 的拥堵等待，相当于扣多少分"
+        # 建议 W_QUEUE 取值 0.1 ~ 0.5 (表示拥堵比完成时间稍微次要一点，但不能忽略)
+        global_reward = (cft_diff * Cfg.REWARD_SCALE) - (total_sys_wait_time * Cfg.W_QUEUE)
+
+        # D. 平均化
         avg_reward = global_reward / len(self.vehicles)
 
-        # 广播给每个智能体
+        # 广播给每个智能体 (保持 Cooperative 设定)
         rewards = [avg_reward] * len(self.vehicles)
 
         # 更新基准
@@ -289,7 +295,7 @@ class VecOffloadingEnv(gym.Env):
             est_v2i_rate = self._simulate_channel_rate(dist_rsu, 'V2I')
 
             # 本地等待时间
-            self_wait = (v.task_queue_len * Cfg.MEAN_DATA_SIZE) / v.cpu_freq
+            self_wait = (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
 
             self_info = np.array([
                 v.vel[0] / Cfg.MAX_VELOCITY, v.vel[1] / Cfg.MAX_VELOCITY,  # 归一化速度
@@ -390,7 +396,7 @@ class VecOffloadingEnv(gym.Env):
             obs_list.append({
                 'node_x': node_feats,
                 'self_info': self_info,
-                'rsu_info': [rsu_load_norm],
+                'rsu_info': [rsu_load_norm],  # 维度 [1] -> 对应 Config.RSU_INPUT_DIM = 1
                 'adj': v.task_dag.adj,
                 'neighbors': neighbors,
                 'task_mask': task_schedulable,

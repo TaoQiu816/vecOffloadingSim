@@ -109,8 +109,9 @@ def main():
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
         # 学习率衰减策略
+        # [修改] 使用 Config 中的衰减率 TC.LR_DECAY_RATE (0.92) 而不是硬编码的 0.9
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
-            agent.decay_lr(decay_rate=0.9)
+            agent.decay_lr(decay_rate=TC.LR_DECAY_RATE)
             print(f"[Info] LR Decayed at Episode {episode}")
 
         # 重置环境，获取初始观测
@@ -174,13 +175,13 @@ def main():
             values = agent.get_value(dag_graph_list, topo_graph_list)
 
             # G. 存入 Buffer
-            # 注意: logprob 应该是 离散+连续 的联合概率对数
+            # [修改] 使用 Agent 返回的 logprob_total，确保维度和数值的绝对正确
             buffer.add(
                 dag_list=dag_graph_list,
                 topo_list=topo_graph_list,
                 act_d=action_dict['action_d'],
                 act_c=action_dict['action_p'],  # 存原始采样值 (未截断)
-                logprob=action_dict['logprob_d'] + action_dict['logprob_p'],
+                logprob=action_dict['logprob_total'],  # 关键修改：直接使用 total 防止维度广播错误
                 val=values,
                 rew=rewards,
                 done=done
@@ -284,7 +285,8 @@ def main():
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
 
         # 4. 清空 Buffer
-        buffer.reset()
+        # [修改] 使用 buffer.clear() 替代 reset()，确保显式清理 PyG 对象引用
+        buffer.clear()
 
         # 显存清理
         if episode % 10 == 0 and device == "cuda":

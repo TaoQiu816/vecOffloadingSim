@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
+from torch.utils.tensorboard import SummaryWriter
 
 
 # --- 自定义编码器，用于解决 TypeError: Object of type ndarray is not JSON serializable ---
@@ -22,6 +23,9 @@ class NumpyEncoder(json.JSONEncoder):
             return int(obj)
         if isinstance(obj, np.floating):
             return float(obj)
+        # [新增] 兼容处理 PyTorch Tensor
+        if isinstance(obj, torch.Tensor):
+            return obj.item() if obj.numel() == 1 else obj.tolist()
         return super(NumpyEncoder, self).default(obj)
 
 
@@ -43,29 +47,27 @@ class DataRecorder:
         if not os.path.exists("./data"):
             os.makedirs("./data")
 
-        # 2. 创建带时间戳的实验目录 (e.g., data/MAPPO_N12-16_Veh20_2023-10-01_12-00-00)
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
         self.exp_dir = os.path.join("./data", f"{experiment_name}_{timestamp}")
 
         if not os.path.exists(self.exp_dir):
             os.makedirs(self.exp_dir)
 
-        # 3. 创建子目录
-        self.model_dir = os.path.join(self.exp_dir, "models")  # 存放模型权重
-        self.plot_dir = os.path.join(self.exp_dir, "plots")  # 存放生成的曲线图
+        self.model_dir = os.path.join(self.exp_dir, "models")
+        self.plot_dir = os.path.join(self.exp_dir, "plots")
 
         os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.plot_dir, exist_ok=True)
 
-        print(f"[DataRecorder] Experiment data will be saved to: {self.exp_dir}")
+        self.step_log_path = os.path.join(self.exp_dir, "step_log.csv")
+        self.episode_log_path = os.path.join(self.exp_dir, "episode_log.csv")
 
-        # 4. 初始化 CSV 文件路径
-        self.step_log_path = os.path.join(self.exp_dir, "step_log.csv")  # 详细到每一步的日志
-        self.episode_log_path = os.path.join(self.exp_dir, "episode_log.csv")  # 每个 Episode 的汇总日志
-
-        # 标记是否已经写入了 CSV 表头 (避免追加模式下重复写入表头)
         self.step_header_written = False
         self.episode_header_written = False
+
+        # [新增] 初始化 TensorBoard Writer
+        # log_dir 设置为服务器 TensorBoard 监控的路径
+        self.writer = SummaryWriter(log_dir=os.path.join(self.exp_dir, "tb_logs"))
 
     def save_config(self, config_dict):
         """
@@ -75,7 +77,6 @@ class DataRecorder:
         try:
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config_dict, f, indent=4, ensure_ascii=False, cls=NumpyEncoder)
-            print(f"[DataRecorder] Config saved to {config_path}")
         except Exception as e:
             print(f"[Error] Failed to save config: {e}")
 
@@ -83,61 +84,67 @@ class DataRecorder:
         """
         批量写入 Step 级日志 (train.py 中每个 Episode 结束时调用一次)
         """
-        if not step_data_list:
-            return
-
+        if not step_data_list: return
         keys = step_data_list[0].keys()
-        file_exists = os.path.isfile(self.step_log_path)
-
         try:
+            # 使用 'a' 模式追加
             with open(self.step_log_path, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=keys)
-                if not file_exists or not self.step_header_written:
+                if not self.step_header_written:
                     writer.writeheader()
                     self.step_header_written = True
                 writer.writerows(step_data_list)
         except Exception as e:
-            print(f"[Error] Failed to log step data: {e}")
+            print(f"[Error] Failed to log step: {e}")
 
     def log_episode(self, episode_data):
         """
         写入 Episode 级汇总日志
         """
-        if not episode_data:
-            return
-
+        if not episode_data: return
         keys = episode_data.keys()
-        file_exists = os.path.isfile(self.episode_log_path)
-
         try:
             with open(self.episode_log_path, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=keys)
-                if not file_exists or not self.episode_header_written:
+                if not self.episode_header_written:
                     writer.writeheader()
                     self.episode_header_written = True
                 writer.writerow(episode_data)
+            # [新增] 将数据写入 TensorBoard
+            step = episode_data['episode']
+            for key, value in episode_data.items():
+                if isinstance(value, (int, float)):
+                    self.writer.add_scalar(key, value, step)
         except Exception as e:
-            print(f"[Error] Failed to log episode data: {e}")
+            print(f"[Error] Failed to log episode: {e}")
 
+        # =========================================================================
+        # [关键修改 1] 完善模型保存策略 (Three-Tier Saving Strategy)
+        # =========================================================================
     def save_model(self, agent, episode, is_best=False):
         """
-        保存模型权重 (Checkpoint)
-        [关键] 包含了 power_log_std 的保存，这是连续动作的关键参数。
+        保存模型权重 (State Dict)。
         """
-        name = "best_model.pth" if is_best else f"model_ep{episode}.pth"
-        save_path = os.path.join(self.model_dir, name)
+        save_dict = {
+            'episode': episode,
+            'actor_state_dict': agent.actor.state_dict(),
+            'critic_state_dict': agent.critic.state_dict(),
+            # 必须保存这个，否则连续动作的探索方差会丢失
+            'power_log_std': getattr(agent, 'power_log_std', None),
+            # 这里的属性名必须与 MAPPOAgent 中的 self.optimizer 一致
+            'optimizer_state_dict': agent.optimizer.state_dict()
+        }
 
-        try:
-            checkpoint = {
-                'episode': episode,
-                'actor_state_dict': agent.actor.state_dict(),
-                'critic_state_dict': agent.critic.state_dict(),
-                'optimizer_state_dict': agent.optimizer.state_dict(),
-                'power_log_std': agent.power_log_std.data  # 保存可学习的方差参数
-            }
-            torch.save(checkpoint, save_path)
-        except Exception as e:
-            print(f"[Error] Failed to save model: {e}")
+        # 1. 保存 Best (覆盖)
+        if is_best:
+            torch.save(save_dict, os.path.join(self.model_dir, "best_model.pth"))
+
+        # 2. 保存 Checkpoint (每 500 轮留底一个，用于回溯分析)
+        if episode > 0 and episode % 500 == 0:
+            torch.save(save_dict, os.path.join(self.model_dir, f"model_ep{episode}.pth"))
+
+        # 3. 始终更新 Latest (覆盖)，用于断点续训
+        torch.save(save_dict, os.path.join(self.model_dir, "latest_model.pth"))
 
     def auto_plot(self):
         """
@@ -265,42 +272,57 @@ class DataRecorder:
 
     def plot_agent_reward_distribution(self):
         """
-        [多智能体分析] 绘制每个智能体的累积奖励分布 (Boxplot)。
-        用于观察是否存在某些车辆因为位置偏僻或算力低而长期获得低分。
+        绘制智能体奖励分布。
+        优化: 避免使用 pd.read_csv 读取整个几 GB 的 step_log.csv。
         """
         if not os.path.exists(self.step_log_path):
             return
 
         try:
-            # 读取 step log (只取最后 20 个 episode 进行统计，避免数据量过大)
-            # 优化: 使用 chunksize 读取或者只读部分行，这里简单起见读全部然后 filter
-            df = pd.read_csv(self.step_log_path)
+            # 方案: 只读取最后 N 行 (Tail)，而不是全部读取
+            # 估算: 20 agents * 100 steps * 20 episodes = 40000 行
+            # 使用 chunksize 分块读取，只保留最后一块
 
-            # [鲁棒性] 确保 reward 是数字类型 (csv 中可能是 string)
-            df['reward'] = pd.to_numeric(df['reward'], errors='coerce')
+            chunk_size = 50000
+            last_chunk = None
 
-            # 筛选最后 20 个 Episode
+            # 分块读取，迭代到最后
+            for chunk in pd.read_csv(self.step_log_path, chunksize=chunk_size):
+                last_chunk = chunk
+
+            if last_chunk is None or last_chunk.empty:
+                return
+
+            df = last_chunk
+
+            # 再次筛选，确保只取最后 20 个 Episode (因为 chunk 可能包含更多)
             last_eps = df['episode'].unique()[-20:]
             df_recent = df[df['episode'].isin(last_eps)]
 
-            # 按 Episode 和 Veh_ID 分组求奖励和 (Sum Reward per Episode per Agent)
+            if df_recent.empty: return
+
+            # 确保数据类型正确
+            df_recent.loc[:, 'reward'] = pd.to_numeric(df_recent['reward'], errors='coerce')
+
+            # 绘图逻辑不变
             agent_rewards = df_recent.groupby(['episode', 'veh_id'])['reward'].sum().unstack()
 
-            # 绘图
             plt.figure(figsize=(12, 6))
-            # Boxplot 能显示中位数、四分位数和异常值
             agent_rewards.boxplot()
+            plt.title('Agent Reward Distribution (Last 20 Eps)', fontsize=14)
+            plt.xlabel('Vehicle ID')
+            plt.ylabel('Reward')
+            plt.grid(True, linestyle='--', alpha=0.5)
 
-            plt.title('Individual Agent Reward Distribution (Last 20 Episodes)', fontsize=14, fontweight='bold')
-            plt.xlabel('Vehicle ID', fontsize=12)
-            plt.ylabel('Episode Total Reward', fontsize=12)
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-
-            save_path = os.path.join(self.plot_dir, 'agent_reward_boxplot.png')
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(os.path.join(self.plot_dir, 'agent_reward_boxplot.png'), dpi=100)
             plt.close()
-            print(f"[DataRecorder] Agent distribution plot saved.")
 
         except Exception as e:
-            # 这里的报错不应中断主流程
-            print(f"[Warning] Could not generate agent distribution plot: {e}")
+            print(f"[Warning] Agent distribution plot skipped due to error: {e}")
+
+    def close(self):
+        """
+        关闭 TensorBoard Writer，确保所有缓冲数据都已写入磁盘。
+        """
+        if hasattr(self, 'writer'):
+            self.writer.close()
