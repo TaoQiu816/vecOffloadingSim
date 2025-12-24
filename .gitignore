@@ -1,0 +1,35 @@
+# ==================== Python项目通用忽略 ====================
+# 字节码文件（缓存文件）
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.whl
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境（本地/服务器环境，无需上传）
+venv/
+env/
+*.env/
+miniconda3/
+anaconda3/
+(vec_sim_v2)/
+(sim_env)/
+
+# ==================== 系统/工具忽略 ====================
+# Mac系统冗余文件
+.DS_Store
+__MACOSX/
+
+# Windows系统冗余文件
+Thumbs.db
+Desktop.ini
+
+# PyCharm IDE配置文件（个人配置，无需共享）
+.idea/
+*.iml
+*.iws
+*.ipr
+
