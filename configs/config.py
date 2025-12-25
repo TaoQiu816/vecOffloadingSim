@@ -43,7 +43,7 @@ class SystemConfig:
     C_LIGHT = 3e8  # 光速
 
     # 带宽 (Hz)
-    BW_V2I = 25e6  # 25 MHz
+    BW_V2I = 40e6  # 25 MHz
     BW_V2V = 10e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
 
     # 噪声参数
@@ -67,7 +67,7 @@ class SystemConfig:
     PL_BETA_V2I = 37.6
 
     # V2V 模型通常更为复杂，此处简化为 Log-distance
-    ALPHA_V2V = 3.0  # 路损指数 (遮挡严重)
+    ALPHA_V2V = 3.5  # 路损指数 (遮挡严重)
 
     # 兼容旧代码的简单模型参数 (若 ChannelModel 未更新)
     ALPHA_V2I = 2.5
@@ -111,16 +111,18 @@ class SystemConfig:
 
     # 单个子任务数据量 (Bits) -> 1 Mbit ~ 3 Mbit
     # 明确乘以 8，转换为 bit
-    MIN_DATA = 50 * 1024 * 8  # 50 KB -> bits
+    MIN_DATA = 200 * 1024 * 8  # 50 KB -> bits
     MAX_DATA = 500 * 1024 * 8  # 500 KB -> bits
 
     # 对应文献 100 KB ~ 500 KB（边传输量）
     MIN_EDGE_DATA = 100 * 1024 * 8
     MAX_EDGE_DATA = 500 * 1024 * 8
 
-    # 单个子任务计算量 (Cycles)
-    MIN_COMP = 5.0 * 1e7
-    MAX_COMP = 1.0 * 1e8
+    # [大幅提升] 计算量: 模拟 AI 推理/复杂计算
+    # 本地算 0.5s ~ 1.0s，RSU 算 0.04s ~ 0.08s
+    # 这样 RSU 的 25GHz 优势才能抵消掉 0.x 秒的传输延迟
+    MIN_COMP = 0.8 * 1e9  # 8亿次
+    MAX_COMP = 1.5 * 1e9  # 15亿次
 
     # 统计参考值
     MEAN_DATA_SIZE = (MIN_DATA + MAX_DATA) / 2
@@ -141,15 +143,15 @@ class SystemConfig:
     # DEADLINE_FACTOR = 1.2  # 默认平均值
     # [修改] Deadline 更加宽容一点，减少因物理环境不可能完成导致的“无助感”
     DEADLINE_FACTOR_MIN = 0.8  # 0.8
-    DEADLINE_FACTOR_MAX = 1.5  # 1.5
-    DEADLINE_FACTOR = 1.4
+    DEADLINE_FACTOR_MAX = 1.2  # 1.5
+    DEADLINE_FACTOR = 1.0
 
     # =========================================================================
     # 6. 强化学习归一化常量 (RL Normalization)
     # =========================================================================
     # 资源特征归一化
     NORM_MAX_CPU = 25.0 * 1e9  # 基准: RSU 频率
-    NORM_MAX_COMP = 1.2 * 1e8  # 适应 1e8 的计算量
+    NORM_MAX_COMP = 2.0 * 1e9  # 适应 1e8 的计算量
     NORM_MAX_DATA = 5.0 * 1e6  # 适应约 4e6 bit 的数据量
 
     # 速率特征归一化

@@ -84,8 +84,9 @@ class VecOffloadingEnv(gym.Env):
         """
         [环境步进]
         1. 动作执行: 目标选择与功率控制。
-        2. 物理演化: 信道计算、任务进度更新、车辆移动。
-        3. 奖励反馈: 基于 CFT 缩减量的奖励计算。
+        2. [新增] 物理层硬截断: 强制修正 MARL 并发写入导致的队列溢出。
+        3. 物理演化: 信道计算、任务进度更新、车辆移动。
+        4. 奖励反馈: 基于拥堵感知 CFT 的奖励计算。
         """
         # --- 1. 应用动作 (Action Application) ---
         for i, v in enumerate(self.vehicles):
@@ -102,77 +103,70 @@ class VecOffloadingEnv(gym.Env):
             elif tgt_idx == 1:
                 target = 'RSU'
             else:
-                # 映射回 Neighbor List (注意: 动作空间需与 Observation 中的邻居顺序对齐)
+                # 映射回 Neighbor List
                 neighbor_id = tgt_idx - 2
                 if 0 <= neighbor_id < len(self.vehicles):
                     target = neighbor_id  # 使用车辆 ID (int)
                 else:
                     target = 'Local'  # Fallback
 
-            # 功率控制: 映射 [0, 1] -> [Min_dBm, Max_dBm]
+            # 功率控制
             p_norm = np.clip(act.get('power', 1.0), 0.0, 1.0)
             v.tx_power_dbm = Cfg.TX_POWER_MIN_DBM + p_norm * (Cfg.TX_POWER_MAX_DBM - Cfg.TX_POWER_MIN_DBM)
 
             # 状态更新
             v.curr_subtask = subtask_idx
             v.curr_target = target
-
-            # [Core Logic] 在 DAG 层面分配任务，这会影响 get_ready_time 的计算
-            # 实际的传输延迟将在物理计算环节处理，这里先标记“意图”
             v.task_dag.assign_task(subtask_idx, target)
 
-            # 队列负载更新 (用于拥堵模拟)
+            # 队列负载更新 (暂不考虑上限，先累加，后面统一截断)
             if target == 'RSU':
                 self.rsu_queue_curr += 1
             elif isinstance(target, int):
                 self.vehicles[target].task_queue_len += 1
             elif target == 'Local':
-                # [新增] 本地计算，自己的队列也要 +1
+                # 本地计算，自己的队列也要 +1
                 v.task_queue_len += 1
-                # ==========================================
-                # [关键修正] 物理硬截断：解决 MARL 并发写入导致的队列溢出
-                # ==========================================
-                # 强制将所有车辆的队列长度限制在 CONFIG 上限内
-                # 溢出的任务被视为"丢包" (Drop)，或者仅仅是不入队但仍在处理(取决于定义)
-                # 这里我们简单地截断数值，模拟缓冲区满导致的拒绝服务
-                for v_check in self.vehicles:
-                    v_check.task_queue_len = min(v_check.task_queue_len, Cfg.VEHICLE_QUEUE_LIMIT)
 
-                # RSU 也截断
-                self.rsu_queue_curr = min(self.rsu_queue_curr, Cfg.RSU_QUEUE_LIMIT)
+        # =========================================================================
+        # [关键修正] 物理硬截断 (Hard Truncation)
+        # 作用: 解决多智能体(MARL)场景下的"并发写入冲突"。
+        # 现象: 多个 Agent 同时发现某节点未满，同时发送任务，导致下一时刻队列瞬间爆表(如40+)。
+        # 修正: 强制将所有队列限制在物理缓冲区(Config)上限内。溢出部分视为丢包或拒绝服务。
+        # =========================================================================
+        # 1. 截断所有车辆的队列 (包含 Local 任务和接收到的 V2V 任务)
+        for v_check in self.vehicles:
+            v_check.task_queue_len = min(v_check.task_queue_len, Cfg.VEHICLE_QUEUE_LIMIT)
+
+        # 2. 截断 RSU 的队列
+        self.rsu_queue_curr = min(self.rsu_queue_curr, Cfg.RSU_QUEUE_LIMIT)
 
         # --- 2. 物理计算 (Physics & Channel) ---
-        # 计算真实物理速率 (基于当前位置、功率和干扰)
-        # rates 返回字典: {veh_id: rate_bps} (V2I) 或 V2V 矩阵，视 ChannelModel 实现而定
-        # 此处假设 compute_rates 返回 V2I 速率，V2V 按需计算
+        # 计算真实物理速率
         rates_v2i = self.channel.compute_rates(self.vehicles, Cfg.RSU_POS)
 
         # --- 3. 任务处理与移动 (Processing & Mobility) ---
         for v in self.vehicles:
-            c_spd = 0.0  # 通信速率
-            comp_spd = 0.0  # 计算速率
+            c_spd = 0.0
+            comp_spd = 0.0
             tgt = v.curr_target
 
-            # 车辆的 CPU 频率影响计算速率
+            # 确定计算与通信速率
             if tgt == 'Local':
-                comp_spd = v.cpu_freq  # 使用车辆的 CPU 频率代替固定值
-                c_spd = 1e12  # 本地总线极快，忽略传输延迟
+                comp_spd = v.cpu_freq
+                c_spd = 1e12  # 本地总线忽略延迟
             elif tgt == 'RSU':
-                comp_spd = Cfg.F_RSU  # RSU 算力仍然使用配置中的固定值
-                c_spd = rates_v2i.get(v.id, 1e-6)  # 获取 V2I 速率
+                comp_spd = Cfg.F_RSU
+                c_spd = rates_v2i.get(v.id, 1e-6)
             elif isinstance(tgt, int):
                 # V2V 情况
                 target_veh = self.vehicles[tgt]
-                comp_spd = target_veh.cpu_freq  # ✅ 修正：使用"目标邻居"的算力
-
-                # 计算点对点 V2V 速率
+                comp_spd = target_veh.cpu_freq
                 c_spd = self.channel.compute_one_rate(v, target_veh.pos, link_type='V2V', curr_time=self.time)
 
-            # 防止除零错误
             c_spd = max(c_spd, 1e-6)
 
             # [DAG 步进] 更新子任务进度
-            # step_progress 内部应处理数据传输 (c_spd) 和计算 (comp_spd) 的时间消耗
             task_finished = False
             if v.curr_subtask is not None:
                 task_finished = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
@@ -185,10 +179,8 @@ class VecOffloadingEnv(gym.Env):
                         target_veh = self.vehicles[tgt]
                         target_veh.task_queue_len = max(0, target_veh.task_queue_len - 1)
                     elif tgt == 'Local':
-                        # [新增] 本地任务完成，自己的队列 -1
                         v.task_queue_len = max(0, v.task_queue_len - 1)
 
-                    # 重置当前动作状态
                     v.curr_subtask = None
 
             # [Mobility] 位置更新
@@ -197,50 +189,153 @@ class VecOffloadingEnv(gym.Env):
         self.time += Cfg.DT
 
         # --- 4. 奖励计算 (Reward Function) ---
-        # 基于公式 (28): Reward = (CFT_prev - CFT_curr)
-        # 我们使用基于关键路径的 CFT 估算，更能体现 DAG 的并行优势
+        # 计算包含拥堵等待的全局 CFT
         current_global_cft = self._calculate_global_cft_critical_path()
 
         # A. 时延收益 (正值)
-        # 假设 cft_diff = 0.1s (全系统节省了 0.1秒)
+        # 由于现在的 CFT 包含了排队时间，如果 Agent 选择了拥堵节点，current_global_cft 会变大，
+        # 导致 cft_diff 变小甚至为负，从而自然产生内生的惩罚信号。
         cft_diff = self.last_global_cft - current_global_cft
 
-        # B. [修改] 拥堵惩罚 (从 队列长度 改为 等效等待时间)
-        # 原因: 量纲统一 (秒)，更能反映真实负载压力
-
-        # 计算所有车辆的本地等待时间 (秒)
-        # logic: sum(queue_len * data_size / cpu_freq)
+        # B. 拥堵软约束 (Wait Time)
+        # 保留此项作为辅助惩罚，用于加速收敛 (Shaping Reward)
         total_veh_wait_time = sum([
             (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
             for v in self.vehicles
         ])
-
-        # 计算 RSU 的等待时间 (秒)
         rsu_wait_time = (self.rsu_queue_curr * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
-
         total_sys_wait_time = total_veh_wait_time + rsu_wait_time
 
-        # C. 计算 全局总奖励
-        # 此时 W_QUEUE 的物理意义变成了: "每 1秒 的拥堵等待，相当于扣多少分"
-        # 建议 W_QUEUE 取值 0.1 ~ 0.5 (表示拥堵比完成时间稍微次要一点，但不能忽略)
+        # C. 全局总奖励
         global_reward = (cft_diff * Cfg.REWARD_SCALE) - (total_sys_wait_time * Cfg.W_QUEUE)
 
-        # D. 平均化
+        # D. 平均化并广播
         avg_reward = global_reward / len(self.vehicles)
-
-        # 广播给每个智能体 (保持 Cooperative 设定)
         rewards = [avg_reward] * len(self.vehicles)
 
-        # 更新基准
         self.last_global_cft = current_global_cft
 
-        # 终止条件 (由外部 Max Steps 控制，此处默认 False)
         done = False
-        # 如果所有 DAG 完成，也可以 done=True
         if all(v.task_dag.is_finished for v in self.vehicles):
             done = True
 
         return self._get_obs(), rewards, done, {}
+
+    def _calculate_global_cft_critical_path(self):
+        """
+        [关键逻辑修正] 计算全局 CFT (Calculated Finish Time) - 拥堵感知版
+
+        修正说明:
+        原有的计算只考虑了"传输+计算"，忽略了目标节点的"排队等待"。
+        这导致 Agent 即使把任务发给严重拥堵的邻居，也能因为邻居 CPU 频率高而获得虚假的正向 CFT 奖励。
+
+        修正后逻辑:
+        预期耗时 = 传输时间 + 计算时间 + [预估排队时间]
+        其中 [预估排队时间] = (目标队列长度 * 平均任务负载) / 目标处理频率
+        """
+        total_cft = 0.0
+
+        # 失败惩罚 (绝对值转换为时间)
+        fail_penalty_equivalent_time = abs(Cfg.PENALTY_FAILURE)
+
+        for v in self.vehicles:
+            if v.task_dag.is_failed:
+                total_cft += (self.time + fail_penalty_equivalent_time)
+                continue
+
+            if v.task_dag.is_finished:
+                total_cft += self.time
+                continue
+
+            # --- DAG 关键路径估算 ---
+            rem_comps = v.task_dag.rem_comp
+            rem_datas = v.task_dag.rem_data
+            exec_times = np.zeros(v.task_dag.num_subtasks)
+
+            # 获取当前目标的参数
+            tgt = v.curr_target
+
+            # [新增] 预估排队时间 (Wait Time Estimation)
+            # 只有当前正在调度的任务需要加上排队时间，因为它马上要入队
+            wait_time_est = 0.0
+
+            if tgt == 'RSU':
+                proc_speed = Cfg.F_RSU
+                # 拥堵因子: 简单模拟多人共享 RSU 带宽时的速率下降
+                congestion_factor = max(1, self.rsu_queue_curr // 5)
+                comm_speed = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I',
+                                                           curr_time=self.time) / congestion_factor
+
+                # RSU 排队时间: 队列任务数 * 平均任务大小 / 处理速度
+                wait_time_est = (self.rsu_queue_curr * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
+
+            elif isinstance(tgt, int):
+                target_v = self.vehicles[tgt]
+                proc_speed = target_v.cpu_freq
+                comm_speed = self.channel.compute_one_rate(v, target_v.pos, 'V2V', curr_time=self.time)
+
+                # 邻居排队时间
+                wait_time_est = (target_v.task_queue_len * Cfg.MEAN_COMP_LOAD) / target_v.cpu_freq
+
+            else:  # Local
+                proc_speed = v.cpu_freq
+                comm_speed = 1e12  # 忽略本地传输
+
+                # 本地排队时间
+                wait_time_est = (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
+
+            comm_speed = max(comm_speed, 1e-6)
+
+            for i in range(v.task_dag.num_subtasks):
+                if v.task_dag.status[i] == 3:  # DONE
+                    exec_times[i] = 0.0
+                elif i == v.curr_subtask:
+                    # [修正核心] 当前任务耗时 = 传输 + 计算 + 预估排队等待
+                    t_trans = rem_datas[i] / comm_speed
+                    t_comp = rem_comps[i] / proc_speed
+                    exec_times[i] = t_trans + t_comp + wait_time_est
+                else:
+                    # 未来任务：默认按本地计算估算 (Baseline)
+                    # 未来任务不需要加当前的 wait_time_est，因为那时队列可能变了
+                    t_trans = 0.0
+                    t_comp = rem_comps[i] / v.cpu_freq
+                    exec_times[i] = t_trans + t_comp
+
+            # 3. 计算关键路径 (使用拓扑排序计算 Earliest Finish Time)
+            num_tasks = v.task_dag.num_subtasks
+            eft = np.zeros(num_tasks)
+            adj = v.task_dag.adj
+
+            # 简单的 Kahn 算法进行拓扑排序
+            in_degree = np.sum(adj, axis=0)
+            queue = [i for i in range(num_tasks) if in_degree[i] == 0]
+            top_order = []
+
+            while queue:
+                u = queue.pop(0)
+                top_order.append(u)
+                for v_node in range(num_tasks):
+                    if adj[u, v_node] == 1:
+                        in_degree[v_node] -= 1
+                        if in_degree[v_node] == 0:
+                            queue.append(v_node)
+
+            # DP 计算 EFT
+            for u in top_order:
+                predecessors = np.where(adj[:, u] == 1)[0]
+                if len(predecessors) > 0:
+                    max_prev_eft = np.max(eft[predecessors])
+                else:
+                    max_prev_eft = 0.0
+
+                eft[u] = max_prev_eft + exec_times[u]
+
+            # 该 DAG 的预计完成时间 = 最后一个节点的 EFT
+            dag_est_finish_time = np.max(eft)
+
+            total_cft += (self.time + dag_est_finish_time)
+
+        return total_cft
 
     def _get_obs(self):
         """
@@ -418,120 +513,120 @@ class VecOffloadingEnv(gym.Env):
 
         return B * np.log2(1 + snr_linear)
 
-    def _calculate_global_cft_critical_path(self):
-        """
-        [关键逻辑] 计算全局 CFT (Calculated Finish Time)
-
-        区别于简单的求和，这里使用简化的关键路径 (Critical Path) 估算，
-        以体现 DAG 的并行性和依赖约束 (Dependency-Aware)。
-
-        逻辑:
-        1. 对于每个任务节点，计算其 (传输时间 + 计算时间)。
-        2. 结合 DAG 拓扑，计算到达 End 节点的最长路径时间。
-        """
-        total_cft = 0.0
-
-        # [新增] 获取失败惩罚的绝对值 (转换为时间惩罚)
-        # 逻辑: 假设 Penalty=-50, Scale=1.0, 相当于增加了 50秒 的虚拟耗时
-        # 这样 Critic 网络会给导致失败的状态打极低的分
-        fail_penalty_equivalent_time = abs(Cfg.PENALTY_FAILURE)
-
-        for v in self.vehicles:
-            if v.task_dag.is_failed:
-                # [修改位置] 不再硬编码 10.0，而是使用 Config 参数
-                # 原代码: total_cft += (self.time + 10.0)
-                total_cft += (self.time + fail_penalty_equivalent_time)
-                continue
-
-            if v.task_dag.is_finished:
-                total_cft += self.time
-                continue
-
-            # --- DAG 关键路径估算 ---
-            # 这是一个简化版，假设当前分配的目标不变
-
-            # 1. 获取所有子任务的剩余工作量
-            rem_comps = v.task_dag.rem_comp
-            rem_datas = v.task_dag.rem_data
-
-            # 2. 估算每个节点的执行时间 (Execution Time)
-            # exec_time[i] = trans_time + comp_time
-            exec_times = np.zeros(v.task_dag.num_subtasks)
-
-            # 获取当前所有任务的目标速率 (快照)
-            # 注意: 这里为了效率，使用模拟速率或最近一次的真实速率
-            # 为了奖励的准确性，最好使用 Config 的标称值进行估算
-
-            tgt = v.curr_target
-            # 计算每个任务的执行时间时，使用车辆的 CPU 频率
-            if tgt == 'RSU':
-                proc_speed = Cfg.F_RSU  # RSU 使用固定算力
-                comm_speed = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I', curr_time=self.time)
-            elif isinstance(tgt, int):
-                target_v = self.vehicles[tgt]
-                proc_speed = target_v.cpu_freq  # 修改：使用目标的 CPU 频率，而不是发起者的
-                comm_speed = self.channel.compute_one_rate(v, target_v.pos, 'V2V', curr_time=self.time)
-            else:  # Local
-                proc_speed = v.cpu_freq  # 使用车辆的 CPU 频率
-                comm_speed = 1e12  # 本地总线极快，忽略
-
-            comm_speed = max(comm_speed, 1e-6)
-
-            for i in range(v.task_dag.num_subtasks):
-                if v.task_dag.status[i] == 3:  # DONE
-                    exec_times[i] = 0.0
-                elif i == v.curr_subtask:  # 当前正在调度的任务，使用当前动作的速率
-                    t_trans = rem_datas[i] / comm_speed
-                    t_comp = rem_comps[i] / proc_speed
-                    exec_times[i] = t_trans + t_comp
-                else:  # 未来任务：默认按本地计算估算 (Baseline)
-                    # 这样奖励函数反映的是：当前动作相比于“默认本地”带来的增量收益
-                    t_trans = 0.0  # 本地无传输
-                    t_comp = rem_comps[i] / v.cpu_freq  # 本地算力
-                    exec_times[i] = t_trans + t_comp
-
-            # 3. 计算关键路径 (最长路径)
-            # 使用拓扑排序算法计算最早完成时间 (Earliest Finish Time)
-            num_tasks = v.task_dag.num_subtasks
-            eft = np.zeros(num_tasks)
-
-            # 假设 adj 是邻接矩阵 [i, j] = 1 代表 i -> j
-            adj = v.task_dag.adj
-
-            # 执行拓扑排序
-            def topological_sort(adj_matrix):
-                # 计算每个节点的入度
-                in_degree = np.sum(adj_matrix, axis=0)
-                queue = [i for i in range(num_tasks) if in_degree[i] == 0]
-                top_order = []
-                
-                while queue:
-                    u = queue.pop(0)
-                    top_order.append(u)
-                    # 遍历所有邻居节点
-                    for v_node in range(num_tasks):
-                        if adj_matrix[u, v_node] == 1:
-                            in_degree[v_node] -= 1
-                            if in_degree[v_node] == 0:
-                                queue.append(v_node)
-                return top_order
-
-            top_order = topological_sort(adj)
-            
-            # 按拓扑顺序计算最早完成时间
-            for u in top_order:
-                # 找所有前驱 i
-                predecessors = np.where(adj[:, u] == 1)[0]
-                if len(predecessors) > 0:
-                    max_prev_eft = np.max(eft[predecessors])
-                else:
-                    max_prev_eft = 0.0
-                
-                eft[u] = max_prev_eft + exec_times[u]
-
-            # 该 DAG 的预计完成时间 = 最后一个节点的 EFT
-            dag_est_finish_time = np.max(eft)
-
-            total_cft += (self.time + dag_est_finish_time)
-
-        return total_cft
+    # def _calculate_global_cft_critical_path(self):
+    #     """
+    #     [关键逻辑] 计算全局 CFT (Calculated Finish Time)
+    #
+    #     区别于简单的求和，这里使用简化的关键路径 (Critical Path) 估算，
+    #     以体现 DAG 的并行性和依赖约束 (Dependency-Aware)。
+    #
+    #     逻辑:
+    #     1. 对于每个任务节点，计算其 (传输时间 + 计算时间)。
+    #     2. 结合 DAG 拓扑，计算到达 End 节点的最长路径时间。
+    #     """
+    #     total_cft = 0.0
+    #
+    #     # [新增] 获取失败惩罚的绝对值 (转换为时间惩罚)
+    #     # 逻辑: 假设 Penalty=-50, Scale=1.0, 相当于增加了 50秒 的虚拟耗时
+    #     # 这样 Critic 网络会给导致失败的状态打极低的分
+    #     fail_penalty_equivalent_time = abs(Cfg.PENALTY_FAILURE)
+    #
+    #     for v in self.vehicles:
+    #         if v.task_dag.is_failed:
+    #             # [修改位置] 不再硬编码 10.0，而是使用 Config 参数
+    #             # 原代码: total_cft += (self.time + 10.0)
+    #             total_cft += (self.time + fail_penalty_equivalent_time)
+    #             continue
+    #
+    #         if v.task_dag.is_finished:
+    #             total_cft += self.time
+    #             continue
+    #
+    #         # --- DAG 关键路径估算 ---
+    #         # 这是一个简化版，假设当前分配的目标不变
+    #
+    #         # 1. 获取所有子任务的剩余工作量
+    #         rem_comps = v.task_dag.rem_comp
+    #         rem_datas = v.task_dag.rem_data
+    #
+    #         # 2. 估算每个节点的执行时间 (Execution Time)
+    #         # exec_time[i] = trans_time + comp_time
+    #         exec_times = np.zeros(v.task_dag.num_subtasks)
+    #
+    #         # 获取当前所有任务的目标速率 (快照)
+    #         # 注意: 这里为了效率，使用模拟速率或最近一次的真实速率
+    #         # 为了奖励的准确性，最好使用 Config 的标称值进行估算
+    #
+    #         tgt = v.curr_target
+    #         # 计算每个任务的执行时间时，使用车辆的 CPU 频率
+    #         if tgt == 'RSU':
+    #             proc_speed = Cfg.F_RSU  # RSU 使用固定算力
+    #             comm_speed = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I', curr_time=self.time)
+    #         elif isinstance(tgt, int):
+    #             target_v = self.vehicles[tgt]
+    #             proc_speed = target_v.cpu_freq  # 修改：使用目标的 CPU 频率，而不是发起者的
+    #             comm_speed = self.channel.compute_one_rate(v, target_v.pos, 'V2V', curr_time=self.time)
+    #         else:  # Local
+    #             proc_speed = v.cpu_freq  # 使用车辆的 CPU 频率
+    #             comm_speed = 1e12  # 本地总线极快，忽略
+    #
+    #         comm_speed = max(comm_speed, 1e-6)
+    #
+    #         for i in range(v.task_dag.num_subtasks):
+    #             if v.task_dag.status[i] == 3:  # DONE
+    #                 exec_times[i] = 0.0
+    #             elif i == v.curr_subtask:  # 当前正在调度的任务，使用当前动作的速率
+    #                 t_trans = rem_datas[i] / comm_speed
+    #                 t_comp = rem_comps[i] / proc_speed
+    #                 exec_times[i] = t_trans + t_comp
+    #             else:  # 未来任务：默认按本地计算估算 (Baseline)
+    #                 # 这样奖励函数反映的是：当前动作相比于“默认本地”带来的增量收益
+    #                 t_trans = 0.0  # 本地无传输
+    #                 t_comp = rem_comps[i] / v.cpu_freq  # 本地算力
+    #                 exec_times[i] = t_trans + t_comp
+    #
+    #         # 3. 计算关键路径 (最长路径)
+    #         # 使用拓扑排序算法计算最早完成时间 (Earliest Finish Time)
+    #         num_tasks = v.task_dag.num_subtasks
+    #         eft = np.zeros(num_tasks)
+    #
+    #         # 假设 adj 是邻接矩阵 [i, j] = 1 代表 i -> j
+    #         adj = v.task_dag.adj
+    #
+    #         # 执行拓扑排序
+    #         def topological_sort(adj_matrix):
+    #             # 计算每个节点的入度
+    #             in_degree = np.sum(adj_matrix, axis=0)
+    #             queue = [i for i in range(num_tasks) if in_degree[i] == 0]
+    #             top_order = []
+    #
+    #             while queue:
+    #                 u = queue.pop(0)
+    #                 top_order.append(u)
+    #                 # 遍历所有邻居节点
+    #                 for v_node in range(num_tasks):
+    #                     if adj_matrix[u, v_node] == 1:
+    #                         in_degree[v_node] -= 1
+    #                         if in_degree[v_node] == 0:
+    #                             queue.append(v_node)
+    #             return top_order
+    #
+    #         top_order = topological_sort(adj)
+    #
+    #         # 按拓扑顺序计算最早完成时间
+    #         for u in top_order:
+    #             # 找所有前驱 i
+    #             predecessors = np.where(adj[:, u] == 1)[0]
+    #             if len(predecessors) > 0:
+    #                 max_prev_eft = np.max(eft[predecessors])
+    #             else:
+    #                 max_prev_eft = 0.0
+    #
+    #             eft[u] = max_prev_eft + exec_times[u]
+    #
+    #         # 该 DAG 的预计完成时间 = 最后一个节点的 EFT
+    #         dag_est_finish_time = np.max(eft)
+    #
+    #         total_cft += (self.time + dag_est_finish_time)
+    #
+    #     return total_cft
