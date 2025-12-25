@@ -4,15 +4,13 @@ import torch.nn.functional as F
 from torch_geometric.data import Batch
 from torch_geometric.nn import global_mean_pool
 
+
 # =========================================================================
 # 1. 导入依赖与配置
 # =========================================================================
-# [关键修改] 从 models.encoders 导入独立的编码器类
-# 这确保了我们使用的是包含 Fallback 机制和 Edge Feature 支持的最新版本
-from models.encoders import DAGTaskEncoder, HeteroTopologyEncoder
-
 # [关键修改] 引入配置类，用于获取 EDGE_INPUT_DIM
 from configs.train_config import TrainConfig as TC
+from models.encoders import DAGTaskEncoder, HeteroTopologyEncoder
 
 
 # =========================================================================

@@ -21,7 +21,7 @@ class TrainConfig:
     RSU_INPUT_DIM = 1
 
     # 隐藏层维度 (Transformer & GNN)
-    EMBED_DIM = 128
+    EMBED_DIM = 64
 
     # 注意力头数 (Heads)
     NUM_HEADS = 4
@@ -33,8 +33,8 @@ class TrainConfig:
     # 2. 优化器参数 (Optimizer)
     # =========================
     # 学习率 (Actor 通常比 Critic 小)
-    LR_ACTOR = 1e-4  # 降低学习率以求稳定
-    LR_CRITIC = 1e-4  # Critic 需要更快收敛
+    LR_ACTOR = 3e-4  # 降低学习率以求稳定
+    LR_CRITIC = 1e-3  # 降低学习率以求稳定
 
     # 学习率衰减
     USE_LR_DECAY = True
@@ -53,14 +53,14 @@ class TrainConfig:
 
     CLIP_PARAM = 0.2  # PPO 裁剪阈值 (epsilon)
 
-    PPO_EPOCH = 10  # 每次 Update 迭代多少轮
-    MINI_BATCH_SIZE = 512  # 每次迭代的 Mini-batch 大小
+    PPO_EPOCH = 10  # 增加PPO迭代次数，提高训练稳定性
+    MINI_BATCH_SIZE = 512  # 减小批次大小，降低计算成本
 
     # 熵正则化系数 (Entropy Coefficient)：值越大，策略越随机；值越小，策略越确定。
     # Reward 曲线完全是平的（不上升），说明探索不够，可以改到 0.02。
     # 如果发现 Reward 震荡极其剧烈且无法稳定，改到 0.005。
     # 0.01 是标准值。如果发现 Agent 过早收敛到单一动作，增大此值 (e.g., 0.05)
-    ENTROPY_COEF = 0.05
+    ENTROPY_COEF = 0.02
 
     # 价值函数损失系数
     VF_COEF = 0.5

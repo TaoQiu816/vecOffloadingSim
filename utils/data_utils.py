@@ -30,14 +30,13 @@ def process_env_obs(obs_list, device):
     # =========================================================================
     # 0. 准备全局特征 (用于 Critic 和 Actor 的 Others 部分)
     # =========================================================================
-    # obs['self_info'] 是 6 维: [vx, vy, wait, cpu, x, y]
-    # TrainConfig 要求 7 维。我们补 1 维 (例如 0 或者 v2i_rate)
-    # 这里简单补 0，保持维度对齐
+    # obs['self_info'] 已经是 7 维: [vx, vy, wait, cpu_freq, v2i_rate, pos_x, pos_y]
+    # 与 TrainConfig 中的 VEH_INPUT_DIM = 7 一致
     all_veh_feats_np = np.stack([obs['self_info'] for obs in obs_list])
 
-    if all_veh_feats_np.shape[1] == 6:
-        padding = np.zeros((num_vehicles, 1), dtype=np.float32)
-        all_veh_feats_np = np.concatenate([all_veh_feats_np, padding], axis=1)
+    # 验证维度一致性
+    if all_veh_feats_np.shape[1] != 7:
+        raise ValueError(f"Expected self_info to be 7-dimensional, got {all_veh_feats_np.shape[1]}")
 
     all_veh_tensor = torch.FloatTensor(all_veh_feats_np)
 

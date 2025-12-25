@@ -23,10 +23,10 @@ class SystemConfig:
     # =========================================================================
     SEED = 42  # 随机种子
     NUM_VEHICLES = 20  # 车辆总数 (DVTP: 10-50)
-    MAP_SIZE = 2000.0  # 区域大小 (2000m x 2000m)
-    RSU_POS = np.array([1000.0, 1000.0])  # RSU 坐标 (地图中心)
+    MAP_SIZE = 1000.0  # 区域大小 (2000m x 2000m)
+    RSU_POS = np.array([500.0, 500.0])  # RSU 坐标 (地图中心)
 
-    DT = 0.1  # 仿真时间步长 (s) (标准车联网仿真步长)
+    DT = 0.05  # 仿真时间步长 (s) (增大到0.1s提高运行效率)
     MAX_STEPS = 100  # 每个 Episode 步数
 
     # 车辆移动性参数
@@ -44,7 +44,7 @@ class SystemConfig:
 
     # 带宽 (Hz)
     BW_V2I = 25e6  # 25 MHz
-    BW_V2V = 10e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
+    BW_V2V = 15e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
 
     # 噪声参数
     # 噪声功率谱密度 (dBm/Hz) -> -174 + Noise Figure (e.g., 9dB)
@@ -98,16 +98,16 @@ class SystemConfig:
     V2V_RANGE = 300.0  # V2V 通信半径 (m) (DVTP等文献常用值)
 
     # 队列约束 (拥堵控制)
-    VEHICLE_QUEUE_LIMIT = 10  # 车辆任务队列上限 (避免排队过长)
-    RSU_QUEUE_LIMIT = 50  # RSU 全局队列上限
+    VEHICLE_QUEUE_LIMIT = 20  # 车辆任务队列上限 (避免排队过长)
+    RSU_QUEUE_LIMIT = 100  # RSU 全局队列上限
 
     # =========================================================================
     # 5. DAG 任务生成参数 (Task Generation)
     # 目标: 生成时延敏感型任务，迫使 Agent 进行卸载
     # =========================================================================
     # 任务节点数范围
-    MIN_NODES = 12
-    MAX_NODES = 16
+    MIN_NODES = 8
+    MAX_NODES = 12
 
     # 单个子任务数据量 (Bits) -> 1 Mbit ~ 3 Mbit
     # 明确乘以 8，转换为 bit
@@ -119,7 +119,7 @@ class SystemConfig:
     MAX_EDGE_DATA = 500 * 1024 * 8
 
     # 单个子任务计算量 (Cycles)
-    MIN_COMP = 1.0 * 1e7
+    MIN_COMP = 5.0 * 1e7
     MAX_COMP = 1.0 * 1e8
 
     # 统计参考值
@@ -166,15 +166,12 @@ class SystemConfig:
 
     # [核心修正] W_QUEUE
     # 目标: 当排队时间达到 0.3s (严重拥堵) 时，惩罚 -1.0
-    # W_QUEUE = 1.0 / 0.3s ≈ 3.3
-    # 取整数 4.0，给拥堵更强的负反馈
-    W_QUEUE = 4.0
+    # 增加拥堵控制的负反馈，平衡完成时间和系统稳定性
+    W_QUEUE = 2.0
 
     # 3. 奖励缩放 (REWARD_SCALE)
-    # [关键修改] 放大时间收益。
-    # 原始 cft_diff 只有 0.1s 左右。我们需要把它放大 10 倍甚至 20 倍，
-    # 让 Agent 觉得"节省时间"是有利可图的。
-    # 建议设置为 10.0 或 20.0
+    # [关键修改] 调整奖励缩放，平衡完成时间和拥堵控制
+    # 原始 cft_diff 只有 0.1s 左右。降低缩放以提高稳定性
     REWARD_SCALE = 10.0
 
 

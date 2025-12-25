@@ -126,6 +126,9 @@ class VecOffloadingEnv(gym.Env):
                 self.rsu_queue_curr += 1
             elif isinstance(target, int):
                 self.vehicles[target].task_queue_len += 1
+            elif target == 'Local':
+                # [新增] 本地计算，自己的队列也要 +1
+                v.task_queue_len += 1
 
         # --- 2. 物理计算 (Physics & Channel) ---
         # 计算真实物理速率 (基于当前位置、功率和干扰)
@@ -152,7 +155,7 @@ class VecOffloadingEnv(gym.Env):
                 comp_spd = target_veh.cpu_freq  # ✅ 修正：使用"目标邻居"的算力
 
                 # 计算点对点 V2V 速率
-                c_spd = self.channel.compute_one_rate(v, target_veh.pos, link_type='V2V')
+                c_spd = self.channel.compute_one_rate(v, target_veh.pos, link_type='V2V', curr_time=self.time)
 
             # 防止除零错误
             c_spd = max(c_spd, 1e-6)
@@ -170,6 +173,9 @@ class VecOffloadingEnv(gym.Env):
                     elif isinstance(tgt, int):
                         target_veh = self.vehicles[tgt]
                         target_veh.task_queue_len = max(0, target_veh.task_queue_len - 1)
+                    elif tgt == 'Local':
+                        # [新增] 本地任务完成，自己的队列 -1
+                        v.task_queue_len = max(0, v.task_queue_len - 1)
 
                     # 重置当前动作状态
                     v.curr_subtask = None
@@ -449,11 +455,11 @@ class VecOffloadingEnv(gym.Env):
             # 计算每个任务的执行时间时，使用车辆的 CPU 频率
             if tgt == 'RSU':
                 proc_speed = Cfg.F_RSU  # RSU 使用固定算力
-                comm_speed = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I')
+                comm_speed = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I', curr_time=self.time)
             elif isinstance(tgt, int):
                 target_v = self.vehicles[tgt]
                 proc_speed = target_v.cpu_freq  # 修改：使用目标的 CPU 频率，而不是发起者的
-                comm_speed = self.channel.compute_one_rate(v, target_v.pos, 'V2V')
+                comm_speed = self.channel.compute_one_rate(v, target_v.pos, 'V2V', curr_time=self.time)
             else:  # Local
                 proc_speed = v.cpu_freq  # 使用车辆的 CPU 频率
                 comm_speed = 1e12  # 本地总线极快，忽略
@@ -474,24 +480,43 @@ class VecOffloadingEnv(gym.Env):
                     exec_times[i] = t_trans + t_comp
 
             # 3. 计算关键路径 (最长路径)
-            # 简单的动态规划: Earliest Finish Time (EFT)
+            # 使用拓扑排序算法计算最早完成时间 (Earliest Finish Time)
             num_tasks = v.task_dag.num_subtasks
             eft = np.zeros(num_tasks)
 
             # 假设 adj 是邻接矩阵 [i, j] = 1 代表 i -> j
             adj = v.task_dag.adj
 
-            # 拓扑排序 (简化: 假设 index 顺序大致符合拓扑，或者多轮迭代)
-            # 为了严谨，应该做一次 BFS/DFS，但这里用多轮松弛模拟
-            for _ in range(num_tasks):
-                for j in range(num_tasks):
-                    max_prev_eft = 0.0
-                    # 找所有前驱 i
-                    predecessors = np.where(adj[:, j] == 1)[0]
-                    if len(predecessors) > 0:
-                        max_prev_eft = np.max(eft[predecessors])
+            # 执行拓扑排序
+            def topological_sort(adj_matrix):
+                # 计算每个节点的入度
+                in_degree = np.sum(adj_matrix, axis=0)
+                queue = [i for i in range(num_tasks) if in_degree[i] == 0]
+                top_order = []
+                
+                while queue:
+                    u = queue.pop(0)
+                    top_order.append(u)
+                    # 遍历所有邻居节点
+                    for v_node in range(num_tasks):
+                        if adj_matrix[u, v_node] == 1:
+                            in_degree[v_node] -= 1
+                            if in_degree[v_node] == 0:
+                                queue.append(v_node)
+                return top_order
 
-                    eft[j] = max_prev_eft + exec_times[j]
+            top_order = topological_sort(adj)
+            
+            # 按拓扑顺序计算最早完成时间
+            for u in top_order:
+                # 找所有前驱 i
+                predecessors = np.where(adj[:, u] == 1)[0]
+                if len(predecessors) > 0:
+                    max_prev_eft = np.max(eft[predecessors])
+                else:
+                    max_prev_eft = 0.0
+                
+                eft[u] = max_prev_eft + exec_times[u]
 
             # 该 DAG 的预计完成时间 = 最后一个节点的 EFT
             dag_est_finish_time = np.max(eft)
