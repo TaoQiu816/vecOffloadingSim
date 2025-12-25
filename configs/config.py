@@ -44,7 +44,7 @@ class SystemConfig:
 
     # 带宽 (Hz)
     BW_V2I = 25e6  # 25 MHz
-    BW_V2V = 15e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
+    BW_V2V = 10e6  # V2V 保持 10 MHz 或提升至 20 MHz 均可
 
     # 噪声参数
     # 噪声功率谱密度 (dBm/Hz) -> -174 + Noise Figure (e.g., 9dB)

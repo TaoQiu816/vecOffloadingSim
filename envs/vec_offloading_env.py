@@ -129,6 +129,17 @@ class VecOffloadingEnv(gym.Env):
             elif target == 'Local':
                 # [新增] 本地计算，自己的队列也要 +1
                 v.task_queue_len += 1
+                # ==========================================
+                # [关键修正] 物理硬截断：解决 MARL 并发写入导致的队列溢出
+                # ==========================================
+                # 强制将所有车辆的队列长度限制在 CONFIG 上限内
+                # 溢出的任务被视为"丢包" (Drop)，或者仅仅是不入队但仍在处理(取决于定义)
+                # 这里我们简单地截断数值，模拟缓冲区满导致的拒绝服务
+                for v_check in self.vehicles:
+                    v_check.task_queue_len = min(v_check.task_queue_len, Cfg.VEHICLE_QUEUE_LIMIT)
+
+                # RSU 也截断
+                self.rsu_queue_curr = min(self.rsu_queue_curr, Cfg.RSU_QUEUE_LIMIT)
 
         # --- 2. 物理计算 (Physics & Channel) ---
         # 计算真实物理速率 (基于当前位置、功率和干扰)
