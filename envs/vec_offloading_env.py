@@ -3,8 +3,9 @@ import numpy as np
 from configs.config import SystemConfig as Cfg
 from envs.modules.channel import ChannelModel
 from envs.modules.queue_system import FIFOQueue
-from envs.modules.rsu_queue_manager import RSUQueueManager
 from envs.entities.vehicle import Vehicle
+from envs.entities.rsu import RSU
+from envs.entities.road_network import RoadNetwork, RoadSegment
 from envs.entities.task_dag import DAGTask
 from utils.dag_generator import DAGGenerator
 
@@ -42,9 +43,15 @@ class VecOffloadingEnv(gym.Env):
         self.dag_gen = DAGGenerator()
         self.vehicles = []
         self.time = 0.0
-        # RSU多处理器队列管理器
-        self.rsu_queue_manager = RSUQueueManager()
-        # 保持向后兼容（使用总队列长度）
+        
+        # 道路网络
+        self.road_network = RoadNetwork()
+        
+        # RSU实体列表
+        self.rsus = []
+        self._init_rsus()
+        
+        # 保持向后兼容（使用总队列长度，用于单个RSU场景）
         self.rsu_queue_curr = 0
         self.last_global_cft = 0.0
         self._comm_rate_cache = {}
@@ -68,6 +75,129 @@ class VecOffloadingEnv(gym.Env):
         self._inv_max_velocity = 1.0 / Cfg.MAX_VELOCITY
         self._inv_v2v_range = 1.0 / Cfg.V2V_RANGE
         self._mean_comp_load = Cfg.MEAN_COMP_LOAD
+    
+    def _init_rsus(self):
+        """
+        初始化RSU实体列表
+        
+        根据配置创建RSU实例，默认在地图中心创建一个RSU
+        后续可以扩展为在道路上部署多个RSU
+        """
+        num_rsu = getattr(Cfg, 'NUM_RSU', 1)
+        self.rsus = []
+        
+        if num_rsu == 1:
+            # 单个RSU：默认在地图中心
+            rsu = RSU(
+                rsu_id=0,
+                position=Cfg.RSU_POS.copy(),
+                cpu_freq=Cfg.F_RSU,
+                num_processors=getattr(Cfg, 'RSU_NUM_PROCESSORS', 4),
+                queue_limit=Cfg.RSU_QUEUE_LIMIT,
+                coverage_range=Cfg.RSU_RANGE
+            )
+            self.rsus.append(rsu)
+        else:
+            # 多个RSU：在道路交叉口或关键位置部署
+            # 这里使用简单的网格分布，后续可以根据道路网络优化
+            map_size = Cfg.MAP_SIZE
+            grid_size = int(np.ceil(np.sqrt(num_rsu)))
+            spacing = map_size / (grid_size + 1)
+            
+            for i in range(num_rsu):
+                row = i // grid_size
+                col = i % grid_size
+                pos = np.array([(col + 1) * spacing, (row + 1) * spacing])
+                
+                rsu = RSU(
+                    rsu_id=i,
+                    position=pos,
+                    cpu_freq=Cfg.F_RSU,
+                    num_processors=getattr(Cfg, 'RSU_NUM_PROCESSORS', 4),
+                    queue_limit=Cfg.RSU_QUEUE_LIMIT,
+                    coverage_range=Cfg.RSU_RANGE
+                )
+                self.rsus.append(rsu)
+    
+    def _get_nearest_rsu(self, position):
+        """
+        获取距离指定位置最近的RSU
+        
+        Args:
+            position: 位置坐标 [x, y]
+        
+        Returns:
+            RSU or None: 最近的RSU，如果不在任何RSU覆盖范围内返回None
+        """
+        if len(self.rsus) == 0:
+            return None
+        
+        nearest_rsu = None
+        min_dist = float('inf')
+        
+        for rsu in self.rsus:
+            if rsu.is_in_coverage(position):
+                dist = rsu.get_distance(position)
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_rsu = rsu
+        
+        return nearest_rsu
+    
+    def _get_all_rsus_in_range(self, position):
+        """
+        获取覆盖范围内所有RSU
+        
+        Args:
+            position: 位置坐标 [x, y]
+        
+        Returns:
+            list: 覆盖范围内的RSU列表
+        """
+        return [rsu for rsu in self.rsus if rsu.is_in_coverage(position)]
+    
+    def _is_rsu_location(self, loc):
+        """
+        判断位置标识是否是RSU
+        
+        Args:
+            loc: 位置标识（可能是'RSU'、('RSU', rsu_id)或其他）
+        
+        Returns:
+            bool: 如果是RSU位置返回True
+        """
+        return loc == 'RSU' or (isinstance(loc, tuple) and loc[0] == 'RSU')
+    
+    def _get_rsu_id_from_location(self, loc):
+        """
+        从位置标识中提取RSU ID
+        
+        Args:
+            loc: 位置标识
+        
+        Returns:
+            int or None: RSU ID，如果不是RSU则返回None
+        """
+        if loc == 'RSU':
+            # 兼容旧代码：单个RSU场景，返回第一个RSU的ID
+            return 0 if len(self.rsus) > 0 else None
+        elif isinstance(loc, tuple) and loc[0] == 'RSU':
+            return loc[1]
+        return None
+    
+    def _get_rsu_position(self, rsu_id):
+        """
+        获取RSU的位置
+        
+        Args:
+            rsu_id: RSU ID
+        
+        Returns:
+            np.array or None: RSU位置，如果ID无效返回None
+        """
+        if 0 <= rsu_id < len(self.rsus):
+            return self.rsus[rsu_id].position
+        return None
 
     def reset(self, seed=None, options=None):
         if seed:
@@ -76,8 +206,11 @@ class VecOffloadingEnv(gym.Env):
         self.vehicles = []
         self.time = 0.0
         self.steps = 0
-        # 重置RSU队列管理器
-        self.rsu_queue_manager.clear()
+        
+        # 重置RSU队列
+        for rsu in self.rsus:
+            rsu.clear_queue()
+        # 保持向后兼容
         self.rsu_queue_curr = 0
         self._comm_rate_cache = {}
         self._cache_time_step = -1.0
@@ -89,7 +222,18 @@ class VecOffloadingEnv(gym.Env):
             self._cft_cache_valid = False
 
         for i in range(Cfg.NUM_VEHICLES):
-            pos = np.random.rand(2) * Cfg.MAP_SIZE
+            # 车辆初始位置：随机选择一条道路段，在道路上随机生成位置
+            if len(self.road_network.segments) > 0:
+                seg = np.random.choice(self.road_network.segments)
+                dist_along = np.random.uniform(0, seg.length)
+                pos = seg.get_position_at_distance(dist_along)
+                # 添加一些垂直于道路的随机偏移（模拟车道）
+                offset = np.random.uniform(-seg.width * 0.3, seg.width * 0.3)
+                pos = pos + seg.perpendicular * offset
+                pos = np.clip(pos, 0, Cfg.MAP_SIZE)  # 确保在地图范围内
+            else:
+                pos = np.random.rand(2) * Cfg.MAP_SIZE
+            
             v = Vehicle(i, pos)
             v.cpu_freq = np.random.uniform(Cfg.MIN_VEHICLE_CPU_FREQ, Cfg.MAX_VEHICLE_CPU_FREQ)
             v.tx_power_dbm = Cfg.TX_POWER_DEFAULT_DBM if hasattr(Cfg, 'TX_POWER_DEFAULT_DBM') else Cfg.TX_POWER_MIN_DBM
@@ -156,8 +300,26 @@ class VecOffloadingEnv(gym.Env):
 
                 # 使用FIFO队列进行溢出检查
                 if target == 'RSU':
-                    if self.rsu_queue_manager.is_full():
+                    # 选择最近的RSU或负载最低的RSU
+                    rsu_in_range = self._get_all_rsus_in_range(v.pos)
+                    if len(rsu_in_range) == 0:
+                        # 不在任何RSU覆盖范围内，回退到Local
                         actual_target = 'Local'
+                    else:
+                        # 选择负载最低的RSU（等待时间最小）
+                        min_wait = float('inf')
+                        for rsu in rsu_in_range:
+                            if not rsu.is_queue_full():
+                                wait = rsu.get_estimated_wait_time()
+                                if wait < min_wait:
+                                    min_wait = wait
+                                    selected_rsu = rsu
+                        
+                        if selected_rsu is None:
+                            # 所有RSU队列都满，回退到Local
+                            actual_target = 'Local'
+                        else:
+                            actual_target = ('RSU', selected_rsu.id)  # 使用元组标识RSU
                 elif isinstance(target, int):
                     t_veh = self.vehicles[target]
                     if t_veh.task_queue.is_full():
@@ -165,9 +327,11 @@ class VecOffloadingEnv(gym.Env):
 
                 # 计算等待时间（使用FIFO队列的精确计算）
                 wait_time = 0.0
-                if actual_target == 'RSU':
-                    # 使用最小等待时间（因为新任务会选择负载最低的处理器）
-                    wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
+                if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                    # 多RSU场景：使用选定RSU的等待时间
+                    rsu_id = actual_target[1]
+                    if 0 <= rsu_id < len(self.rsus):
+                        wait_time = self.rsus[rsu_id].get_estimated_wait_time()
                 elif actual_target == 'Local':
                     wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
                 elif isinstance(actual_target, int):
@@ -189,17 +353,18 @@ class VecOffloadingEnv(gym.Env):
                 # 获取任务计算量并加入FIFO队列
                 task_comp = v.task_dag.total_comp[subtask_idx]
                 
-                if actual_target == 'RSU':
-                    # RSU多处理器队列：选择负载最低的处理器队列
-                    processor_id = self.rsu_queue_manager.enqueue(task_comp)
-                    if processor_id is None:
-                        # 所有处理器队列都满，回退到Local
-                        actual_target = 'Local'
-                        v.curr_target = 'Local'  # 更新curr_target
-                        # 加入本地队列（如果本地队列也未满）
-                        if not v.task_queue.is_full():
-                            v.task_queue.enqueue(task_comp)
-                        # 如果本地队列也满，任务将被丢弃（由后续逻辑处理）
+                if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                    # 多RSU场景：将任务加入选定RSU的队列
+                    rsu_id = actual_target[1]
+                    if 0 <= rsu_id < len(self.rsus):
+                        rsu = self.rsus[rsu_id]
+                        processor_id = rsu.enqueue_task(task_comp)
+                        if processor_id is None:
+                            # RSU队列满，回退到Local
+                            actual_target = 'Local'
+                            v.curr_target = 'Local'
+                            if not v.task_queue.is_full():
+                                v.task_queue.enqueue(task_comp)
                 elif isinstance(actual_target, int):
                     t_veh = self.vehicles[actual_target]
                     # 目标车辆队列
@@ -208,17 +373,28 @@ class VecOffloadingEnv(gym.Env):
                     # 本地队列
                     v.task_queue.enqueue(task_comp)
                 
-                # 同步队列长度（向后兼容）
-                self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
+                # 同步队列长度（向后兼容：使用第一个RSU的队列长度，如果存在）
+                if len(self.rsus) > 0:
+                    self.rsu_queue_curr = self.rsus[0].queue_length
+                else:
+                    self.rsu_queue_curr = 0
                 for v_check in self.vehicles:
                     v_check.update_queue_sync()
 
         # 队列长度同步（由FIFO队列管理，这里只做同步）
-        self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
+        if len(self.rsus) > 0:
+            self.rsu_queue_curr = self.rsus[0].queue_length
+        else:
+            self.rsu_queue_curr = 0
         for v_check in self.vehicles:
             v_check.update_queue_sync()
         
-        rates_v2i = self.channel.compute_rates(self.vehicles, Cfg.RSU_POS)
+        # 计算V2I通信速率（对每个RSU计算）
+        rates_v2i_dict = {}  # {(vehicle_id, rsu_id): rate}
+        for rsu in self.rsus:
+            rates = self.channel.compute_rates(self.vehicles, rsu.position)
+            for veh_id, rate in rates.items():
+                rates_v2i_dict[(veh_id, rsu.id)] = rate
 
         for v in self.vehicles:
             c_spd = 0.0
@@ -228,9 +404,13 @@ class VecOffloadingEnv(gym.Env):
             if tgt == 'Local':
                 comp_spd = v.cpu_freq
                 c_spd = 1e12
-            elif tgt == 'RSU':
-                comp_spd = Cfg.F_RSU
-                c_spd = rates_v2i.get(v.id, 1e-6)
+            elif isinstance(tgt, tuple) and tgt[0] == 'RSU':
+                # 多RSU场景：使用选定的RSU
+                rsu_id = tgt[1]
+                if 0 <= rsu_id < len(self.rsus):
+                    rsu = self.rsus[rsu_id]
+                    comp_spd = rsu.cpu_freq
+                    c_spd = rates_v2i_dict.get((v.id, rsu_id), 1e-6)
             elif isinstance(tgt, int):
                 target_veh = self.vehicles[tgt]
                 comp_spd = target_veh.cpu_freq
@@ -244,10 +424,13 @@ class VecOffloadingEnv(gym.Env):
 
                 if task_finished:
                     # 任务完成时，从队列中移除一个任务（FIFO顺序）
-                    # RSU多处理器队列管理器会按照任务分配顺序从对应处理器队列移除
-                    if tgt == 'RSU':
-                        self.rsu_queue_manager.dequeue_one()
-                        self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
+                    if isinstance(tgt, tuple) and tgt[0] == 'RSU':
+                        # 多RSU场景：从选定的RSU队列移除
+                        rsu_id = tgt[1]
+                        if 0 <= rsu_id < len(self.rsus):
+                            self.rsus[rsu_id].dequeue_task()
+                            if len(self.rsus) > 0:
+                                self.rsu_queue_curr = self.rsus[0].queue_length
                     elif isinstance(tgt, int):
                         target_veh = self.vehicles[tgt]
                         if target_veh.task_queue.get_queue_length() > 0:
@@ -273,13 +456,23 @@ class VecOffloadingEnv(gym.Env):
                             else:
                                 child_loc = None
 
-                            if child_loc is None and parent_loc == 'RSU':
-                                child_loc = 'RSU'
+                            # 如果子任务位置未定且父任务在RSU，默认子任务也在同一RSU
+                            if child_loc is None and self._is_rsu_location(parent_loc):
+                                child_loc = parent_loc
 
                             transfer_speed = 0.0
-                            same_location = (parent_loc == child_loc == 'RSU') or \
-                                          (parent_loc == child_loc == 'Local') or \
-                                          (isinstance(parent_loc, int) and isinstance(child_loc, int) and parent_loc == child_loc)
+                            # 判断是否在同一位置
+                            if self._is_rsu_location(parent_loc) and self._is_rsu_location(child_loc):
+                                # 两个都在RSU，检查是否是同一个RSU
+                                rsu_id_p = self._get_rsu_id_from_location(parent_loc)
+                                rsu_id_c = self._get_rsu_id_from_location(child_loc)
+                                same_location = (rsu_id_p is not None and rsu_id_p == rsu_id_c)
+                            elif parent_loc == 'Local' and child_loc == 'Local':
+                                same_location = True
+                            elif isinstance(parent_loc, int) and isinstance(child_loc, int):
+                                same_location = (parent_loc == child_loc)
+                            else:
+                                same_location = False
 
                             if same_location:
                                 transfer_speed = float('inf')
@@ -289,24 +482,27 @@ class VecOffloadingEnv(gym.Env):
                                 tx_pos = None
                                 rx_pos = None
 
-                                if parent_loc == 'Local' or parent_loc == 'RSU':
+                                # 确定发送方位置
+                                if parent_loc == 'Local' or self._is_rsu_location(parent_loc):
                                     tx_veh = v
                                     tx_pos = v.pos
                                 elif isinstance(parent_loc, int):
                                     tx_veh = self.vehicles[parent_loc]
                                     tx_pos = tx_veh.pos
 
+                                # 确定接收方位置
                                 if child_loc == 'Local':
                                     rx_veh = v
                                     rx_pos = v.pos
-                                elif child_loc == 'RSU':
-                                    rx_pos = Cfg.RSU_POS
+                                elif self._is_rsu_location(child_loc):
+                                    rsu_id = self._get_rsu_id_from_location(child_loc)
+                                    rx_pos = self._get_rsu_position(rsu_id)
                                 elif isinstance(child_loc, int):
                                     rx_veh = self.vehicles[child_loc]
                                     rx_pos = rx_veh.pos
 
                                 if tx_pos is not None and rx_pos is not None:
-                                    if child_loc == 'RSU':
+                                    if self._is_rsu_location(child_loc):
                                         transfer_speed = self.channel.compute_one_rate(tx_veh, rx_pos, 'V2I', self.time)
                                     else:
                                         transfer_speed = self.channel.compute_one_rate(tx_veh, rx_pos, 'V2V', self.time)
@@ -327,9 +523,17 @@ class VecOffloadingEnv(gym.Env):
                 child_loc = v.curr_target if child_id == v.curr_subtask else v.exec_locations[child_id]
 
                 current_speed = 0.0
-                same_location = (parent_loc == child_loc == 'RSU') or \
-                              (parent_loc == child_loc == 'Local') or \
-                              (isinstance(parent_loc, int) and isinstance(child_loc, int) and parent_loc == child_loc)
+                # 判断是否在同一位置（复用辅助函数）
+                if self._is_rsu_location(parent_loc) and self._is_rsu_location(child_loc):
+                    rsu_id_p = self._get_rsu_id_from_location(parent_loc)
+                    rsu_id_c = self._get_rsu_id_from_location(child_loc)
+                    same_location = (rsu_id_p is not None and rsu_id_p == rsu_id_c)
+                elif parent_loc == 'Local' and child_loc == 'Local':
+                    same_location = True
+                elif isinstance(parent_loc, int) and isinstance(child_loc, int):
+                    same_location = (parent_loc == child_loc)
+                else:
+                    same_location = False
 
                 if same_location:
                     current_speed = float('inf')
@@ -339,24 +543,27 @@ class VecOffloadingEnv(gym.Env):
                     tx_pos = None
                     rx_pos = None
 
-                    if parent_loc == 'Local' or parent_loc == 'RSU':
+                    # 确定发送方位置
+                    if parent_loc == 'Local' or self._is_rsu_location(parent_loc):
                         tx_veh = v
                         tx_pos = v.pos
                     elif isinstance(parent_loc, int):
                         tx_veh = self.vehicles[parent_loc]
                         tx_pos = tx_veh.pos
 
+                    # 确定接收方位置
                     if child_loc == 'Local':
                         rx_veh = v
                         rx_pos = v.pos
-                    elif child_loc == 'RSU':
-                        rx_pos = Cfg.RSU_POS
+                    elif self._is_rsu_location(child_loc):
+                        rsu_id = self._get_rsu_id_from_location(child_loc)
+                        rx_pos = self._get_rsu_position(rsu_id)
                     elif isinstance(child_loc, int):
                         rx_veh = self.vehicles[child_loc]
                         rx_pos = rx_veh.pos
 
                     if tx_pos is not None and rx_pos is not None:
-                        if child_loc == 'RSU':
+                        if self._is_rsu_location(child_loc):
                             current_speed = self.channel.compute_one_rate(tx_veh, rx_pos, 'V2I', self.time)
                         else:
                             current_speed = self.channel.compute_one_rate(tx_veh, rx_pos, 'V2V', self.time)
@@ -382,7 +589,10 @@ class VecOffloadingEnv(gym.Env):
 
                 v.task_dag.step_inter_task_transfers(child_id, transfer['speed'], Cfg.DT)
 
+            # 更新车辆位置（支持道路约束）
             v.update_pos(Cfg.DT, Cfg.MAP_SIZE)
+            # 将位置约束到道路上（可选：如果启用道路约束）
+            # v.pos = self.road_network.constrain_position_to_road(v.pos)
 
         self.time += Cfg.DT
 
@@ -467,7 +677,11 @@ class VecOffloadingEnv(gym.Env):
 
             # 使用FIFO队列计算等待时间
             local_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
-            rsu_wait_global = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
+            # 多RSU场景：使用所有RSU中的最小等待时间
+            if len(self.rsus) > 0:
+                rsu_wait_global = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
+            else:
+                rsu_wait_global = 0.0
 
             node_exec_times = np.zeros(num_tasks)
             cpu_fat = np.zeros(num_tasks)
@@ -481,9 +695,17 @@ class VecOffloadingEnv(gym.Env):
                     node_exec_times[i] = rem_comps[i] / v.cpu_freq
                     cpu_fat[i] = local_wait
                     channel_fat[i] = 0.0
-                elif loc == 'RSU':
-                    node_exec_times[i] = rem_comps[i] / Cfg.F_RSU
-                    cpu_fat[i] = rsu_wait_global
+                elif self._is_rsu_location(loc):
+                    # 多RSU场景：使用对应RSU的CPU频率
+                    rsu_id = self._get_rsu_id_from_location(loc)
+                    if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
+                        rsu = self.rsus[rsu_id]
+                        node_exec_times[i] = rem_comps[i] / rsu.cpu_freq
+                        cpu_fat[i] = rsu.get_estimated_wait_time()
+                    else:
+                        # 向后兼容：使用默认RSU频率
+                        node_exec_times[i] = rem_comps[i] / Cfg.F_RSU
+                        cpu_fat[i] = rsu_wait_global
                     channel_fat[i] = 0.0
                 elif isinstance(loc, int):
                     target_veh = self.vehicles[loc] if loc < len(self.vehicles) else v
@@ -506,14 +728,32 @@ class VecOffloadingEnv(gym.Env):
 
                     pred_finish = earliest_start[p] + node_exec_times[p]
 
-                    if pred_loc == curr_loc:
+                    # 判断是否在同一位置（支持RSU元组）
+                    if self._is_rsu_location(pred_loc) and self._is_rsu_location(curr_loc):
+                        rsu_id_p = self._get_rsu_id_from_location(pred_loc)
+                        rsu_id_c = self._get_rsu_id_from_location(curr_loc)
+                        same_location = (rsu_id_p is not None and rsu_id_p == rsu_id_c)
+                    elif pred_loc == 'Local' and curr_loc == 'Local':
+                        same_location = True
+                    elif isinstance(pred_loc, int) and isinstance(curr_loc, int):
+                        same_location = (pred_loc == curr_loc)
+                    else:
+                        same_location = False
+
+                    if same_location:
                         data_transfer_time = 0.0
                     else:
                         transfer_data = data_matrix[p, i]
                         if transfer_data <= 1e-9:
                             data_transfer_time = 0.0
                         else:
-                            est_rate = self._get_comm_rate(v, p, curr_loc, Cfg.RSU_POS)
+                            # 获取RSU位置（如果是RSU目标）
+                            rsu_pos = Cfg.RSU_POS  # 默认使用配置位置（向后兼容）
+                            if self._is_rsu_location(curr_loc):
+                                rsu_id = self._get_rsu_id_from_location(curr_loc)
+                                if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
+                                    rsu_pos = self.rsus[rsu_id].position
+                            est_rate = self._get_comm_rate(v, p, curr_loc, rsu_pos)
                             data_transfer_time = transfer_data / est_rate
 
                     max_pred_finish = max(max_pred_finish, pred_finish + data_transfer_time)
@@ -592,9 +832,14 @@ class VecOffloadingEnv(gym.Env):
         - 满足Gymnasium批处理要求
         """
         obs_list = []
-        rsu_wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
+        # 多RSU场景：使用所有RSU中的最小等待时间（用于观测）
+        if len(self.rsus) > 0:
+            rsu_wait_time = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
+            rsu_is_full = all([rsu.is_queue_full() for rsu in self.rsus])
+        else:
+            rsu_wait_time = 0.0
+            rsu_is_full = True
         rsu_load_norm = np.clip(rsu_wait_time / Cfg.DYNAMIC_MAX_WAIT_TIME, 0.0, 1.0)
-        rsu_is_full = self.rsu_queue_manager.is_full()
 
         dist_matrix = self._get_dist_matrix()
         vehicle_ids = [veh.id for veh in self.vehicles]
@@ -634,7 +879,20 @@ class VecOffloadingEnv(gym.Env):
             padded_node_feats[:num_nodes, :] = node_feats
 
             dist_rsu = self._get_rsu_dist(v)
-            est_v2i_rate = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I', curr_time=self.time)
+            # 多RSU场景：使用最近RSU的位置计算V2I速率
+            if len(self.rsus) > 0:
+                min_dist = float('inf')
+                nearest_rsu_pos = Cfg.RSU_POS
+                for rsu in self.rsus:
+                    if rsu.is_in_coverage(v.pos):
+                        dist = rsu.get_distance(v.pos)
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_rsu_pos = rsu.position
+                rsu_pos_for_v2i = nearest_rsu_pos
+            else:
+                rsu_pos_for_v2i = Cfg.RSU_POS
+            est_v2i_rate = self.channel.compute_one_rate(v, rsu_pos_for_v2i, 'V2I', curr_time=self.time)
             self_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
 
             self_info = np.array([
@@ -783,9 +1041,24 @@ class VecOffloadingEnv(gym.Env):
         rate = 1e-6
 
         if pred_loc == 'RSU' or curr_loc == 'RSU':
-            target_veh = rx_veh if pred_loc == 'RSU' else tx_veh
-            if target_veh:
-                rate = self.channel.compute_one_rate(target_veh, Cfg.RSU_POS, 'V2I', self.time)
+            # 确定目标位置（如果是RSU）
+            if self._is_rsu_location(pred_loc):
+                rsu_id = self._get_rsu_id_from_location(pred_loc)
+                if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
+                    rsu_pos = self.rsus[rsu_id].position
+                else:
+                    rsu_pos = Cfg.RSU_POS  # 向后兼容
+                target_veh = rx_veh if rx_veh else (tx_veh if tx_veh else self.vehicles[0] if len(self.vehicles) > 0 else None)
+                if target_veh:
+                    rate = self.channel.compute_one_rate(target_veh, rsu_pos, 'V2I', self.time)
+                else:
+                    rate = 1e6
+            else:
+                target_veh = rx_veh if rx_veh else tx_veh
+                if target_veh:
+                    rate = self.channel.compute_one_rate(target_veh, Cfg.RSU_POS, 'V2I', self.time)
+                else:
+                    rate = 1e6
             else:
                 rate = 1e6
         else:
@@ -938,7 +1211,11 @@ class VecOffloadingEnv(gym.Env):
         包含: 传输时间 + 排队时间 + 计算时间
         """
         if target == 'RSU':
-            wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
+            # 多RSU场景：使用所有RSU中的最小等待时间
+            if len(self.rsus) > 0:
+                wait_time = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
+            else:
+                wait_time = 0.0
             freq = Cfg.F_RSU
         elif isinstance(target, int) and 0 <= target < len(self.vehicles):
             target_veh = self.vehicles[target]
@@ -955,7 +1232,13 @@ class VecOffloadingEnv(gym.Env):
             input_data = dag.total_data[task_idx] if task_idx < len(dag.total_data) else 0.0
             if input_data > 0:
                 if target == 'RSU':
-                    dist = np.linalg.norm(self.vehicles[0].pos - Cfg.RSU_POS) if len(self.vehicles) > 0 else 500.0
+                    # 多RSU场景：使用最近RSU的距离
+                    if len(self.vehicles) > 0 and len(self.rsus) > 0:
+                        veh_pos = self.vehicles[0].pos
+                        min_dist = min([np.linalg.norm(veh_pos - rsu.position) for rsu in self.rsus])
+                        dist = min_dist
+                    else:
+                        dist = np.linalg.norm(self.vehicles[0].pos - Cfg.RSU_POS) if len(self.vehicles) > 0 else 500.0
                     rate = self._estimate_rate(dist, 'V2I', target)
                 else:
                     tx_pos = self.vehicles[0].pos if len(self.vehicles) > 0 else np.array([0, 0])
@@ -1014,8 +1297,12 @@ class VecOffloadingEnv(gym.Env):
             q_curr = 0
             q_max = Cfg.VEHICLE_QUEUE_LIMIT
         elif target == 'RSU':
-            q_curr = self.rsu_queue_curr
-            q_max = Cfg.RSU_QUEUE_LIMIT
+            # 多RSU场景：使用所有RSU的总队列长度
+            if len(self.rsus) > 0:
+                q_curr = sum([rsu.queue_length for rsu in self.rsus])
+            else:
+                q_curr = self.rsu_queue_curr
+            q_max = Cfg.RSU_QUEUE_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_LIMIT
         elif isinstance(target, int):
             if 0 <= target < len(self.vehicles):
                 q_curr = self.vehicles[target].task_queue_len
@@ -1056,8 +1343,19 @@ class VecOffloadingEnv(gym.Env):
         if target == 'Local':
             pass
         elif target == 'RSU':
-            dist = np.linalg.norm(v.pos - Cfg.RSU_POS)
-            if dist > Cfg.RSU_RANGE:
+            # 多RSU场景：检查是否在任何RSU覆盖范围内
+            in_range = False
+            if len(self.rsus) > 0:
+                for rsu in self.rsus:
+                    if rsu.is_in_coverage(v.pos):
+                        in_range = True
+                        break
+            else:
+                # 向后兼容：使用配置的RSU位置
+                dist = np.linalg.norm(v.pos - Cfg.RSU_POS)
+                in_range = (dist <= Cfg.RSU_RANGE)
+            
+            if not in_range:
                 penalty += Cfg.PENALTY_LINK_BREAK
         elif isinstance(target, int):
             if target < len(self.vehicles):
@@ -1070,12 +1368,19 @@ class VecOffloadingEnv(gym.Env):
         if target == 'Local':
             q_after = v.task_queue_len
         elif target == 'RSU':
-            q_after = self.rsu_queue_curr + 1
+            # 多RSU场景：估算总队列长度（使用第一个RSU作为参考）
+            if len(self.rsus) > 0:
+                q_after = sum([rsu.queue_length for rsu in self.rsus]) + 1
+            else:
+                q_after = self.rsu_queue_curr + 1
         elif isinstance(target, int):
             if target < len(self.vehicles):
                 q_after = self.vehicles[target].task_queue_len + 1
 
-        q_limit = Cfg.RSU_QUEUE_LIMIT if target == 'RSU' else Cfg.VEHICLE_QUEUE_LIMIT
+        if target == 'RSU':
+            q_limit = Cfg.RSU_QUEUE_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_LIMIT
+        else:
+            q_limit = Cfg.VEHICLE_QUEUE_LIMIT
         if q_after > q_limit:
             penalty += Cfg.PENALTY_OVERFLOW
 
