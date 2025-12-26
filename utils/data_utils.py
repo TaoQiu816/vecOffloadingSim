@@ -135,7 +135,7 @@ def process_env_obs(obs_list, device):
             u = torch.cat([src, dst])
             v = torch.cat([dst, src])
             local_topo['vehicle', 'v2v', 'vehicle'].edge_index = torch.stack([u, v])
-            # [关键修复] 填充 V2V edge_attr (全 1 或 0 占位，防止维度报错)
+            # 填充V2V边属性（防止维度错误）
             num_edges = u.size(0)
             local_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.ones((num_edges, edge_dim), dtype=torch.float32)
         else:
@@ -182,7 +182,7 @@ def process_env_obs(obs_list, device):
     if g_v2v_src:
         edge_index = torch.tensor([g_v2v_src, g_v2v_dst], dtype=torch.long)
         global_topo['vehicle', 'v2v', 'vehicle'].edge_index = edge_index
-        # [关键修复]
+        # 填充全局拓扑V2V边属性
         num_e = len(g_v2v_src)
         global_topo['vehicle', 'v2v', 'vehicle'].edge_attr = torch.ones((num_e, edge_dim), dtype=torch.float32)
     else:

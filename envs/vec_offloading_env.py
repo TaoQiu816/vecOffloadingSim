@@ -2,6 +2,8 @@ import gymnasium as gym
 import numpy as np
 from configs.config import SystemConfig as Cfg
 from envs.modules.channel import ChannelModel
+from envs.modules.queue_system import FIFOQueue
+from envs.modules.rsu_queue_manager import RSUQueueManager
 from envs.entities.vehicle import Vehicle
 from envs.entities.task_dag import DAGTask
 from utils.dag_generator import DAGGenerator
@@ -40,6 +42,9 @@ class VecOffloadingEnv(gym.Env):
         self.dag_gen = DAGGenerator()
         self.vehicles = []
         self.time = 0.0
+        # RSU多处理器队列管理器
+        self.rsu_queue_manager = RSUQueueManager()
+        # 保持向后兼容（使用总队列长度）
         self.rsu_queue_curr = 0
         self.last_global_cft = 0.0
         self._comm_rate_cache = {}
@@ -71,6 +76,8 @@ class VecOffloadingEnv(gym.Env):
         self.vehicles = []
         self.time = 0.0
         self.steps = 0
+        # 重置RSU队列管理器
+        self.rsu_queue_manager.clear()
         self.rsu_queue_curr = 0
         self._comm_rate_cache = {}
         self._cache_time_step = -1.0
@@ -91,7 +98,8 @@ class VecOffloadingEnv(gym.Env):
             adj, prof, data, ddl = self.dag_gen.generate(n_node, veh_f=v.cpu_freq)
             v.task_dag = DAGTask(0, adj, prof, data, ddl)
             v.task_dag.start_time = 0.0
-            v.task_queue_len = 0
+            v.task_queue.clear()  # 清空队列
+            v.task_queue_len = 0  # 同步队列长度
             speed = np.random.uniform(Cfg.VEL_MIN, Cfg.VEL_MAX)
             angle = np.random.uniform(0, 2 * np.pi)
             v.vel = np.array([speed * np.cos(angle), speed * np.sin(angle)])
@@ -146,22 +154,25 @@ class VecOffloadingEnv(gym.Env):
                 active_agents_count += 1
                 actual_target = target
 
+                # 使用FIFO队列进行溢出检查
                 if target == 'RSU':
-                    if self.rsu_queue_curr >= Cfg.RSU_QUEUE_LIMIT:
+                    if self.rsu_queue_manager.is_full():
                         actual_target = 'Local'
                 elif isinstance(target, int):
                     t_veh = self.vehicles[target]
-                    if t_veh.task_queue_len >= Cfg.VEHICLE_QUEUE_LIMIT:
+                    if t_veh.task_queue.is_full():
                         actual_target = 'Local'
 
+                # 计算等待时间（使用FIFO队列的精确计算）
                 wait_time = 0.0
                 if actual_target == 'RSU':
-                    wait_time = (self.rsu_queue_curr * self._mean_comp_load) / Cfg.F_RSU
+                    # 使用最小等待时间（因为新任务会选择负载最低的处理器）
+                    wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
                 elif actual_target == 'Local':
-                    wait_time = (v.task_queue_len * self._mean_comp_load) / v.cpu_freq
+                    wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
                 elif isinstance(actual_target, int):
                     t_veh = self.vehicles[actual_target]
-                    wait_time = (t_veh.task_queue_len * self._mean_comp_load) / t_veh.cpu_freq
+                    wait_time = t_veh.task_queue.get_estimated_wait_time(t_veh.cpu_freq)
 
                 step_congestion_cost += wait_time
 
@@ -175,17 +186,38 @@ class VecOffloadingEnv(gym.Env):
                     # 如果分配失败（任务已分配过或状态不允许），跳过队列更新
                     continue
 
+                # 获取任务计算量并加入FIFO队列
+                task_comp = v.task_dag.total_comp[subtask_idx]
+                
                 if actual_target == 'RSU':
-                    self.rsu_queue_curr += 1
+                    # RSU多处理器队列：选择负载最低的处理器队列
+                    processor_id = self.rsu_queue_manager.enqueue(task_comp)
+                    if processor_id is None:
+                        # 所有处理器队列都满，回退到Local
+                        actual_target = 'Local'
+                        v.curr_target = 'Local'  # 更新curr_target
+                        # 加入本地队列（如果本地队列也未满）
+                        if not v.task_queue.is_full():
+                            v.task_queue.enqueue(task_comp)
+                        # 如果本地队列也满，任务将被丢弃（由后续逻辑处理）
                 elif isinstance(actual_target, int):
-                    self.vehicles[actual_target].task_queue_len += 1
+                    t_veh = self.vehicles[actual_target]
+                    # 目标车辆队列
+                    t_veh.task_queue.enqueue(task_comp)
                 elif actual_target == 'Local':
-                    v.task_queue_len += 1
+                    # 本地队列
+                    v.task_queue.enqueue(task_comp)
+                
+                # 同步队列长度（向后兼容）
+                self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
+                for v_check in self.vehicles:
+                    v_check.update_queue_sync()
 
+        # 队列长度同步（由FIFO队列管理，这里只做同步）
+        self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
         for v_check in self.vehicles:
-            v_check.task_queue_len = min(v_check.task_queue_len, Cfg.VEHICLE_QUEUE_LIMIT)
-        self.rsu_queue_curr = min(self.rsu_queue_curr, Cfg.RSU_QUEUE_LIMIT)
-
+            v_check.update_queue_sync()
+        
         rates_v2i = self.channel.compute_rates(self.vehicles, Cfg.RSU_POS)
 
         for v in self.vehicles:
@@ -211,13 +243,20 @@ class VecOffloadingEnv(gym.Env):
                 task_finished = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
 
                 if task_finished:
+                    # 任务完成时，从队列中移除一个任务（FIFO顺序）
+                    # RSU多处理器队列管理器会按照任务分配顺序从对应处理器队列移除
                     if tgt == 'RSU':
-                        self.rsu_queue_curr = max(0, self.rsu_queue_curr - 1)
+                        self.rsu_queue_manager.dequeue_one()
+                        self.rsu_queue_curr = self.rsu_queue_manager.get_queue_length()
                     elif isinstance(tgt, int):
                         target_veh = self.vehicles[tgt]
-                        target_veh.task_queue_len = max(0, target_veh.task_queue_len - 1)
+                        if target_veh.task_queue.get_queue_length() > 0:
+                            target_veh.task_queue.dequeue_one()
+                        target_veh.update_queue_sync()
                     elif tgt == 'Local':
-                        v.task_queue_len = max(0, v.task_queue_len - 1)
+                        if v.task_queue.get_queue_length() > 0:
+                            v.task_queue.dequeue_one()
+                        v.update_queue_sync()
 
                     completed_task = v.curr_subtask
                     parent_loc = v.curr_target
@@ -426,8 +465,9 @@ class VecOffloadingEnv(gym.Env):
             if v.curr_subtask is not None and 0 <= v.curr_subtask < num_tasks:
                 task_locations[v.curr_subtask] = v.curr_target
 
-            local_wait = (v.task_queue_len * Cfg.MEAN_COMP_LOAD) / v.cpu_freq
-            rsu_wait_global = (self.rsu_queue_curr * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
+            # 使用FIFO队列计算等待时间
+            local_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+            rsu_wait_global = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
 
             node_exec_times = np.zeros(num_tasks)
             cpu_fat = np.zeros(num_tasks)
@@ -447,7 +487,7 @@ class VecOffloadingEnv(gym.Env):
                     channel_fat[i] = 0.0
                 elif isinstance(loc, int):
                     target_veh = self.vehicles[loc] if loc < len(self.vehicles) else v
-                    wait_target = (target_veh.task_queue_len * Cfg.MEAN_COMP_LOAD) / target_veh.cpu_freq
+                    wait_target = target_veh.task_queue.get_estimated_wait_time(target_veh.cpu_freq)
                     node_exec_times[i] = rem_comps[i] / target_veh.cpu_freq
                     cpu_fat[i] = wait_target
                     channel_fat[i] = 0.0
@@ -552,9 +592,9 @@ class VecOffloadingEnv(gym.Env):
         - 满足Gymnasium批处理要求
         """
         obs_list = []
-        rsu_wait_time = (self.rsu_queue_curr * self._mean_comp_load) / Cfg.F_RSU
+        rsu_wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
         rsu_load_norm = np.clip(rsu_wait_time / Cfg.DYNAMIC_MAX_WAIT_TIME, 0.0, 1.0)
-        rsu_is_full = self.rsu_queue_curr >= Cfg.RSU_QUEUE_LIMIT
+        rsu_is_full = self.rsu_queue_manager.is_full()
 
         dist_matrix = self._get_dist_matrix()
         vehicle_ids = [veh.id for veh in self.vehicles]
@@ -595,7 +635,7 @@ class VecOffloadingEnv(gym.Env):
 
             dist_rsu = self._get_rsu_dist(v)
             est_v2i_rate = self.channel.compute_one_rate(v, Cfg.RSU_POS, 'V2I', curr_time=self.time)
-            self_wait = (v.task_queue_len * self._mean_comp_load) / v.cpu_freq
+            self_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
 
             self_info = np.array([
                 v.vel[0] * self._inv_max_velocity, v.vel[1] * self._inv_max_velocity,
@@ -617,7 +657,7 @@ class VecOffloadingEnv(gym.Env):
 
                 if dist <= Cfg.V2V_RANGE:
                     rel_pos = (other.pos - v.pos) * self._inv_v2v_range
-                    n_wait = (other.task_queue_len * self._mean_comp_load) / other.cpu_freq
+                    n_wait = other.task_queue.get_estimated_wait_time(other.cpu_freq)
                     est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
 
                     neighbors.append([
@@ -811,13 +851,11 @@ class VecOffloadingEnv(gym.Env):
 
         if vehicle_id < len(self.vehicles):
             v = self.vehicles[vehicle_id]
+            wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
             freq = v.cpu_freq
-            queue_len = v.task_queue_len
         else:
             freq = Cfg.MIN_VEHICLE_CPU_FREQ
-            queue_len = 0
-
-        wait_time = (queue_len * Cfg.MEAN_COMP_LOAD) / freq
+            wait_time = 0.0
 
         node_comp = dag.total_comp
         local_exec_times = node_comp / freq
@@ -900,14 +938,12 @@ class VecOffloadingEnv(gym.Env):
         包含: 传输时间 + 排队时间 + 计算时间
         """
         if target == 'RSU':
-            queue_len = self.rsu_queue_curr
+            wait_time = self.rsu_queue_manager.get_min_wait_time(Cfg.F_RSU)
             freq = Cfg.F_RSU
-            wait_time = (queue_len * Cfg.MEAN_COMP_LOAD) / freq
         elif isinstance(target, int) and 0 <= target < len(self.vehicles):
             target_veh = self.vehicles[target]
-            queue_len = target_veh.task_queue_len
+            wait_time = target_veh.task_queue.get_estimated_wait_time(target_veh.cpu_freq)
             freq = target_veh.cpu_freq
-            wait_time = (queue_len * Cfg.MEAN_COMP_LOAD) / freq
         else:
             return self._calculate_local_execution_time(dag)
 

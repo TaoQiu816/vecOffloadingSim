@@ -4,12 +4,11 @@ import torch
 import os
 import sys
 
-# --- 导入自定义模块 ---
-# 将当前目录添加到系统路径，防止在不同目录下运行时的导入错误
+# 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from configs.config import SystemConfig as Cfg
-from configs.train_config import TrainConfig as TC  # [引入训练配置]
+from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from agents.mappo_agent import MAPPOAgent
 from agents.buffer import RolloutBuffer
@@ -37,28 +36,19 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    # =========================================================================
-    # 1. 初始化配置与日志记录器 (Config & Logger Init)
-    # =========================================================================
-    # 实验命名: 包含 DAG 节点数范围和车辆数，便于在 Tensorboard/Logs 中区分实验版本
+    # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
-
-    # 初始化数据记录器 (自动创建 logs 文件夹，处理 CSV 和 Tensorboard)
     recorder = DataRecorder(experiment_name=exp_name)
 
-    # --- 构建配置字典用于保存 (Reproducibility) ---
+    # 构建配置字典用于保存（便于实验复现）
     config_dict = {}
-
-    # 1.1 保存 SystemConfig (物理环境参数: 带宽, 算力, 任务大小等)
     for k, v in Cfg.__dict__.items():
-        # 过滤掉内置属性和方法
-        if k.startswith('__') or isinstance(v, (staticmethod, classmethod)) or callable(v): continue
+        if k.startswith('__') or isinstance(v, (staticmethod, classmethod)) or callable(v):
+            continue
         config_dict[k] = v
-
-    # 1.2 保存 TrainConfig (RL 超参数: LR, BatchSize, PPO Clip 等)
     device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
     if device == "cuda":
-        torch.cuda.empty_cache()  # 清理显存
+        torch.cuda.empty_cache()
 
     hyperparams = {
         "lr_actor": TC.LR_ACTOR,
@@ -86,19 +76,15 @@ def main():
     print(f" LR Actor:   {hyperparams['lr_actor']}")
     print(f"{'=' * 60}")
 
-    # =========================================================================
-    # 2. 初始化环境与智能体 (Env & Agent Init)
-    # =========================================================================
-    # 初始化 Gym 环境
+    # 初始化环境和智能体
     env = VecOffloadingEnv()
 
-    # 获取输入维度 (适配 Encoder)
+    # 获取输入维度
     TASK_DIM = TC.TASK_INPUT_DIM
     VEH_DIM = TC.VEH_INPUT_DIM
     RSU_DIM = TC.RSU_INPUT_DIM
 
-    # 初始化 MAPPO Agent (包含 Actor-Critic 网络)
-    #
+    # 初始化MAPPO智能体
     agent = MAPPOAgent(
         task_dim=TASK_DIM,
         veh_dim=VEH_DIM,
@@ -106,7 +92,7 @@ def main():
         device=hyperparams['device']
     )
 
-    # 初始化经验回放池 (用于存储 Trajectories)
+    # 初始化经验回放池
     buffer = RolloutBuffer(
         num_agents=Cfg.NUM_VEHICLES,
         gamma=TC.GAMMA,
@@ -123,8 +109,7 @@ def main():
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
-        # 学习率衰减策略
-        # [修改] 使用 Config 中的衰减率 TC.LR_DECAY_RATE (0.92) 而不是硬编码的 0.9
+        # 学习率衰减
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
             agent.decay_lr(decay_rate=TC.LR_DECAY_RATE)
             print(f"[Info] LR Decayed at Episode {episode}")
@@ -136,7 +121,7 @@ def main():
         ep_start_time = time.time()
         step_logs_buffer = []
 
-        # [统计容器] 用于计算多智能体指标 (公平性、协作率等)
+        # 统计容器：用于计算多智能体指标（公平性、协作率等）
         stats = {
             "power_sum": 0.0,
             "local_cnt": 0,
@@ -145,67 +130,57 @@ def main():
             "queue_len_sum": 0,
             "rsu_queue_sum": 0,
             "assigned_cpu_sum": 0.0,
-            # 每个智能体的独立累积奖励 (用于计算 Jain's Fairness Index)
-            "agent_rewards": np.zeros(Cfg.NUM_VEHICLES),
-            # 协作关系矩阵 [Source, Target] (用于分析谁卸载给了谁)
-            "v2v_matrix": np.zeros((Cfg.NUM_VEHICLES, Cfg.NUM_VEHICLES))
+            "agent_rewards": np.zeros(Cfg.NUM_VEHICLES),  # 每个智能体的累积奖励（用于计算公平性）
+            "v2v_matrix": np.zeros((Cfg.NUM_VEHICLES, Cfg.NUM_VEHICLES))  # 协作关系矩阵
         }
 
-        # --- Rollout Loop (采集轨迹: 1个 Episode 包含 Max_Steps) ---
+        # Rollout循环：采集轨迹
         for step in range(hyperparams['max_steps_per_ep']):
-            # A. 使用data_utils统一构建图数据 (确保格式一致)
-            # process_env_obs返回: dag_batch, local_topo_batch, global_topo
+            # 构建图数据（统一通过data_utils处理）
             dag_batch, local_topo_batch, global_topo = process_env_obs(raw_obs_list, agent.device)
 
-            # B. 智能体决策 (Select Action) - 直接使用batch对象
-            # 输入: Batch对象 (select_action已支持)
-            # 输出: Dict {'action_d', 'action_p', 'logprob_d', ...}
+            # 智能体决策
             action_dict = agent.select_action(dag_batch, local_topo_batch)
 
-            # D. 动作解码 (Decode Actions)
-            # Neural Output (Flatten Index) -> Env Input (Subtask ID, Target ID)
-            # Num_Targets = Local(1) + RSU(1) + Neighbors(N-1) = N + 1
+            # 动作解码：将策略输出转换为环境动作格式
             num_targets_decode = Cfg.NUM_VEHICLES + 1
             env_actions = agent.decode_actions(action_dict['action_d'], action_dict['power_val'], num_targets_decode)
 
-            # E. 环境步进 (Env Step)
+            # 环境步进
             next_raw_obs_list, rewards, done, info = env.step(env_actions)
 
-            # [统计] 累加每个智能体的实时奖励
+            # 统计：累加每个智能体的实时奖励
             stats["agent_rewards"] += np.array(rewards)
 
-            # F. 获取当前状态价值 (Value) 用于 GAE
+            # 获取状态价值（用于GAE计算）
             values = agent.get_value(dag_batch, local_topo_batch)
 
-            # G. 存入 Buffer
-            # [修改] 将batch拆分为列表供Buffer使用
+            # 存入Buffer（将batch拆分为列表）
             dag_graph_list, topo_graph_list = split_batch_to_list(dag_batch, local_topo_batch)
             buffer.add(
                 dag_list=dag_graph_list,
                 topo_list=topo_graph_list,
                 act_d=action_dict['action_d'],
-                act_c=action_dict['action_p'],  # 存原始采样值 (未截断)
-                logprob=action_dict['logprob_total'],  # 关键修改：直接使用 total 防止维度广播错误
+                act_c=action_dict['action_p'],
+                logprob=action_dict['logprob_total'],
                 val=values,
                 rew=rewards,
                 done=done
             )
 
-            # H. 过程统计 (Statistics)
-            # 这里的逻辑是将所有车辆的奖励求和再取平均，这已经是"全体平均奖励"的计算方式
+            # 过程统计
             step_r = sum(rewards) / Cfg.NUM_VEHICLES
             ep_reward += step_r
 
             for i, act in enumerate(env_actions):
                 tgt = act['target']
 
-                # 1. 统计功率和队列
+                # 统计功率和队列
                 stats['power_sum'] += act['power']
                 stats['queue_len_sum'] += env.vehicles[i].task_queue_len
 
-                # 2. 分类统计逻辑 (Local / RSU / Neighbor)
+                # 分类统计：Local / RSU / Neighbor
                 if tgt == 0:
-                    # --- 本地计算 (Local) ---
                     stats['local_cnt'] += 1
                     stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
 
@@ -218,28 +193,22 @@ def main():
                     # --- V2V 卸载 (Neighbor) ---
                     stats['neighbor_cnt'] += 1
 
-                    # 映射逻辑：Env Target ID (2+) -> Neighbor List Index (0+)
-                    # 这里的索引对应 stats["v2v_matrix"] 的列
+                    # 环境目标ID(2+)转换为邻居列表索引(0+)
                     neighbor_idx = tgt - 2
-
-                    # 更新协作矩阵
                     if neighbor_idx < stats["v2v_matrix"].shape[1]:
                         stats["v2v_matrix"][i, neighbor_idx] += 1
 
                     # 算力统计：查找对应的邻居车辆
-                    # candidate_vehs 是 [0, 1, ... i-1, i+1, ...] (排除自己)
                     candidate_vehs = [v for v in env.vehicles if v.id != i]
-
                     if 0 <= neighbor_idx < len(candidate_vehs):
                         target_veh = candidate_vehs[neighbor_idx]
                         stats['assigned_cpu_sum'] += target_veh.cpu_freq
                     else:
-                        # 兜底：如果索引异常，计入本地算力
                         stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
 
             stats['rsu_queue_sum'] += env.rsu_queue_curr
 
-            # 记录详细日志 (用于 CSV)
+            # 记录详细日志
             for i, act in enumerate(env_actions):
                 step_logs_buffer.append({
                     "episode": episode, "step": step, "veh_id": i,
@@ -248,56 +217,41 @@ def main():
                     "q_len": env.vehicles[i].task_queue_len
                 })
 
-            # 更新观测
             raw_obs_list = next_raw_obs_list
-            if done: break
+            if done:
+                break
 
-        # =========================================================================
-        # 4. Episode 结束后的分析与更新 (Post-Episode)
-        # =========================================================================
+        # Episode结束后的分析与更新
         total_steps = step + 1
         total_decisions = total_steps * Cfg.NUM_VEHICLES
 
-        # --- Metric 1: Jain's Fairness Index (公平性指数) ---
-        # 衡量系统资源分配或奖励分配的公平程度 (1.0 为绝对公平)
+        # 计算公平性指数（Jain's Fairness Index，1.0为绝对公平）
         sum_agent_rew = np.sum(stats["agent_rewards"])
         sum_sq_agent_rew = np.sum(stats["agent_rewards"] ** 2)
         fairness_index = (sum_agent_rew ** 2) / (Cfg.NUM_VEHICLES * sum_sq_agent_rew + 1e-9)
 
-        # --- Metric 2: 个体奖励差异 (Gap) ---
+        # 个体奖励差异
         reward_gap = np.max(stats["agent_rewards"]) - np.min(stats["agent_rewards"])
 
-        # --- Metric 3: 协作率 ---
+        # 协作率
         total_v2v_actions = np.sum(stats["v2v_matrix"])
         collaboration_rate = (total_v2v_actions / total_decisions) * 100
 
-        # --- PPO 更新 (Update) ---
-        # 1. 计算最后一个状态的 Value (用于 GAE 的截断)
-        # 使用process_env_obs确保格式一致
+        # PPO更新
         last_dag_batch, last_topo_batch, _ = process_env_obs(raw_obs_list, agent.device)
         last_val = agent.get_value(last_dag_batch, last_topo_batch)
-
-        # 2. 计算 Advantage & Return
         buffer.compute_returns_and_advantages(last_val, done)
-
-        # 3. 执行梯度下降更新
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
-
-        # 4. 清空 Buffer
-        # [修改] 使用 buffer.clear() 替代 reset()，确保显式清理 PyG 对象引用
         buffer.clear()
 
         # 显存清理
         if episode % 10 == 0 and device == "cuda":
             torch.cuda.empty_cache()
 
-        # --- 汇总本 Episode 数据 ---
+        # 汇总Episode数据
         duration = time.time() - ep_start_time
         avg_assigned_cpu = stats['assigned_cpu_sum'] / total_decisions
-
-        # [修改] 增加平均奖励记录
         avg_step_reward = ep_reward / total_steps
-
         avg_power = stats['power_sum'] / total_decisions
         avg_veh_queue = stats['queue_len_sum'] / total_decisions
         avg_rsu_queue = stats['rsu_queue_sum'] / total_steps
@@ -306,13 +260,13 @@ def main():
         pct_rsu = (stats['rsu_cnt'] / total_decisions) * 100
         pct_v2v = (stats['neighbor_cnt'] / total_decisions) * 100
 
-        # --- 成功率统计 (Success Rates) ---
+        # 成功率统计
 
-        # 1. 车辆级成功率 (Vehicle Success Rate)
+        # 车辆级成功率
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
         veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
 
-        # 2. [新增] 子任务级成功率 (Subtask Success Rate)
+        # 子任务级成功率
         total_subtasks = 0
         completed_subtasks = 0
         for v in env.vehicles:
@@ -324,8 +278,7 @@ def main():
         subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
 
         # --- 控制台输出 (Console Log) ---
-        # [修改] 增加 AvgR (平均步奖励), CPU (平均分配算力 GHz)
-        # [修改] 优化了打印列宽，避免数据粘连
+        # 打印训练进度
         if episode == 1 or episode % 10 == 0:
             header = (
                 f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} {'CPU':<4} | "
@@ -344,25 +297,25 @@ def main():
               f"{update_loss:<8.3f} | "
               f"{duration:<4.1f}")
 
-        # --- 记录到 Tensorboard / CSV ---
+        # 记录到Tensorboard/CSV
         recorder.log_step(step_logs_buffer)
 
         # 记录多维度指标
         episode_metrics = {
             "episode": episode,
             "total_reward": ep_reward,
-            "avg_step_reward": avg_step_reward,  # [新增] 每步平均奖励
+            "avg_step_reward": avg_step_reward,
             "loss": update_loss,
             "veh_success_rate": veh_success_rate,
-            "subtask_success_rate": subtask_success_rate,  # [新增] 子任务成功率
+            "subtask_success_rate": subtask_success_rate,
             "pct_local": pct_local,
             "pct_rsu": pct_rsu,
             "pct_v2v": pct_v2v,
             "avg_power": avg_power,
-            "avg_queue_len": avg_veh_queue,  # [新增] 平均队列长度
-            "ma_fairness": fairness_index,  # 公平性
-            "ma_reward_gap": reward_gap,  # 贫富差距
-            "ma_collaboration": collaboration_rate,  # 协作程度
+            "avg_queue_len": avg_veh_queue,
+            "ma_fairness": fairness_index,
+            "ma_reward_gap": reward_gap,
+            "ma_collaboration": collaboration_rate,
             "max_agent_reward": np.max(stats["agent_rewards"]),
             "min_agent_reward": np.min(stats["agent_rewards"]),
             "avg_assigned_cpu_ghz": avg_assigned_cpu / 1e9,
@@ -370,23 +323,17 @@ def main():
         }
         recorder.log_episode(episode_metrics)
 
-        # --- 模型保存 (Checkpoint) ---
-        # 保存最佳模型
+        # 模型保存
         if ep_reward > best_reward:
             best_reward = ep_reward
             recorder.save_model(agent, episode, is_best=True)
 
-        # 定期保存
         if episode % TC.SAVE_INTERVAL == 0:
             recorder.save_model(agent, episode, is_best=False)
 
-    # =========================================================================
-    # 5. 训练结束与绘图 (Finalize)
-    # =========================================================================
+    # 训练结束与绘图
     print("\n[Info] Training Finished.")
     print("[Info] Generating plots...")
-
-    # 自动生成训练曲线图 (Reward, Loss, Metrics)
     recorder.auto_plot()
     print(f"[Info] Plots saved to {recorder.plot_dir}")
 

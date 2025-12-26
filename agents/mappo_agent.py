@@ -118,7 +118,7 @@ class MAPPOAgent:
             else:
                 topo_batch = topo_list.to(self.device) if hasattr(topo_list, 'to') else topo_list
 
-        # [修复] 强制转换为 Tensor 并移动到 Device (无论输入是 list 还是 numpy)
+        # 转换candidates_mask为Tensor
         if candidates_mask is not None:
             candidates_mask = torch.as_tensor(candidates_mask, dtype=torch.bool).to(self.device)
 
@@ -145,9 +145,7 @@ class MAPPOAgent:
             # --- C. 动作后处理 ---
             action_power_clamped = torch.clamp(action_power_sample, 0.01, 1.0)
 
-            # [新增关键修正] 计算联合 LogProb
-            # 原因: PPO 更新时计算 ratios 需要 (log_d + log_p) - old_log_total
-            # 如果不在此处合并，Buffer 可能会存错，导致 Loss 爆炸
+            # 计算联合LogProb（PPO更新时需要）
             logprob_total = action_discrete_logprob + action_power_logprob
 
         return {
@@ -156,7 +154,7 @@ class MAPPOAgent:
             'power_val': action_power_clamped,
             'logprob_d': action_discrete_logprob,
             'logprob_p': action_power_logprob,
-            'logprob_total': logprob_total  # [新增] 存入 Buffer 供 update 使用
+            'logprob_total': logprob_total
         }
 
     def get_value(self, dag_list, topo_list):
@@ -305,8 +303,7 @@ class MAPPOAgent:
                 total_new_logprob = new_logprobs_d + new_logprobs_p
 
                 # D. 概率比率 (Importance Sampling Ratio)
-                # [关键修正] 确保维度对齐，防止 broadcasting 错误导致 ratio 异常
-                # mb_old_logprobs 必须是在 select_action 里计算好的 'logprob_total'
+                # 计算重要性采样比率（确保维度对齐）
                 ratios = torch.exp(total_new_logprob - mb_old_logprobs)
 
                 # E. PPO Clip Loss
@@ -331,11 +328,10 @@ class MAPPOAgent:
                 self.optimizer.step()
 
                 avg_loss += loss.item()
-                # [新增关键修正] 显式释放 PyG Batch 对象，解决 27G 内存泄漏
-                # PyG 的 Batch 对象比较重，且容易在 Loop 中残留引用
+                # 显式释放PyG Batch对象（防止内存泄漏）
                 del mb_dag, mb_topo, logits, raw_power
 
-        # [新增] 每一轮 update 结束后清理缓存
+        # 清理GPU缓存
         if self.device == 'cuda':
             torch.cuda.empty_cache()
 

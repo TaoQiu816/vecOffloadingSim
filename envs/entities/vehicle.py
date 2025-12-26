@@ -1,5 +1,6 @@
 import numpy as np
 from configs.config import SystemConfig as Cfg
+from envs.modules.queue_system import FIFOQueue
 
 
 class Vehicle:
@@ -24,6 +25,9 @@ class Vehicle:
         self.vel = np.array([speed * np.cos(angle), speed * np.sin(angle)])
 
         # --- 资源约束 (Queue Constraint) ---
+        # 使用FIFO队列系统管理任务
+        self.task_queue = FIFOQueue(max_buffer_size=Cfg.VEHICLE_QUEUE_LIMIT)
+        # 保持向后兼容的属性
         self.task_queue_len = 0
         self.max_queue_size = Cfg.VEHICLE_QUEUE_LIMIT
 
@@ -49,10 +53,14 @@ class Vehicle:
     @property
     def is_queue_full(self):
         """
-        [辅助属性] 判断队列是否已满
-        用于 Env 中的 Action Masking。
+        判断队列是否已满
+        用于Env中的Action Masking
         """
-        return self.task_queue_len >= self.max_queue_size
+        return self.task_queue.is_full()
+    
+    def update_queue_sync(self):
+        """同步队列长度属性（用于向后兼容）"""
+        self.task_queue_len = self.task_queue.get_queue_length()
 
     def update_pos(self, dt, map_size):
         """

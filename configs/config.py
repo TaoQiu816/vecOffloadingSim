@@ -115,6 +115,9 @@ class SystemConfig:
     # 当RSU队列>50时，排队时间(>0.17s)可能超过本地执行时间(0.05-0.17s)
     VEHICLE_QUEUE_LIMIT = 20  # 车辆任务队列上限
     RSU_QUEUE_LIMIT = 100  # RSU全局队列上限 (从40增加到100)
+    
+    # RSU多处理器配置
+    RSU_NUM_PROCESSORS = 4  # RSU处理器数量（多核处理器架构）
 
     # =========================================================================
     # 5. DAG 任务生成参数 (Task Generation)
