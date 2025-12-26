@@ -15,6 +15,21 @@ from agents.mappo_agent import MAPPOAgent
 from agents.buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from utils.graph_builder import GraphBuilder
+from utils.data_utils import process_env_obs
+from torch_geometric.data import Batch, Data, HeteroData
+
+
+def split_batch_to_list(dag_batch, topo_batch):
+    """
+    将Batch对象拆分为列表，用于Buffer存储
+    """
+    # DAG Batch可以直接使用to_data_list
+    dag_list = dag_batch.to_data_list()
+    
+    # Topology Batch (HeteroData Batch) 也支持to_data_list
+    topo_list = topo_batch.to_data_list()
+    
+    return dag_list, topo_list
 
 
 def main():
@@ -138,26 +153,14 @@ def main():
 
         # --- Rollout Loop (采集轨迹: 1个 Episode 包含 Max_Steps) ---
         for step in range(hyperparams['max_steps_per_ep']):
-            current_time = env.time
-            dag_graph_list = []
+            # A. 使用data_utils统一构建图数据 (确保格式一致)
+            # process_env_obs返回: dag_batch, local_topo_batch, global_topo
+            dag_batch, local_topo_batch, global_topo = process_env_obs(raw_obs_list, agent.device)
 
-            # A. 构建 DAG 图数据 (含 Task Mask 和 Target Mask)
-            for i, v_obs in enumerate(raw_obs_list):
-                # 从 Obs 中提取 Target Mask (物理约束)
-                t_mask = v_obs.get('target_mask', None)
-                # 使用 GraphBuilder 将原始 Obs 转换为 PyG Data
-                dag_data = GraphBuilder.get_dag_graph(env.vehicles[i].task_dag, current_time, target_mask=t_mask)
-                dag_graph_list.append(dag_data)
-
-            # B. 构建拓扑图数据 (含 Edge Attributes)
-            # 拓扑图对所有智能体是共享的 (Shared View)，但为了 Batch 处理，复制 N 份
-            topo_data = GraphBuilder.get_topology_graph(env.vehicles, env.rsu_queue_curr)
-            topo_graph_list = [topo_data] * Cfg.NUM_VEHICLES
-
-            # C. 智能体决策 (Select Action)
-            # 输入: List[Data], List[HeteroData]
+            # B. 智能体决策 (Select Action) - 直接使用batch对象
+            # 输入: Batch对象 (select_action已支持)
             # 输出: Dict {'action_d', 'action_p', 'logprob_d', ...}
-            action_dict = agent.select_action(dag_graph_list, topo_graph_list)
+            action_dict = agent.select_action(dag_batch, local_topo_batch)
 
             # D. 动作解码 (Decode Actions)
             # Neural Output (Flatten Index) -> Env Input (Subtask ID, Target ID)
@@ -172,10 +175,11 @@ def main():
             stats["agent_rewards"] += np.array(rewards)
 
             # F. 获取当前状态价值 (Value) 用于 GAE
-            values = agent.get_value(dag_graph_list, topo_graph_list)
+            values = agent.get_value(dag_batch, local_topo_batch)
 
             # G. 存入 Buffer
-            # [修改] 使用 Agent 返回的 logprob_total，确保维度和数值的绝对正确
+            # [修改] 将batch拆分为列表供Buffer使用
+            dag_graph_list, topo_graph_list = split_batch_to_list(dag_batch, local_topo_batch)
             buffer.add(
                 dag_list=dag_graph_list,
                 topo_list=topo_graph_list,
@@ -269,14 +273,9 @@ def main():
 
         # --- PPO 更新 (Update) ---
         # 1. 计算最后一个状态的 Value (用于 GAE 的截断)
-        last_dag_list = []
-        for i, v_obs in enumerate(raw_obs_list):
-            t_mask = v_obs.get('target_mask', None)
-            d = GraphBuilder.get_dag_graph(env.vehicles[i].task_dag, env.time, target_mask=t_mask)
-            last_dag_list.append(d)
-
-        last_topo_list = [GraphBuilder.get_topology_graph(env.vehicles, env.rsu_queue_curr)] * Cfg.NUM_VEHICLES
-        last_val = agent.get_value(last_dag_list, last_topo_list)
+        # 使用process_env_obs确保格式一致
+        last_dag_batch, last_topo_batch, _ = process_env_obs(raw_obs_list, agent.device)
+        last_val = agent.get_value(last_dag_batch, last_topo_batch)
 
         # 2. 计算 Advantage & Return
         buffer.compute_returns_and_advantages(last_val, done)

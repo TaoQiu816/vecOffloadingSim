@@ -40,10 +40,10 @@ def process_env_obs(obs_list, device):
 
     all_veh_tensor = torch.FloatTensor(all_veh_feats_np)
 
-    # RSU Feature (补齐到 7 维)
-    # [load, 0.5, 0.5, 0, 0, 0, 0]
+    # RSU Feature (与TrainConfig.RSU_INPUT_DIM=1一致)
+    # [load] - 仅保留归一化负载
     rsu_load = obs_list[0]['rsu_info'][0]
-    rsu_feat_vec = torch.tensor([[rsu_load, 0.5, 0.5, 0, 0, 0, 0]], dtype=torch.float32)
+    rsu_feat_vec = torch.tensor([[rsu_load]], dtype=torch.float32)
 
     # =========================================================================
     # Part 1: 遍历每个 Agent，构建 DAG 和 Actor 局部数据

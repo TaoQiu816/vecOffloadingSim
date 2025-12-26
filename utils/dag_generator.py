@@ -11,13 +11,29 @@ except ImportError:
 
 
 class DAGGenerator:
+    """
+    DAG 任务生成器
+    
+    功能：
+    - 根据配置参数生成随机DAG任务
+    - 计算相对截止时间（Deadline）
+    - 确保生成的DAG结构合理（至少有一个入口和出口节点）
+    
+    核心原则：
+    - 只负责"生"任务，不负责"做"任务（调度逻辑在环境层）
+    - Deadline计算基于理想本地执行时间，确保本地计算无法满足
+    """
+    
     def __init__(self):
         """
-        [DAG 任务生成器]
-
-        修改点:
-        1. 不再通过 kwargs 传参，而是直接读取 Cfg 中的物理约束范围。
-        2. 确保生成的计算量(Comp)和数据量(Data)与环境的归一化基准一致。
+        初始化DAG生成器
+        
+        从SystemConfig中读取参数：
+        - 计算量范围（MIN_COMP, MAX_COMP）
+        - 数据量范围（MIN_DATA, MAX_DATA）
+        - 边数据量范围（MIN_EDGE_DATA, MAX_EDGE_DATA）
+        - DAG拓扑参数（DAG_FAT, DAG_DENSITY, DAG_REGULAR, DAG_CCR）
+        - Deadline因子范围（DEADLINE_TIGHTENING_MIN, DEADLINE_TIGHTENING_MAX）
         """
         # --- 1. 任务属性范围 ---
         # 计算量范围 (Cycles)
@@ -86,14 +102,24 @@ class DAGGenerator:
 
         # --- 2. Fallback 生成策略 ---
         if use_fallback:
+            base_edges = num_nodes - 1  # 最小边数（链式结构）
+            max_extra = num_nodes * (num_nodes - 1) // 2 - base_edges  # 最大额外边数
+            
+            # [关键修改] 根据 CCR 调整边密度
+            # CCR 越高，通信越多，需要更多的边来传输数据
+            ccr_factor = np.clip(self.ccr, 0.2, 2.0) / 1.0  # 归一化到 [0.2, 2.0] 范围
+            edge_prob = min(0.7, 0.2 + 0.3 * ccr_factor)  # 边密度随 CCR 增加
+            
             for i in range(num_nodes - 1):
                 adj_matrix[i, i + 1] = 1
-                data_matrix[i, i + 1] = np.random.uniform(*self.edge_data_range)
+                edge_data = np.random.uniform(*self.edge_data_range) * ccr_factor
+                data_matrix[i, i + 1] = edge_data
 
-                if i + 2 < num_nodes and np.random.rand() > 0.7:
+                if i + 2 < num_nodes and np.random.rand() < edge_prob:
                     target = np.random.randint(i + 2, num_nodes)
                     adj_matrix[i, target] = 1
-                    data_matrix[i, target] = np.random.uniform(*self.edge_data_range)
+                    edge_data = np.random.uniform(*self.edge_data_range) * ccr_factor
+                    data_matrix[i, target] = edge_data
 
         # --- 3. 生成节点属性 (Profiles) ---
         profiles = []
@@ -117,37 +143,67 @@ class DAGGenerator:
 
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
-        基于车辆个体算力计算 Deadline。
+        [Deadline计算 - 相对截止时间]
+        
+        计算公式: T_deadline = γ × (W_total / f_local)
+        - W_total: DAG所有子任务的计算量之和 (Cycles)
+        - f_local: 车辆本地CPU频率 (Hz)
+        - γ: 截止时间因子（紧缩因子），可调整范围 [gamma_min, gamma_max]
+        
+        设计原则:
+        - "Deadline是铁律，只看硬件能力，不听任何借口（不看排队）"
+        - 明确排除本地排队时延，确保"本地计算必死"
+        - γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
+        
+        注意：此函数只负责"生"任务，不负责"做"任务（调度逻辑在环境层）
+
+        Args:
+            n: 节点数
+            adj: 邻接矩阵
+            profiles: 节点属性列表 [{'comp': cycles, 'input_data': bits}, ...]
+            f_base: 车辆本地CPU频率 (Hz)，如果为None则使用Config基准
+
+        Returns:
+            float: Deadline时间 (秒)，保证 >= 0.1，不会是NaN或负数
         """
-        G = nx.DiGraph()
+        # 1. 获取本地算力（如果未提供则使用最小值）
+        if f_base is None or f_base <= 0:
+            f_base = Cfg.MIN_VEHICLE_CPU_FREQ
+        
+        # 2. 计算总计算量（所有子任务的计算量之和）
+        total_comp = sum(p['comp'] for p in profiles)
+        
+        # 安全检查：确保计算量有效
+        if total_comp <= 0 or not np.isfinite(total_comp):
+            # 如果计算量无效，使用最小值
+            total_comp = Cfg.MIN_COMP
+        
+        # 3. 计算理想本地执行时间（不考虑排队）
+        t_local_ideal = total_comp / f_base
+        
+        # 安全检查：确保执行时间有效
+        if not np.isfinite(t_local_ideal) or t_local_ideal <= 0:
+            t_local_ideal = Cfg.MIN_COMP / Cfg.MIN_VEHICLE_CPU_FREQ
 
-        # 使用传入的车辆频率，如果没有则使用全局基准
-        exec_f = f_base if f_base is not None else getattr(Cfg, 'F_VEHICLE', 1e9)
+        # 4. 获取截止时间因子（紧缩因子）
+        gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 0.70)
+        gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 0.80)
+        
+        # 确保gamma范围合理
+        gamma_min = max(0.1, min(gamma_min, 0.99))  # 限制在 [0.1, 0.99]
+        gamma_max = max(gamma_min, min(gamma_max, 0.99))  # gamma_max >= gamma_min
+        
+        gamma = np.random.uniform(gamma_min, gamma_max)
 
-        # 构建图: 节点权重 = 本地计算时间
-        # 注意: 计算 Deadline 的基准通常是 "本地串行执行时间"，所以不考虑传输时间
-        for i in range(n):
-            t_comp = profiles[i]['comp'] / exec_f
-            G.add_node(i, weight=t_comp)
+        # 5. 计算相对截止时间
+        deadline = gamma * t_local_ideal
+        
+        # 6. 最终安全检查：确保deadline是有效的正数
+        if not np.isfinite(deadline) or deadline <= 0:
+            # 如果计算出错，返回最小值
+            deadline = 0.1
+        else:
+            # 确保deadline不小于最小值
+            deadline = max(deadline, 0.1)
 
-        # 添加边
-        rows, cols = np.nonzero(adj)
-        for u, v in zip(rows, cols):
-            G.add_edge(u, v)
-
-        try:
-            # 寻找关键路径 (本地计算时间最长的路径)
-            path = nx.dag_longest_path(G, weight='weight')
-            critical_time = sum(G.nodes[i]['weight'] for i in path)
-
-            # [关键修改] 使用 Config 中的范围因子 [0.8, 1.5]
-            # 0.8 (Hard): 逼迫卸载; 1.5 (Easy): 允许本地
-            f_min = getattr(Cfg, 'DEADLINE_FACTOR_MIN', 0.8)
-            f_max = getattr(Cfg, 'DEADLINE_FACTOR_MAX', 1.5)
-            factor = np.random.uniform(f_min, f_max)
-
-            # 加上极小值防止为 0
-            return max(critical_time * factor, 0.1)
-        except Exception:
-            # 异常兜底
-            return 1.0
+        return float(deadline)

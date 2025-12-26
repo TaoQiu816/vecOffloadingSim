@@ -88,16 +88,35 @@ class MAPPOAgent:
         [推理/交互阶段] 选择动作。
 
         Args:
-            dag_list: DAG 任务图列表 (PyG Data)。
-            topo_list: 拓扑图列表 (PyG HeteroData)。
+            dag_list: DAG 任务图列表 (PyG Data) 或 Batch 对象。
+            topo_list: 拓扑图列表 (PyG HeteroData) 或 Batch 对象。
             candidates_mask: 离散动作的掩码 (Tensor or None)。
 
         Returns:
             dict: 包含离散动作、连续动作(raw & clamped)、对数概率等。
         """
-        # 1. 在线 Batching: 将列表转换为 PyG Batch 对象
-        dag_batch = Batch.from_data_list(dag_list).to(self.device)
-        topo_batch = Batch.from_data_list(topo_list).to(self.device)
+        # 1. 在线 Batching: 如果是列表则转换为 Batch 对象，否则直接使用
+        if isinstance(dag_list, list):
+            dag_batch = Batch.from_data_list(dag_list).to(self.device)
+        else:
+            # 已经是Batch对象，确保在正确的device上
+            if hasattr(dag_list, 'x') and dag_list.x.device != self.device:
+                dag_batch = dag_list.to(self.device)
+            else:
+                dag_batch = dag_list
+            
+        if isinstance(topo_list, list):
+            topo_batch = Batch.from_data_list(topo_list).to(self.device)
+        else:
+            # 对于HeteroData Batch，检查device属性
+            if hasattr(topo_list, 'x_dict'):
+                first_tensor = next(iter(topo_list.x_dict.values()))
+                if first_tensor.device != self.device:
+                    topo_batch = topo_list.to(self.device)
+                else:
+                    topo_batch = topo_list
+            else:
+                topo_batch = topo_list.to(self.device) if hasattr(topo_list, 'to') else topo_list
 
         # [修复] 强制转换为 Tensor 并移动到 Device (无论输入是 list 还是 numpy)
         if candidates_mask is not None:
@@ -142,8 +161,27 @@ class MAPPOAgent:
 
     def get_value(self, dag_list, topo_list):
         """[辅助] 获取状态价值"""
-        dag_batch = Batch.from_data_list(dag_list).to(self.device)
-        topo_batch = Batch.from_data_list(topo_list).to(self.device)
+        # 支持列表和Batch对象
+        if isinstance(dag_list, list):
+            dag_batch = Batch.from_data_list(dag_list).to(self.device)
+        else:
+            if hasattr(dag_list, 'x') and dag_list.x.device != self.device:
+                dag_batch = dag_list.to(self.device)
+            else:
+                dag_batch = dag_list
+            
+        if isinstance(topo_list, list):
+            topo_batch = Batch.from_data_list(topo_list).to(self.device)
+        else:
+            if hasattr(topo_list, 'x_dict'):
+                first_tensor = next(iter(topo_list.x_dict.values()))
+                if first_tensor.device != self.device:
+                    topo_batch = topo_list.to(self.device)
+                else:
+                    topo_batch = topo_list
+            else:
+                topo_batch = topo_list.to(self.device) if hasattr(topo_list, 'to') else topo_list
+                
         with torch.no_grad():
             values = self.critic(dag_batch, topo_batch).squeeze(-1)
         return values
@@ -153,11 +191,17 @@ class MAPPOAgent:
         [推理阶段专用] 解码动作
         将神经网络输出的 Flat Index 解码为 {subtask, target, power} 字典。
 
-        注意: 假设输入是按 Agent ID 顺序排列的 Batch (非乱序)。
+        注意: 
+        - Policy View: [0: RSU, 1: Self, 2+: Others(按全局ID排序)]
+        - Env View: [0: Local, 1: RSU, 2+: Vehicle ID + 2]
+        - data_utils中Others顺序: [0, 1, ..., i-1, i+1, ..., N-1] (按全局ID)
         """
         actions_list = []
         act_d = action_d_tensor.cpu().numpy()
         act_p = power_tensor.cpu().numpy()
+        
+        # num_targets应该是 1(RSU) + 1(Self) + (N-1)(Others) = N+1
+        num_vehicles = num_targets - 1
 
         for i in range(len(act_d)):
             idx = int(act_d[i])
@@ -165,23 +209,27 @@ class MAPPOAgent:
             policy_target_idx = idx % num_targets
 
             # --- Target 映射逻辑 ---
-            # Policy View (Self-First): [0: RSU, 1: Self, 2+: Others(Sorted)]
-            # Env View (ID Based):      [0: Local, 1: RSU, 2+: NeighborID + 2]
-
             if policy_target_idx == 0:
-                target_env = 1  # RSU
+                # Policy Index 0 = RSU -> Env Index 1
+                target_env = 1
             elif policy_target_idx == 1:
-                target_env = 0  # Local (Self)
+                # Policy Index 1 = Self -> Env Index 0 (Local)
+                target_env = 0
             else:
-                # 假设 Others 列表是 [0, 1, ..., i-1, i+1, ...]
-                # 计算出它在全局 ID 中的真实值
+                # Policy Index 2+ = Others
+                # data_utils中Others顺序: [0, 1, ..., i-1, i+1, ..., N-1]
+                # list_index = policy_target_idx - 2 (在Others列表中的索引)
                 list_index = policy_target_idx - 2
+                
+                # 计算真实的车辆ID
+                # 如果list_index < i，则对应车辆ID = list_index
+                # 如果list_index >= i，则对应车辆ID = list_index + 1
                 if list_index < i:
                     real_veh_id = list_index
                 else:
                     real_veh_id = list_index + 1
-
-                # Env 期望的 Neighbor Target 是 ID + 2
+                
+                # Env期望: Vehicle ID + 2
                 target_env = real_veh_id + 2
 
             actions_list.append({
