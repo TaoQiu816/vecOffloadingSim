@@ -106,6 +106,21 @@ class GraphBuilder:
         """
         data = HeteroData()
 
+        if len(vehicles) == 0:
+            data['vehicle'].x = torch.empty((0, 7), dtype=torch.float32)
+            r_wait = (rsu_queue_len * Cfg.MEAN_COMP_LOAD) / Cfg.F_RSU
+            r_load = np.clip(r_wait / Cfg.NORM_MAX_WAIT_TIME, 0, 1)
+            data['rsu'].x = torch.tensor([[r_load]], dtype=torch.float32)
+            empty_idx = torch.empty((2, 0), dtype=torch.long)
+            empty_attr = torch.empty((0, 2), dtype=torch.float32)
+            data['vehicle', 'v2v', 'vehicle'].edge_index = empty_idx
+            data['vehicle', 'v2v', 'vehicle'].edge_attr = empty_attr
+            data['vehicle', 'v2i', 'rsu'].edge_index = empty_idx
+            data['vehicle', 'v2i', 'rsu'].edge_attr = empty_attr
+            data['rsu', 'i2v', 'vehicle'].edge_index = empty_idx
+            data['rsu', 'i2v', 'vehicle'].edge_attr = empty_attr
+            return data
+
         # ==========================================
         # 1. 构建节点特征 (Node Features)
         # ==========================================

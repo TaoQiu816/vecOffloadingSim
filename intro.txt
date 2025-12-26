@@ -1,0 +1,87 @@
+项目概述
+这是一个基于多智能体强化学习（MAPPO）的车联网边缘计算任务卸载仿真系统。通过强化学习训练多辆车协同决策，优化任务卸载策略。
+核心任务
+每辆车拥有一个包含多个子任务的DAG任务，需要决策：
+本地执行（Local）
+卸载到RSU
+卸载到其他车辆（V2V）
+优化目标：
+最小化任务完成时间（CFT）
+平衡系统负载与资源利用
+考虑任务依赖关系、通信延迟、计算资源限制
+代码架构关系
+1. 入口层：train.py
+训练主循环
+初始化环境、智能体、数据记录器
+协调训练流程（收集轨迹 → PPO更新 → 模型保存）
+2. 环境层：envs/
+vec_offloading_env.py（核心环境）
+Gymnasium接口的强化学习环境
+状态空间：任务特征、车辆状态、拓扑信息、掩码
+动作空间：卸载目标（离散）+ 传输功率（连续）
+奖励函数：效率收益 + 拥塞惩罚 + 约束惩罚
+entities/vehicle.py（车辆实体）
+位置、速度、CPU频率、任务队列
+支持边界反弹移动模型
+entities/task_dag.py（任务实体）
+DAG结构（邻接矩阵）
+状态：WAIT/READY/RUNNING/DONE
+依赖数据传输跟踪
+modules/channel.py（信道模型）
+V2I（Vehicle-to-Infrastructure）通信
+V2V（Vehicle-to-Vehicle）通信
+路径损耗、莱斯衰落、干扰计算
+3. 智能体层：agents/
+mappo_agent.py（MAPPO智能体）
+参数共享：所有车辆共享同一Actor-Critic网络
+混合动作空间：离散（目标选择）+ 连续（功率控制）
+PPO更新：GAE优势估计、重要性采样裁剪
+buffer.py（经验回放池）
+存储轨迹数据（DAG图、拓扑图、动作、奖励等）
+计算GAE优势函数
+提供批数据生成器
+4. 模型层：models/
+encoders.py（编码器）
+DAGTaskEncoder：GATv2提取任务特征
+HeteroTopologyEncoder：异构图编码器处理V2V/V2I拓扑
+policy.py（策略网络）
+TransformerHybridActor：输出动作策略
+TransformerHybridCritic：评估状态价值
+使用Transformer注意力匹配任务与目标节点
+5. 工具层：utils/
+graph_builder.py（图构建器）
+将环境观测转换为PyTorch Geometric图数据
+构建DAG图与拓扑异构图的特征
+dag_generator.py（DAG生成器）
+使用daggen库生成随机DAG任务
+计算Deadline（基于Ideal Local Anchoring原则）
+data_recorder.py（数据记录器）
+记录训练日志（CSV）
+TensorBoard可视化
+自动生成训练曲线图
+模型检查点保存
+6. 配置层：configs/
+config.py（系统配置）
+物理参数：通信带宽、算力、路径损耗
+任务参数：DAG节点数、计算量、数据量
+奖励参数：效率权重、拥塞惩罚系数
+train_config.py（训练配置）
+网络结构：Transformer层数、注意力头数
+超参数：学习率、PPO裁剪系数、熵正则化
+关键数据流
+1. 环境重置 (reset)   → 生成车辆和DAG任务   → 返回初始观测2. 观测处理   → GraphBuilder构建DAG图和拓扑图   → 转换为PyTorch Geometric格式3. 智能体决策 (select_action)   → Actor网络输出动作概率   → 采样离散动作（目标）和连续动作（功率）   → 解码为环境可理解的动作格式4. 环境步进 (step)   → 执行动作（分配任务到目标节点）   → 更新任务进度（计算、传输）   → 计算奖励   → 返回新观测5. 经验收集   → 存储到RolloutBuffer6. PPO更新 (update)   → 计算GAE优势   → 多轮PPO更新（重要性采样裁剪）   → 更新Actor和Critic网络7. 评估与记录   → 计算成功率、公平性、协作率等指标   → 记录到CSV和TensorBoard   → 保存模型检查点
+关键技术特点
+混合动作空间：离散（目标选择）+ 连续（功率控制）
+图神经网络：使用GATv2和Transformer处理DAG和拓扑
+多智能体协作：考虑V2V卸载时的协作关系
+物理约束建模：通信范围、队列限制、任务依赖
+公平性评估：Jain's Fairness Index衡量资源分配公平性
+训练指标
+奖励曲线（总奖励、平均步奖励）
+成功率（车辆级、子任务级）
+卸载分布（本地/RSU/V2V比例）
+公平性指数
+协作率（V2V卸载比例）
+队列长度
+训练损失
+这是一个完整的强化学习研究框架，涵盖了环境建模、算法实现、数据记录和可视化。

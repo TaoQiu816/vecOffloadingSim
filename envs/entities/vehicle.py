@@ -15,6 +15,8 @@ class Vehicle:
         self.id = v_id
         self.pos = np.array(pos, dtype=float)
 
+        self.curr_assigned_target = None  # 任务分配时确定的目标
+
         # --- 移动性初始化 (Mobility Model) ---
         # [修正] 使用 Config 中的参数，而不是硬编码 10.0/20.0
         speed = np.random.uniform(Cfg.VEL_MIN, Cfg.VEL_MAX)
@@ -39,6 +41,10 @@ class Vehicle:
         # --- CPU 频率初始化 ---
         # 异构算力：从配置范围中随机采样
         self.cpu_freq = np.random.uniform(Cfg.MIN_VEHICLE_CPU_FREQ, Cfg.MAX_VEHICLE_CPU_FREQ)
+
+        # [新增] 活跃数据传输跟踪
+        # 格式: [{'child_id': int, 'parent_id': int, 'rem_data': float, 'speed': float}, ...]
+        self.active_transfers = []
 
     @property
     def is_queue_full(self):

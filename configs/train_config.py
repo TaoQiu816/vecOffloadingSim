@@ -21,7 +21,7 @@ class TrainConfig:
     RSU_INPUT_DIM = 1
 
     # 隐藏层维度 (Transformer & GNN)
-    EMBED_DIM = 64
+    EMBED_DIM = 128
 
     # 注意力头数 (Heads)
     NUM_HEADS = 4
@@ -33,8 +33,8 @@ class TrainConfig:
     # 2. 优化器参数 (Optimizer)
     # =========================
     # 学习率 (Actor 通常比 Critic 小)
-    LR_ACTOR = 3e-4  # 降低学习率以求稳定
-    LR_CRITIC = 3e-4  # 降低学习率以求稳定
+    LR_ACTOR = 1e-4  # 降低学习率以求稳定
+    LR_CRITIC = 1e-4  # Critic 需要更快收敛
 
     # 学习率衰减
     USE_LR_DECAY = True
