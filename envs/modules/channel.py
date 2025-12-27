@@ -112,14 +112,15 @@ class ChannelModel:
             # 总干扰: 按行求和（期望值E[I]）
             total_interference = np.sum(int_power_mat, axis=1)
 
-            # 3. 计算速率 (V2V 共享带宽，干扰受限)
+            # 3. 计算速率 (V2V 共享带宽，干扰受限) - 使用向量化计算
+            # 向量化计算SINR和速率，避免循环
+            sinr = signal_powers / (self.noise_w + total_interference)
+            rates_vector = Cfg.BW_V2V * np.log2(1 + sinr)
+            
+            # 将结果写入字典
             for i in range(n_pairs):
-                # V2V 带宽通常固定 (因为是空间复用，主要受干扰限制)
-                sinr = signal_powers[i] / (self.noise_w + total_interference[i])
-                rate = Cfg.BW_V2V * np.log2(1 + sinr)
-
                 sender_id = valid_pairs[i][0].id
-                rates[sender_id] = rate
+                rates[sender_id] = rates_vector[i]
 
         return rates
 
@@ -170,6 +171,8 @@ class ChannelModel:
         计算V2V接收端的实际干扰功率（期望值E[I]）
         
         注意：干扰功率只考虑大尺度路径损耗，不包含小尺度衰落
+        
+        优化：使用numpy向量化运算替代Python循环，提升性能
 
         Args:
             rx_pos: 接收车辆位置
@@ -180,25 +183,39 @@ class ChannelModel:
         Returns:
             干扰功率(W) - 期望值E[I]
         """
-        total_interference = 0.0
-
-        for other_tx in active_tx_vehicles:
-            if other_tx is None:
-                continue
-
-            dist_interferer = np.linalg.norm(rx_pos - other_tx.pos)
-
-            if dist_interferer < 1.0:
-                continue
-
-            p_tx_other = Cfg.dbm2watt(other_tx.tx_power_dbm)
-            # 干扰只考虑大尺度路径损耗（h_bar），不包含衰落
-            h_bar = self._path_loss(dist_interferer, Cfg.ALPHA_V2V)
-            interference_power = p_tx_other * h_bar
-
-            if dist_interferer <= Cfg.V2V_RANGE:
-                total_interference += interference_power
-
+        if active_tx_vehicles is None or len(active_tx_vehicles) == 0:
+            return 0.0
+        
+        # 过滤None值
+        valid_vehicles = [v for v in active_tx_vehicles if v is not None]
+        if len(valid_vehicles) == 0:
+            return 0.0
+        
+        # 向量化计算：提取所有干扰源的位置和功率
+        interferer_positions = np.array([v.pos for v in valid_vehicles])  # [N, 2]
+        interferer_powers = np.array([Cfg.dbm2watt(v.tx_power_dbm) for v in valid_vehicles])  # [N]
+        
+        # 计算距离矩阵（向量化）
+        rx_pos_array = np.array(rx_pos)
+        distances = np.linalg.norm(interferer_positions - rx_pos_array, axis=1)  # [N]
+        
+        # 过滤：距离 >= 1.0 且 <= V2V_RANGE
+        valid_mask = (distances >= 1.0) & (distances <= Cfg.V2V_RANGE)
+        
+        if not np.any(valid_mask):
+            return 0.0
+        
+        # 只处理有效的干扰源
+        valid_distances = distances[valid_mask]
+        valid_powers = interferer_powers[valid_mask]
+        
+        # 向量化计算路径损耗和干扰功率
+        h_bar = self._path_loss(valid_distances, Cfg.ALPHA_V2V)  # [M], M为有效干扰源数
+        interference_powers = valid_powers * h_bar  # [M]
+        
+        # 求和得到总干扰
+        total_interference = np.sum(interference_powers)
+        
         return total_interference
     
     def compute_reliability(self, vehicle, target_pos, link_type='V2I', active_tx_vehicles=None):

@@ -43,22 +43,25 @@ class VecOffloadingEnv(gym.Env):
         self.vehicles = []
         self.time = 0.0
         
-        # 道路网络
-        # RSU实体列表
+        # RSU实体列表（道路模型：等间距线性部署）
         self.rsus = []
         self._init_rsus()
         
+        # CFT计算缓存
         self.last_global_cft = 0.0
-        self._comm_rate_cache = {}
-        self._cache_time_step = -1.0
         self._cft_cache = None
         self._cft_cache_time = 0.0
         self._cft_cache_valid = False
         self._cft_state_hash = None
+        
+        # 通信速率和距离缓存（用于性能优化）
+        self._comm_rate_cache = {}
+        self._cache_time_step = -1.0
         self._dist_matrix_cache = None
         self._dist_matrix_time = -1.0
         self._rsu_dist_cache = {}
 
+        # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
         self._inv_max_nodes = 1.0 / Cfg.MAX_NODES
         self._inv_max_cpu = 1.0 / Cfg.NORM_MAX_CPU
@@ -388,11 +391,7 @@ class VecOffloadingEnv(gym.Env):
                     # 本地队列
                     v.task_queue.enqueue(task_comp)
                 
-                # 同步队列长度（向后兼容：使用第一个RSU的队列长度，如果存在）
-                for v_check in self.vehicles:
-                    v_check.update_queue_sync()
-
-        # 队列长度同步（由FIFO队列管理，这里只做同步）
+        # 队列长度同步（由FIFO队列管理，在所有任务分配完成后统一同步）
         for v_check in self.vehicles:
             v_check.update_queue_sync()
         
@@ -486,8 +485,6 @@ class VecOffloadingEnv(gym.Env):
 
                             if same_location:
                                 transfer_speed = float('inf')
-                                # 调试：确认transfer_speed被设置为inf
-                                # print(f"DEBUG: same_location=True, transfer_speed={transfer_speed}")
                             elif parent_loc != child_loc:
                                 tx_veh = None
                                 rx_veh = None
@@ -519,16 +516,13 @@ class VecOffloadingEnv(gym.Env):
                                     else:
                                         transfer_speed = self.channel.compute_one_rate(tx_veh, rx_pos, 'V2V', self.time)
 
-                            # 调试：在创建传输记录前确认transfer_speed的值
-                            # print(f"DEBUG: 创建传输记录前 transfer_speed={transfer_speed}, same_location={same_location}")
+                            # 创建数据传输记录
                             v.active_transfers.append({
                                 'child_id': child_task_id,
                                 'parent_id': completed_task,
                                 'rem_data': transfer_data,
                                 'speed': transfer_speed
                             })
-                            # 调试：在创建传输记录后确认speed的值
-                            # print(f"DEBUG: 创建传输记录后 speed={v.active_transfers[-1]['speed']}")
 
             completed_transfers = []
             for transfer in v.active_transfers:
@@ -883,8 +877,6 @@ class VecOffloadingEnv(gym.Env):
         self._cft_cache_valid = True
         return total_cft
 
-
-
     def _get_dist_matrix(self):
         """计算并缓存所有车辆间的距离矩阵
 
@@ -902,18 +894,21 @@ class VecOffloadingEnv(gym.Env):
             return self._dist_matrix_cache
 
         positions = np.array([v.pos for v in self.vehicles])
-        self._dist_matrix_cache = np.zeros((num_vehicles, num_vehicles))
-        for i in range(num_vehicles):
-            diff = positions - positions[i]
-            self._dist_matrix_cache[i] = np.linalg.norm(diff, axis=1)
+        # 使用numpy广播完全向量化计算距离矩阵
+        # positions[:, None, :] 形状 (N, 1, 2)
+        # positions[None, :, :] 形状 (1, N, 2)
+        # 广播后 diff 形状 (N, N, 2)
+        diff = positions[:, None, :] - positions[None, :, :]
+        self._dist_matrix_cache = np.linalg.norm(diff, axis=2)  # (N, N)
 
         self._dist_matrix_time = self.time
         return self._dist_matrix_cache
 
     def _get_rsu_dist(self, vehicle):
-        """获取车辆到RSU的距离（带缓存）"""
+        """获取车辆到最近RSU的距离（带缓存，向后兼容）"""
         if vehicle.id in self._rsu_dist_cache:
             return self._rsu_dist_cache[vehicle.id]
+        # 向后兼容：使用配置中的默认RSU位置
         dist = np.linalg.norm(vehicle.pos - Cfg.RSU_POS)
         self._rsu_dist_cache[vehicle.id] = dist
         return dist
@@ -1105,6 +1100,7 @@ class VecOffloadingEnv(gym.Env):
         return obs_list
 
     def _get_comm_rate(self, vehicle, pred_task_id, curr_loc, rsu_pos):
+        """计算任务间通信速率（简化接口，向后兼容）"""
         return self._get_inter_task_comm_rate(vehicle, pred_task_id, 0, 'Local', curr_loc)
 
     def _get_inter_task_comm_rate(self, vehicle, pred_task_id, curr_task_id, pred_loc, curr_loc):
@@ -1189,6 +1185,7 @@ class VecOffloadingEnv(gym.Env):
         return final_rate
 
     def validate_environment(self):
+        """环境验证方法（仅在DEBUG模式下使用）"""
         if not Cfg.DEBUG_MODE:
             return
 
