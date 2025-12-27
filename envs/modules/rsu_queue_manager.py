@@ -89,13 +89,16 @@ class RSUQueueManager:
         从队列中移除一个任务（FIFO顺序，从最早分配的处理器队列移除）
         
         Returns:
-            bool: 如果成功移除返回True，否则返回False
+            tuple: (success: bool, processor_id: int or None)
+                success: 如果成功移除返回True
+                processor_id: 被移除任务所在的处理器ID，如果失败则为None
         """
         if len(self._task_to_processor) > 0:
             processor_id = self._task_to_processor.pop(0)
             if 0 <= processor_id < len(self.processor_queues):
-                return self.processor_queues[processor_id].dequeue_one()
-        return False
+                success = self.processor_queues[processor_id].dequeue_one()
+                return (success, processor_id if success else None)
+        return (False, None)
     
     def get_estimated_wait_time(self, cpu_freq_per_processor):
         """

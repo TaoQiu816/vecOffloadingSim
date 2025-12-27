@@ -55,6 +55,10 @@ class RSU:
         
         # 向后兼容：队列长度属性
         self.queue_length = 0
+        
+        # FAT管理：每个处理器独立维护FAT
+        # 格式: {processor_id: FAT_value}
+        self.fat_processors = {i: 0.0 for i in range(self.num_processors)}
     
     def is_in_coverage(self, position):
         """
@@ -100,11 +104,13 @@ class RSU:
         从队列中移除一个任务（FIFO顺序）
         
         Returns:
-            bool: 如果成功移除返回True
+            tuple: (success: bool, processor_id: int or None)
+                success: 如果成功移除返回True
+                processor_id: 被移除任务所在的处理器ID，如果失败则为None
         """
-        success = self.queue_manager.dequeue_one()
+        success, processor_id = self.queue_manager.dequeue_one()
         self.queue_length = self.queue_manager.get_queue_length()
-        return success
+        return (success, processor_id)
     
     def get_estimated_wait_time(self):
         """
@@ -128,6 +134,25 @@ class RSU:
         """清空队列"""
         self.queue_manager.clear()
         self.queue_length = 0
+    
+    def reset_fat(self):
+        """重置所有处理器的FAT为初始值（在reset()时调用）"""
+        self.fat_processors = {i: 0.0 for i in range(self.num_processors)}
+    
+    def get_processor_fat(self, processor_id):
+        """获取指定处理器的FAT"""
+        return self.fat_processors.get(processor_id, 0.0)
+    
+    def update_processor_fat(self, processor_id, new_fat):
+        """更新指定处理器的FAT"""
+        if processor_id in self.fat_processors:
+            self.fat_processors[processor_id] = new_fat
+    
+    def get_min_processor_fat(self):
+        """获取所有处理器中的最小FAT（用于负载均衡）"""
+        if not self.fat_processors:
+            return 0.0
+        return min(self.fat_processors.values())
     
     def get_load_normalized(self):
         """

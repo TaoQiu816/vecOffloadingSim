@@ -61,6 +61,11 @@ class DAGTask:
         self.inter_task_transfers = {}
         self.waiting_for_data = [False] * self.num_subtasks
 
+        # 时间计算：EST（执行开始时间）和CT（完成时间）
+        # 每个子任务存储其EST和CT，用于CFT计算
+        self.EST = np.full(self.num_subtasks, -1.0, dtype=np.float32)  # -1表示未计算
+        self.CT = np.full(self.num_subtasks, -1.0, dtype=np.float32)  # -1表示未计算
+
         # 初始化：入度为0的节点设为READY，其他为PENDING
         self.status[self.in_degree == 0] = 1
         self._is_failed = False
