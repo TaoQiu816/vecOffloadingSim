@@ -1,4 +1,7 @@
 import numpy as np
+from configs.config import SystemConfig as Cfg
+from models.dag_features import compute_forward_levels, compute_backward_levels, compute_shortest_path_matrix, normalize_distance_matrix
+from configs.config import SystemConfig as Cfg
 
 
 class DAGTask:
@@ -69,6 +72,21 @@ class DAGTask:
         # 初始化：入度为0的节点设为READY，其他为PENDING
         self.status[self.in_degree == 0] = 1
         self._is_failed = False
+        
+        # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
+        try:
+            from models.dag_features import compute_forward_levels, compute_backward_levels, compute_shortest_path_matrix, normalize_distance_matrix
+            self.L_fwd = compute_forward_levels(self.adj)
+            self.L_bwd = compute_backward_levels(self.adj)
+            self.Delta = normalize_distance_matrix(
+                compute_shortest_path_matrix(self.adj, Cfg.MAX_NODES),
+                Cfg.MAX_NODES
+            )
+        except ImportError:
+            # 如果导入失败（例如在初始化阶段），延迟计算
+            self.L_fwd = None
+            self.L_bwd = None
+            self.Delta = None
 
     @property
     def is_finished(self):
@@ -98,6 +116,60 @@ class DAGTask:
         ready_mask = (self.status == 1)
         not_assigned_mask = np.array([loc is None for loc in self.task_locations])
         return ready_mask & not_assigned_mask
+    
+    def compute_task_priority(self, task_id: int) -> float:
+        """
+        计算任务的优先级分数
+        
+        公式：Score(i) = W1 * L_bwd[i] + W2 * (total_comp[i] / NORM_MAX_COMP) + W3 * (out_degree[i] / MAX_NODES)
+        
+        Args:
+            task_id: 任务索引
+            
+        Returns:
+            float: 优先级分数（越大优先级越高）
+        """
+        # 确保拓扑特征已计算
+        if self.L_bwd is None:
+            from models.dag_features import compute_backward_levels
+            self.L_bwd = compute_backward_levels(self.adj)
+        
+        w1 = Cfg.PRIORITY_W1
+        w2 = Cfg.PRIORITY_W2
+        w3 = Cfg.PRIORITY_W3
+        
+        # 后向层级（主导因素）
+        score_bwd = w1 * self.L_bwd[task_id]
+        
+        # 计算量（归一化）
+        comp_norm = self.total_comp[task_id] / Cfg.NORM_MAX_COMP
+        score_comp = w2 * comp_norm
+        
+        # 出度（归一化）
+        out_deg_norm = self.out_degree[task_id] / Cfg.MAX_NODES
+        score_out = w3 * out_deg_norm
+        
+        return score_bwd + score_comp + score_out
+    
+    def get_top_priority_task(self):
+        """
+        获取优先级最高的可调度任务
+        
+        Returns:
+            int or None: 优先级最高的任务索引，如果没有可调度的任务则返回None
+        """
+        action_mask = self.get_action_mask()
+        ready_tasks = np.where(action_mask)[0]
+        
+        if len(ready_tasks) == 0:
+            return None
+        
+        # 计算所有就绪任务的优先级
+        priorities = np.array([self.compute_task_priority(tid) for tid in ready_tasks])
+        
+        # 选择优先级最高的任务
+        top_idx = np.argmax(priorities)
+        return int(ready_tasks[top_idx])
         
     def step_inter_task_transfers(self, subtask_id, transfer_speed, dt):
         """

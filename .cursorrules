@@ -1,0 +1,11 @@
+# 核心行为准则
+1. 严禁在完成任务后自动生成“代码优化文档”、“变更总结”或“下一步建议”。
+2. 除非我明确要求，否则不要生成任何 Markdown (.md) 辅助文档。
+3. 保持响应极其简洁。执行 Cmd+K (Edit) 时，只修改代码，不要在聊天框解释原因。
+4. 禁用所有礼貌性废话（如 "Sure, I can help with that", "Based on your request"）。
+
+
+- Strict Output Mode: Output code only. 
+- Do not provide summaries, change logs, or optimization explanations after code generation unless explicitly asked.
+- No post-task documentation: After completing a task or applying a code block, do not generate "What's changed" or "Next steps" documents.
+- Keep responses concise and eliminate conversational filler.

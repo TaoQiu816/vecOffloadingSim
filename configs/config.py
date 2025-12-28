@@ -157,6 +157,13 @@ class SystemConfig:
     # 任务节点数范围
     MIN_NODES = 8
     MAX_NODES = 12
+    
+    # =========================================================================
+    # DAG任务优先级算法权重
+    # 优先级公式：Score(i) = PRIORITY_W1 * L_bwd[i] + PRIORITY_W2 * (total_comp[i] / NORM_MAX_COMP) + PRIORITY_W3 * (out_degree[i] / MAX_NODES)
+    PRIORITY_W1 = 100.0  # 后向层级权重（主导，关键路径）
+    PRIORITY_W2 = 1.0    # 计算量权重（同层级下的tie-breaking）
+    PRIORITY_W3 = 1.0    # 出度权重（同计算量下的tie-breaking）
 
     # 单个子任务数据量 (Bits) -> 1 Mbit ~ 3 Mbit
     # 明确乘以 8，转换为 bit

@@ -24,8 +24,9 @@ class VecOffloadingEnv(gym.Env):
     - rsu_info: RSU负载信息
     - adj: DAG邻接矩阵 (任务依赖关系)
     - neighbors: 邻居车辆特征 (固定维度填充)
-    - task_mask: 可调度任务掩码
-    - target_mask: 动作目标掩码 (Local/RSU/V2V)
+    - task_mask: 可调度任务掩码 (用于Critic)
+    - target_mask: 动作目标掩码 (Local/RSU/V2V)，仅对应当前选中的任务
+    - subtask_index: 当前环境自动选择的任务索引 (标量)
 
     动作空间 (Action Space):
     - target: 卸载目标 (0=Local, 1=RSU, 2+k=Vehicle k)
@@ -289,7 +290,13 @@ class VecOffloadingEnv(gym.Env):
             if not act: continue
 
             target_idx = int(act['target'])
-            subtask_idx = int(act['subtask'])
+            # [新设计] 环境自动选择子任务，不再从action中读取subtask
+            # subtask_idx = int(act['subtask'])  # 已废弃
+            # 使用优先级算法自动选择最高优先级的就绪任务
+            subtask_idx = v.task_dag.get_top_priority_task()
+            if subtask_idx is None:
+                # 没有可调度的任务，跳过
+                continue
 
             if target_idx == 0:
                 target = 'Local'
@@ -308,7 +315,9 @@ class VecOffloadingEnv(gym.Env):
             raw_power = Cfg.TX_POWER_MIN_DBM + p_norm * (Cfg.TX_POWER_MAX_DBM - Cfg.TX_POWER_MIN_DBM)
             v.tx_power_dbm = np.clip(raw_power, Cfg.TX_POWER_MIN_DBM, Cfg.TX_POWER_MAX_DBM)
 
-            if subtask_idx != v.last_scheduled_subtask:
+            # [新设计] 不再需要检查last_scheduled_subtask，因为环境自动选择任务
+            # 如果subtask_idx有效，则进行调度
+            if subtask_idx is not None and subtask_idx >= 0:
                 active_agents_count += 1
                 actual_target = target
 
@@ -1039,6 +1048,13 @@ class VecOffloadingEnv(gym.Env):
                     neighbors_array[idx] = neighbor_feat
 
             task_schedulable = v.task_dag.get_action_mask()
+            
+            # [新设计] 环境自动选择优先级最高的任务
+            selected_subtask_idx = v.task_dag.get_top_priority_task()
+            if selected_subtask_idx is None:
+                # 没有可调度的任务，使用无效索引-1
+                selected_subtask_idx = -1
+            
             target_mask_row = np.array(valid_targets_base, dtype=bool)
 
             v.neighbor_id_map = neighbor_id_map.copy()
@@ -1083,9 +1099,75 @@ class VecOffloadingEnv(gym.Env):
             padded_adj[:num_nodes, :num_nodes] = v.task_dag.adj
 
             # [关键] 固定维度填充 - 适配批处理要求
-            # 将task_mask填充到固定维度MAX_NODES
+            # 将task_mask填充到固定维度MAX_NODES（保留用于Critic）
+            MAX_NODES = Cfg.MAX_NODES
             padded_task_mask = np.zeros(MAX_NODES, dtype=bool)
             padded_task_mask[:num_nodes] = task_schedulable
+
+            # [新设计] 将target_mask扩展到固定维度MAX_NEIGHBORS（如果实际邻居数小于MAX_NEIGHBORS）
+            MAX_NEIGHBORS = Cfg.NUM_VEHICLES
+            MAX_TARGETS = 2 + MAX_NEIGHBORS
+            padded_target_mask = np.zeros(MAX_TARGETS, dtype=bool)
+            # 只复制不超过MAX_TARGETS个元素（防止动态车辆生成导致的维度不匹配）
+            copy_len = min(len(target_mask_row), MAX_TARGETS)
+            padded_target_mask[:copy_len] = target_mask_row[:copy_len]
+            
+            # [关键] 死锁兜底：如果所有目标都不可用，强制开启Local
+            if not np.any(padded_target_mask):
+                padded_target_mask[0] = True  # Local总是可以作为fallback
+            
+            # [新增] 构建Resource ID列表（用于ID Embedding）
+            # ID映射：Local=1, RSU=2, Neighbors=3+vehicle_id
+            resource_id_list = np.zeros(MAX_TARGETS, dtype=np.int64)
+            resource_id_list[0] = 1  # Local
+            resource_id_list[1] = 2  # RSU
+            # Neighbors: 使用neighbor_id_map中的实际车辆ID
+            for idx, neighbor_veh_id in enumerate(neighbor_id_map):
+                if 2 + idx < MAX_TARGETS:
+                    resource_id_list[2 + idx] = 3 + neighbor_veh_id
+            # Padding位置保持0（稍后会被mask掉）
+            
+            # [新增] DAG拓扑特征（用于网络特征工程）
+            # L_fwd, L_bwd: [MAX_NODES], 前向/后向层级
+            padded_L_fwd = np.zeros(MAX_NODES, dtype=np.int32)
+            padded_L_bwd = np.zeros(MAX_NODES, dtype=np.int32)
+            padded_L_fwd[:num_nodes] = v.task_dag.L_fwd
+            padded_L_bwd[:num_nodes] = v.task_dag.L_bwd
+            
+            # data_matrix: [MAX_NODES, MAX_NODES], 边数据量
+            padded_data_matrix = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
+            padded_data_matrix[:num_nodes, :num_nodes] = v.task_dag.data_matrix
+            
+            # Delta: [MAX_NODES, MAX_NODES], 最短路径距离
+            padded_Delta = np.zeros((MAX_NODES, MAX_NODES), dtype=np.int32)
+            padded_Delta[:num_nodes, :num_nodes] = v.task_dag.Delta
+            
+            # status: [MAX_NODES], 任务状态（0-3）
+            padded_status = np.zeros(MAX_NODES, dtype=np.int32)
+            padded_status[:num_nodes] = v.task_dag.status
+            
+            # location: [MAX_NODES], 任务执行位置编码
+            # 0: Unscheduled, 1: Local, 2: RSU, 3+: Neighbor vehicle ID
+            padded_location = np.zeros(MAX_NODES, dtype=np.int32)
+            for t_idx in range(num_nodes):
+                # 优先从v.exec_locations获取（Vehicle属性），其次是v.task_dag.task_locations
+                if hasattr(v, 'exec_locations') and v.exec_locations[t_idx] is not None:
+                    loc = v.exec_locations[t_idx]
+                elif hasattr(v.task_dag, 'task_locations') and v.task_dag.task_locations[t_idx] is not None:
+                    loc = v.task_dag.task_locations[t_idx]
+                else:
+                    loc = None
+                
+                if loc is None or loc == 'None':
+                    padded_location[t_idx] = 0  # Unscheduled
+                elif loc == 'Local':
+                    padded_location[t_idx] = 1
+                elif self._is_rsu_location(loc):
+                    padded_location[t_idx] = 2
+                elif isinstance(loc, int):
+                    padded_location[t_idx] = 3 + loc  # Neighbor vehicle ID
+                else:
+                    padded_location[t_idx] = 0
 
             obs_list.append({
                 'node_x': padded_node_feats,
@@ -1094,7 +1176,17 @@ class VecOffloadingEnv(gym.Env):
                 'adj': padded_adj,
                 'neighbors': neighbors_array,
                 'task_mask': padded_task_mask,
-                'target_mask': padded_mask
+                'target_mask': padded_target_mask,  # [新设计] 简化为[2+MAX_NEIGHBORS]
+                'action_mask': padded_target_mask.copy(),  # [新增] Actor专用动作掩码
+                'resource_ids': resource_id_list,  # [新增] 资源节点ID列表
+                'subtask_index': int(selected_subtask_idx),  # [新设计] 添加当前选中的任务索引
+                # [新增] DAG拓扑特征
+                'L_fwd': padded_L_fwd,
+                'L_bwd': padded_L_bwd,
+                'data_matrix': padded_data_matrix,
+                'Delta': padded_Delta,
+                'status': padded_status,
+                'location': padded_location
             })
 
         return obs_list
