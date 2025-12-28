@@ -125,9 +125,9 @@ class DataRecorder:
             # [新增] 将数据写入 TensorBoard
             step = episode_data['episode']
             if self.writer is not None:
-            for key, value in episode_data.items():
-                if isinstance(value, (int, float)):
-                    self.writer.add_scalar(key, value, step)
+                for key, value in episode_data.items():
+                    if isinstance(value, (int, float)):
+                        self.writer.add_scalar(key, value, step)
         except Exception as e:
             print(f"[Error] Failed to log episode: {e}")
 
