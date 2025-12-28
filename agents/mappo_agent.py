@@ -24,7 +24,7 @@ class MAPPOAgent:
         """
         self.network = network.to(device)
         self.device = device
-        
+
         # 优化器
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
@@ -44,11 +44,11 @@ class MAPPOAgent:
     def select_action(self, obs_list: List[Dict], deterministic: bool = False) -> Dict:
         """
         选择动作
-        
+
         Args:
             obs_list: 观测列表
             deterministic: 是否使用确定性策略
-            
+
         Returns:
             动作字典，包含actions, log_probs, values
         """
@@ -64,7 +64,7 @@ class MAPPOAgent:
                 'target': int(target_actions[i].cpu().item()),
                 'power': float(power_actions[i].cpu().item())
             })
-        
+
         return {
             'actions': actions,
             'log_probs': log_probs.cpu().numpy(),
@@ -138,6 +138,14 @@ class MAPPOAgent:
         )
         
         # 计算target的log_prob和entropy
+        # [Logit Bias] 解决动作空间不平衡问题：给RSU和Local添加偏置
+        from configs.train_config import TrainConfig as TC
+        if TC.USE_LOGIT_BIAS:
+            logit_bias = torch.zeros_like(target_logits)
+            logit_bias[:, 0] = TC.LOGIT_BIAS_RSU  # RSU (Index 0)
+            logit_bias[:, 1] = TC.LOGIT_BIAS_LOCAL  # Local (Index 1)
+            target_logits = target_logits + logit_bias
+        
         # 应用action_mask
         action_mask_tensor = inputs['action_mask']
         masked_logits = torch.where(
@@ -210,7 +218,7 @@ class MAPPOAgent:
                 # 优化
                 self.optimizer.zero_grad()
                 loss.backward()
-                
+
                 # 梯度裁剪
                 nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
                 
@@ -222,7 +230,7 @@ class MAPPOAgent:
                         break
                 
                 if not has_invalid_grad:
-                    self.optimizer.step()
+                self.optimizer.step()
                     total_loss += loss.item()
                     num_updates += 1
         

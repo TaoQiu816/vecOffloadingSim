@@ -60,6 +60,11 @@ class TrainConfig:
 
     # 价值函数损失系数
     VF_COEF = 0.5
+    
+    # Logit Bias (用于解决动作空间不平衡问题)
+    USE_LOGIT_BIAS = True  # 是否启用Logit Bias
+    LOGIT_BIAS_RSU = 2.0   # RSU的Logit偏置 (Index 0)
+    LOGIT_BIAS_LOCAL = 2.0  # Local的Logit偏置 (Index 1)
 
     # =========================
     # 4. 训练流程参数 (Training Loop)

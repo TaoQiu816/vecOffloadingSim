@@ -1033,8 +1033,11 @@ class VecOffloadingEnv(gym.Env):
             neighbors = []
             valid_targets_base = [1, 1]
             neighbor_id_map = []
+            # [关键修复] 构建索引到车辆ID的映射，用于后续队列检查
+            target_index_to_veh_id = {}  # {target_mask_index: vehicle_id}
 
             for j, other in enumerate(self.vehicles):
+                target_mask_idx = len(valid_targets_base)  # 当前要添加的索引位置
                 dist = dist_matrix[v_idx, j]
                 if v.id == other.id:
                     valid_targets_base.append(0)
@@ -1054,8 +1057,10 @@ class VecOffloadingEnv(gym.Env):
                     ])
                     valid_targets_base.append(1)
                     neighbor_id_map.append(other.id)
+                    target_index_to_veh_id[target_mask_idx] = other.id
                 else:
                     valid_targets_base.append(0)
+                    target_index_to_veh_id[target_mask_idx] = other.id  # 即使不可达也要记录映射
 
             actual_num_neighbors = len(neighbor_id_map)
             num_targets = 2 + actual_num_neighbors
@@ -1110,13 +1115,16 @@ class VecOffloadingEnv(gym.Env):
             # [关键] 目标车辆队列满检查 - 动态禁用过载车辆（基于计算量）
             # 使用平均任务大小进行保守检查
             avg_task_comp = Cfg.MEAN_COMP_LOAD
-            for i in range(2, num_targets):
-                if valid_targets_base[i] == 1:
-                    target_veh_id = i - 2
-                    n_veh = next((veh for veh in self.vehicles if veh.id == target_veh_id), None)
-                    # 使用基于计算量的检查（更准确）
-                    if n_veh and n_veh.is_queue_full(new_task_cycles=avg_task_comp):
-                        target_mask_row[i] = False
+            for i in range(2, len(valid_targets_base)):
+                if i >= len(target_mask_row):
+                    break
+                if target_mask_row[i]:  # 只检查当前仍可用的目标
+                    target_veh_id = target_index_to_veh_id.get(i)
+                    if target_veh_id is not None:
+                        n_veh = next((veh for veh in self.vehicles if veh.id == target_veh_id), None)
+                        # 使用基于计算量的检查（更准确）
+                        if n_veh and n_veh.is_queue_full(new_task_cycles=avg_task_comp):
+                            target_mask_row[i] = False
 
             # [关键] 扩展掩码 - 每个子任务对应一行目标掩码
             # 非READY状态的任务对应的整行掩码设为False

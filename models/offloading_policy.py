@@ -257,6 +257,14 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         
         # 3. Target采样（Categorical分布）
+        # [Logit Bias] 解决动作空间不平衡问题：给RSU和Local添加偏置
+        from configs.train_config import TrainConfig as TC
+        if TC.USE_LOGIT_BIAS:
+            logit_bias = torch.zeros_like(target_logits)
+            logit_bias[:, 0] = TC.LOGIT_BIAS_RSU  # RSU (Index 0)
+            logit_bias[:, 1] = TC.LOGIT_BIAS_LOCAL  # Local (Index 1)
+            target_logits = target_logits + logit_bias
+        
         # 应用action_mask，将无效动作的logits设为极小值
         action_mask_tensor = inputs['action_mask']
         masked_logits = torch.where(
