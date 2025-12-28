@@ -254,7 +254,15 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         
         # 3. Target采样（Categorical分布）
-        target_probs = F.softmax(target_logits, dim=-1)
+        # 应用action_mask，将无效动作的logits设为极小值
+        action_mask_tensor = inputs['action_mask']
+        masked_logits = torch.where(
+            action_mask_tensor > 0,
+            target_logits,
+            torch.tensor(-1e10, dtype=target_logits.dtype, device=target_logits.device)
+        )
+        
+        target_probs = F.softmax(masked_logits, dim=-1)
         target_dist = Categorical(target_probs)
         
         if deterministic:

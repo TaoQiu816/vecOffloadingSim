@@ -267,6 +267,8 @@ class CriticHead(nn.Module):
         
         # Softmax归一化
         attn_weights = F.softmax(attn_scores, dim=1)  # [B, N, 1]
+        # 处理全-inf行导致的NaN
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
         
         # 2. 加权池化
         global_feature = torch.sum(dag_features * attn_weights, dim=1)  # [B, d_model]
@@ -333,6 +335,8 @@ class SimplifiedCriticHead(nn.Module):
             mask = task_mask.unsqueeze(-1)
             dag_attn_scores = dag_attn_scores.masked_fill(~mask, float('-inf'))
         dag_attn_weights = F.softmax(dag_attn_scores, dim=1)
+        # 处理全-inf行导致的NaN（当整行都被mask时）
+        dag_attn_weights = torch.nan_to_num(dag_attn_weights, nan=0.0)
         dag_global = torch.sum(dag_features * dag_attn_weights, dim=1)  # [B, d]
         
         # 2. 邻居平均特征（Mean Pooling，排除Local和RSU）
@@ -408,7 +412,7 @@ class ActorCriticNetwork(nn.Module):
             self.critic_head = CriticHead(d_model)
         
         # Layer Norm（用于Cross-Attention后）
-        self.layer_norm = nn.LayerNorm(d_model)
+        self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
     
     def forward_actor(self,
                      dag_features: torch.Tensor,
@@ -437,7 +441,9 @@ class ActorCriticNetwork(nn.Module):
         
         # 1. Gather当前选中任务的特征
         # subtask_index: [B] -> [B, 1, 1] -> [B, 1, d_model]
-        indices = subtask_index.unsqueeze(1).unsqueeze(2).expand(-1, -1, self.d_model)
+        # 处理-1情况（无ready任务）：使用第0个节点作为默认
+        safe_subtask_index = torch.clamp(subtask_index, min=0)
+        indices = safe_subtask_index.unsqueeze(1).unsqueeze(2).expand(-1, -1, dag_features.shape[-1])  # [B, 1, d_model]
         query = torch.gather(dag_features, 1, indices)  # [B, 1, d_model]
         
         # 2. Cross-Attention（带物理偏置）融合资源特征
@@ -449,7 +455,11 @@ class ActorCriticNetwork(nn.Module):
         )  # [B, 1, d_model]
         
         # 3. Layer Norm + Residual
-        h_fused = self.layer_norm(query + h_fused)
+        residual = query + h_fused
+        # 防止NaN：检查residual
+        if torch.isnan(residual).any() or torch.isinf(residual).any():
+            residual = torch.nan_to_num(residual, nan=0.0, posinf=1e6, neginf=-1e6)
+        h_fused = self.layer_norm(residual)
         
         # 4. Squeeze到[B, d_model]
         h_fused = h_fused.squeeze(1)

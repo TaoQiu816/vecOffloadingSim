@@ -6,7 +6,13 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
-from torch.utils.tensorboard import SummaryWriter
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+    print("[Warning] TensorBoard not available. Install with: pip install tensorboard")
 
 
 # --- 自定义编码器，用于解决 TypeError: Object of type ndarray is not JSON serializable ---
@@ -67,7 +73,10 @@ class DataRecorder:
 
         # [新增] 初始化 TensorBoard Writer
         # log_dir 设置为服务器 TensorBoard 监控的路径
-        self.writer = SummaryWriter(log_dir=os.path.join(self.exp_dir, "tb_logs"))
+        if TENSORBOARD_AVAILABLE:
+            self.writer = SummaryWriter(log_dir=os.path.join(self.exp_dir, "tb_logs"))
+        else:
+            self.writer = None
 
     def save_config(self, config_dict):
         """
@@ -112,9 +121,10 @@ class DataRecorder:
                 writer.writerow(episode_data)
             # [新增] 将数据写入 TensorBoard
             step = episode_data['episode']
-            for key, value in episode_data.items():
-                if isinstance(value, (int, float)):
-                    self.writer.add_scalar(key, value, step)
+            if self.writer is not None:
+                for key, value in episode_data.items():
+                    if isinstance(value, (int, float)):
+                        self.writer.add_scalar(key, value, step)
         except Exception as e:
             print(f"[Error] Failed to log episode: {e}")
 

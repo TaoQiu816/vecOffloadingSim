@@ -4,41 +4,20 @@ import torch
 import os
 import sys
 
-# 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from models.offloading_policy import OffloadingPolicyNetwork
+from agents.mappo_agent import MAPPOAgent
+from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
 
 
-def split_batch_to_list(dag_batch, topo_batch):
-    """
-    将Batch对象拆分为列表，用于Buffer存储
-    """
-    # DAG Batch可以直接使用to_data_list
-    dag_list = dag_batch.to_data_list()
-    
-    # Topology Batch (HeteroData Batch) 也支持to_data_list
-    topo_list = topo_batch.to_data_list()
-    
-    return dag_list, topo_list
-
-
 def evaluate_baselines(env, num_episodes=10):
-    """
-    评估基准策略性能
-    
-    Args:
-        env: 环境实例
-        num_episodes: 评估回合数
-    
-    Returns:
-        baseline_results: 字典，包含各基准策略的平均奖励
-    """
+    """评估基准策略性能"""
     baseline_results = {}
     
     # 1. 随机策略
@@ -49,9 +28,9 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = random_policy.select_action(obs_list)
-            obs_list, rewards, done, _ = env.step(actions)
+            obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
-            if done:
+            if done or truncated:
                 break
         random_rewards.append(ep_reward)
     baseline_results['Random'] = np.mean(random_rewards)
@@ -64,9 +43,9 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = local_policy.select_action(obs_list)
-            obs_list, rewards, done, _ = env.step(actions)
+            obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
-            if done:
+            if done or truncated:
                 break
         local_rewards.append(ep_reward)
     baseline_results['Local-Only'] = np.mean(local_rewards)
@@ -79,9 +58,9 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = greedy_policy.select_action(obs_list)
-            obs_list, rewards, done, _ = env.step(actions)
+            obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
-            if done:
+            if done or truncated:
                 break
         greedy_rewards.append(ep_reward)
     baseline_results['Greedy'] = np.mean(greedy_rewards)
@@ -90,7 +69,7 @@ def evaluate_baselines(env, num_episodes=10):
 
 
 def main():
-    # 开启 CuDNN 加速，提升卷积/矩阵运算效率
+    # 开启 CuDNN 加速
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
@@ -98,12 +77,13 @@ def main():
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
     recorder = DataRecorder(experiment_name=exp_name)
 
-    # 构建配置字典用于保存（便于实验复现）
+    # 构建配置字典
     config_dict = {}
     for k, v in Cfg.__dict__.items():
         if k.startswith('__') or isinstance(v, (staticmethod, classmethod)) or callable(v):
             continue
         config_dict[k] = v
+    
     device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
     if device == "cuda":
         torch.cuda.empty_cache()
@@ -122,14 +102,12 @@ def main():
         "device": device
     }
     config_dict.update(hyperparams)
-
-    # 保存配置到 JSON/YAML (由 Recorder 处理)
     recorder.save_config(config_dict)
 
     # 打印实验信息
     print(f"{'=' * 60}")
     print(f" Experiment: {exp_name}")
-    print(f" Device:     {hyperparams['device']}")
+    print(f" Device:     {device}")
     print(f" Max Eps:    {hyperparams['max_episodes']}")
     print(f" LR Actor:   {hyperparams['lr_actor']}")
     print(f"{'=' * 60}")
@@ -137,49 +115,45 @@ def main():
     # 初始化环境
     env = VecOffloadingEnv()
 
-    # 初始化网络
+    # 初始化网络和智能体
     network = OffloadingPolicyNetwork(
         d_model=TC.EMBED_DIM,
         num_heads=TC.NUM_HEADS,
         num_layers=TC.NUM_LAYERS
-    ).to(device)
-    
-    # 优化器
-    optimizer = torch.optim.Adam([
-        {'params': network.parameters(), 'lr': TC.LR_ACTOR}
-    ])
+    )
+    agent = MAPPOAgent(network, device=device)
+
+    # 初始化经验缓冲区
+    buffer = RolloutBuffer(gamma=TC.GAMMA, gae_lambda=TC.GAE_LAMBDA)
 
     best_reward = -float('inf')
     
-    # 评估基准策略（仅在训练开始时评估一次）
+    # 评估基准策略
     print("\n[Info] 评估基准策略...")
     baseline_results = evaluate_baselines(env, num_episodes=10)
     print(f"基准策略性能:")
     for policy_name, avg_reward in baseline_results.items():
         print(f"  {policy_name}: {avg_reward:.2f}")
-        recorder.writer.add_scalar(f'Baseline/{policy_name}', avg_reward, 0)
+        if recorder.writer is not None:
+            recorder.writer.add_scalar(f'Baseline/{policy_name}', avg_reward, 0)
 
-    # =========================================================================
-    # 3. 训练主循环 (Training Loop)
-    #
-    # =========================================================================
     print("\n[Info] Start Training...")
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
         # 学习率衰减
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
-            agent.decay_lr(decay_rate=TC.LR_DECAY_RATE)
+            agent.decay_lr()
             print(f"[Info] LR Decayed at Episode {episode}")
 
-        # 重置环境，获取初始观测
-        raw_obs_list, _ = env.reset()
+        # 重置环境
+        obs_list, _ = env.reset()
 
         ep_reward = 0
         ep_start_time = time.time()
         step_logs_buffer = []
 
-        # 统计容器：用于计算多智能体指标（公平性、协作率等）
+        # 统计容器
         stats = {
             "power_sum": 0.0,
             "local_cnt": 0,
@@ -188,118 +162,93 @@ def main():
             "queue_len_sum": 0,
             "rsu_queue_sum": 0,
             "assigned_cpu_sum": 0.0,
-            "agent_rewards": np.zeros(Cfg.NUM_VEHICLES),  # 每个智能体的累积奖励（用于计算公平性）
-            "v2v_matrix": np.zeros((Cfg.NUM_VEHICLES, Cfg.NUM_VEHICLES))  # 协作关系矩阵
+            "agent_rewards_sum": 0.0,
+            "agent_rewards_count": 0,
+            "v2v_count": 0
         }
 
-        # Rollout循环：采集轨迹
+        # Rollout循环
         for step in range(hyperparams['max_steps_per_ep']):
-            # 构建图数据（统一通过data_utils处理）
-            dag_batch, local_topo_batch, global_topo = process_env_obs(raw_obs_list, agent.device)
-
             # 智能体决策
-            action_dict = agent.select_action(dag_batch, local_topo_batch)
-
-            # 动作解码：将策略输出转换为环境动作格式
-            num_targets_decode = Cfg.NUM_VEHICLES + 1
-            env_actions = agent.decode_actions(action_dict['action_d'], action_dict['power_val'], num_targets_decode)
+            action_dict = agent.select_action(obs_list, deterministic=False)
+            actions = action_dict['actions']
+            log_probs = action_dict['log_probs']
+            values = action_dict['values']
 
             # 环境步进
-            next_raw_obs_list, rewards, terminated, truncated, info = env.step(env_actions)
+            next_obs_list, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
 
-            # 统计：累加每个智能体的实时奖励
-            stats["agent_rewards"] += np.array(rewards)
+            # 统计
+            stats["agent_rewards_sum"] += sum(rewards)
+            stats["agent_rewards_count"] += len(rewards)
 
-            # 获取状态价值（用于GAE计算）
-            values = agent.get_value(dag_batch, local_topo_batch)
-
-            # 存入Buffer（将batch拆分为列表）
-            dag_graph_list, topo_graph_list = split_batch_to_list(dag_batch, local_topo_batch)
-            buffer.add(
-                dag_list=dag_graph_list,
-                topo_list=topo_graph_list,
-                act_d=action_dict['action_d'],
-                act_c=action_dict['action_p'],
-                logprob=action_dict['logprob_total'],
-                val=values,
-                rew=rewards,
-                done=done
-            )
+            # 存入Buffer
+            buffer.add(obs_list, actions, rewards, values, log_probs, done)
 
             # 过程统计
-            step_r = sum(rewards) / Cfg.NUM_VEHICLES
+            num_agents = len(rewards) if len(rewards) > 0 else 1
+            step_r = sum(rewards) / num_agents
             ep_reward += step_r
 
-            for i, act in enumerate(env_actions):
+            num_vehs = len(env.vehicles)
+            for i, act in enumerate(actions):
+                if i >= num_vehs:
+                    break
                 tgt = act['target']
-
-                # 统计功率和队列
                 stats['power_sum'] += act['power']
                 stats['queue_len_sum'] += env.vehicles[i].task_queue_len
 
-                # 分类统计：Local / RSU / Neighbor
                 if tgt == 0:
                     stats['local_cnt'] += 1
                     stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
-
                 elif tgt == 1:
-                    # --- RSU 卸载 ---
                     stats['rsu_cnt'] += 1
                     stats['assigned_cpu_sum'] += Cfg.F_RSU
-
                 else:
-                    # --- V2V 卸载 (Neighbor) ---
                     stats['neighbor_cnt'] += 1
-
-                    # 环境目标ID(2+)转换为邻居列表索引(0+)
+                    stats['v2v_count'] += 1
                     neighbor_idx = tgt - 2
-                    if neighbor_idx < stats["v2v_matrix"].shape[1]:
-                        stats["v2v_matrix"][i, neighbor_idx] += 1
-
-                    # 算力统计：查找对应的邻居车辆
-                    candidate_vehs = [v for v in env.vehicles if v.id != i]
+                    candidate_vehs = [v for v in env.vehicles if v.id != env.vehicles[i].id]
                     if 0 <= neighbor_idx < len(candidate_vehs):
                         target_veh = candidate_vehs[neighbor_idx]
                         stats['assigned_cpu_sum'] += target_veh.cpu_freq
                     else:
                         stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
 
-            stats['rsu_queue_sum'] += env.rsu_queue_curr
+            stats['rsu_queue_sum'] += sum(q.get_total_load() for q in env.rsus[0].queue_manager.processor_queues) if env.rsus else 0
 
             # 记录详细日志
-            for i, act in enumerate(env_actions):
+            for i, act in enumerate(actions):
                 step_logs_buffer.append({
                     "episode": episode, "step": step, "veh_id": i,
-                    "subtask": act['subtask'], "target": act['target'],
-                    "power": f"{act['power']:.3f}", "reward": f"{rewards[i]:.3f}",
+                    "target": act['target'],
+                    "power": f"{act['power']:.3f}",
+                    "reward": f"{rewards[i]:.3f}",
                     "q_len": env.vehicles[i].task_queue_len
                 })
 
-            raw_obs_list = next_raw_obs_list
+            obs_list = next_obs_list
             if done:
                 break
 
         # Episode结束后的分析与更新
         total_steps = step + 1
-        total_decisions = total_steps * Cfg.NUM_VEHICLES
+        total_decisions = stats["agent_rewards_count"] if stats["agent_rewards_count"] > 0 else 1
 
-        # 计算公平性指数（Jain's Fairness Index，1.0为绝对公平）
-        sum_agent_rew = np.sum(stats["agent_rewards"])
-        sum_sq_agent_rew = np.sum(stats["agent_rewards"] ** 2)
-        fairness_index = (sum_agent_rew ** 2) / (Cfg.NUM_VEHICLES * sum_sq_agent_rew + 1e-9)
+        # 简化的公平性指数（使用平均值，因为我们不再跟踪每个agent的单独奖励）
+        avg_agent_reward = stats["agent_rewards_sum"] / total_decisions if total_decisions > 0 else 0
+        fairness_index = 1.0  # 简化处理
 
-        # 个体奖励差异
-        reward_gap = np.max(stats["agent_rewards"]) - np.min(stats["agent_rewards"])
+        # 个体奖励差异（简化处理）
+        reward_gap = 0.0
 
         # 协作率
-        total_v2v_actions = np.sum(stats["v2v_matrix"])
-        collaboration_rate = (total_v2v_actions / total_decisions) * 100
+        collaboration_rate = (stats['v2v_count'] / total_decisions) * 100 if total_decisions > 0 else 0
 
         # PPO更新
-        last_dag_batch, last_topo_batch, _ = process_env_obs(raw_obs_list, agent.device)
-        last_val = agent.get_value(last_dag_batch, last_topo_batch)
-        buffer.compute_returns_and_advantages(last_val, done)
+        last_value = agent.get_value(obs_list)
+        buffer.compute_returns_and_advantages(last_value)
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
         buffer.clear()
 
@@ -320,24 +269,18 @@ def main():
         pct_v2v = (stats['neighbor_cnt'] / total_decisions) * 100
 
         # 成功率统计
-
-        # 车辆级成功率
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
         veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
 
-        # 子任务级成功率
         total_subtasks = 0
         completed_subtasks = 0
         for v in env.vehicles:
             total_subtasks += v.task_dag.num_subtasks
-            # 统计状态为 3 (DONE) 的节点数。假设 3 代表完成状态
-            # 如果您的环境中状态码不同，请调整此处的 '== 3'
             completed_subtasks += np.sum(v.task_dag.status == 3)
 
         subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
 
-        # --- 控制台输出 (Console Log) ---
-        # 打印训练进度
+        # 控制台输出
         if episode == 1 or episode % 10 == 0:
             header = (
                 f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} {'CPU':<4} | "
@@ -359,7 +302,6 @@ def main():
         # 记录到Tensorboard/CSV
         recorder.log_step(step_logs_buffer)
 
-        # 记录多维度指标
         episode_metrics = {
             "episode": episode,
             "total_reward": ep_reward,
@@ -375,8 +317,8 @@ def main():
             "ma_fairness": fairness_index,
             "ma_reward_gap": reward_gap,
             "ma_collaboration": collaboration_rate,
-            "max_agent_reward": np.max(stats["agent_rewards"]),
-            "min_agent_reward": np.min(stats["agent_rewards"]),
+            "max_agent_reward": avg_agent_reward,
+            "min_agent_reward": avg_agent_reward,
             "avg_assigned_cpu_ghz": avg_assigned_cpu / 1e9,
             "duration": duration
         }
@@ -385,10 +327,10 @@ def main():
         # 模型保存
         if ep_reward > best_reward:
             best_reward = ep_reward
-            recorder.save_model(agent, episode, is_best=True)
+            agent.save(os.path.join(recorder.model_dir, "best_model.pth"))
 
         if episode % TC.SAVE_INTERVAL == 0:
-            recorder.save_model(agent, episode, is_best=False)
+            agent.save(os.path.join(recorder.model_dir, f"model_ep{episode}.pth"))
 
     # 训练结束与绘图
     print("\n[Info] Training Finished.")

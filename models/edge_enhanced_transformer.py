@@ -95,6 +95,11 @@ class EdgeEnhancedAttention(nn.Module):
         
         # 6. Softmax
         attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        # 处理全-inf行导致的NaN（当整行都被mask时）
+        # 将NaN替换为0，避免后续计算产生NaN
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        
         attn_weights = self.dropout(attn_weights)
         
         # 7. 加权求和
@@ -175,9 +180,9 @@ class EdgeEnhancedTransformerLayer(nn.Module):
         # 前馈网络
         self.feed_forward = FeedForward(d_model, d_ff, dropout)
         
-        # Layer Normalization
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
+        # Layer Normalization (增加eps确保数值稳定)
+        self.norm1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm2 = nn.LayerNorm(d_model, eps=1e-6)
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
