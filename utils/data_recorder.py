@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 try:
-from torch.utils.tensorboard import SummaryWriter
+    from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
