@@ -215,9 +215,9 @@ class SystemConfig:
     2. 防止作弊: 如果Deadline包含排队，智能体可通过堆积本地任务延长Deadline
     3. 卸载必要性: γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
     """
-    DEADLINE_TIGHTENING_FACTOR = 0.8  # γ: 紧缩因子 (强迫卸载)
-    DEADLINE_TIGHTENING_MIN = 0.70  # γ最小值
-    DEADLINE_TIGHTENING_MAX = 0.80  # γ最大值
+    DEADLINE_TIGHTENING_FACTOR = 0.85  # γ: 紧缩因子 (强迫卸载)
+    DEADLINE_TIGHTENING_MIN = 0.75  # γ最小值
+    DEADLINE_TIGHTENING_MAX = 0.95  # γ最大值
 
     # 验证: γ < 1.0 确保本地计算100%失败
     # 当γ=0.75，本地耗时1.0s的任务，Deadline为0.75s
@@ -246,15 +246,20 @@ class SystemConfig:
     CONG_WEIGHT = 0.5  # β: 拥塞惩罚权重系数
     CONG_GAMMA = 2.0   # γ: 拥塞敏感度指数 (平方增长)
 
-    # C. 软约束惩罚参数 (Soft Constraint - Timeout)
-    PENALTY_TIMEOUT_WEIGHT = 10.0  # η: 超时惩罚系数 (动态惩罚)
+    # C. 软约束惩罚参数 - 距离预警 (Soft Constraint - Distance Warning)
+    DIST_PENALTY_WEIGHT = 2.0    # λ_d: 距离预警权重，最大产生-2.0惩罚
+    DIST_SAFE_FACTOR = 0.8       # 安全距离因子，通信半径的80%为安全区
+    DIST_SENSITIVITY = 2.0       # κ: 距离敏感度，平方增长
+    
+    # D. 软约束惩罚参数 - 超时惩罚 (Soft Constraint - Timeout)
+    TIMEOUT_PENALTY_WEIGHT = 5.0  # η: 超时惩罚上限（tanh饱和值）
+    TIMEOUT_STEEPNESS = 3.0       # σ: 超时陡峭度，确保微小超时也有显著惩罚
 
-    # D. 硬约束惩罚参数 (Hard Constraint) - Clip前
-    PENALTY_LINK_BREAK = -50.0   # 链路断开/超出范围
-    PENALTY_OVERFLOW = -50.0     # 队列溢出
-    PENALTY_FAILURE = -50.0      # 任务失败惩罚 (保留向后兼容)
+    # E. 硬约束惩罚参数 (Hard Constraint) - 直接覆盖
+    PENALTY_LINK_BREAK = -10.0   # 链路断开/超出范围（触发后直接返回）
+    PENALTY_OVERFLOW = -10.0     # 队列溢出（触发后直接返回）
 
-    # E. 奖励范围控制
+    # F. 奖励范围控制
     REWARD_MAX = 10.0    # 奖励上限 (防止奖励爆炸)
     REWARD_MIN = -10.0   # 奖励下限
 

@@ -715,6 +715,17 @@ class VecOffloadingEnv(gym.Env):
             # 获取任务计算量（用于基于计算量的队列限制检查）
             task_comp = dag.total_comp[task_idx] if task_idx is not None and task_idx < len(dag.total_comp) else Cfg.MEAN_COMP_LOAD
             r = self.calculate_agent_reward(i, target, task_idx, data_size, task_comp)
+            
+            # [关键修复] 检查deadline超时，应用非线性超时惩罚
+            elapsed = self.time - dag.start_time
+            if dag.deadline > 0 and elapsed > dag.deadline and not dag.is_finished:
+                # DAG超时且未完成，给予非线性惩罚（tanh限制上界）
+                # 公式: r_timeout = -η * tanh(σ * (t - D) / D)
+                # 使用tanh确保惩罚有界，σ控制陡峭度
+                overtime_ratio = (elapsed - dag.deadline) / dag.deadline
+                r += -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
+                dag.set_failed()
+            
             rewards.append(r)
 
         all_finished = all(v.task_dag.is_finished for v in self.vehicles)
@@ -920,11 +931,22 @@ class VecOffloadingEnv(gym.Env):
         return self._dist_matrix_cache
 
     def _get_rsu_dist(self, vehicle):
-        """获取车辆到最近RSU的距离（带缓存，向后兼容）"""
+        """获取车辆到最近RSU的距离（使用实际RSU列表）"""
         if vehicle.id in self._rsu_dist_cache:
             return self._rsu_dist_cache[vehicle.id]
-        # 向后兼容：使用配置中的默认RSU位置
-        dist = np.linalg.norm(vehicle.pos - Cfg.RSU_POS)
+        
+        # 使用实际部署的RSU列表计算最近距离
+        if len(self.rsus) > 0:
+            min_dist = float('inf')
+            for rsu in self.rsus:
+                dist = rsu.get_distance(vehicle.pos)
+                if dist < min_dist:
+                    min_dist = dist
+            dist = min_dist
+        else:
+            # 向后兼容：没有RSU时使用配置
+            dist = np.linalg.norm(vehicle.pos - Cfg.RSU_POS)
+        
         self._rsu_dist_cache[vehicle.id] = dist
         return dist
 
@@ -1072,14 +1094,29 @@ class VecOffloadingEnv(gym.Env):
             if rsu_is_full:
                 target_mask_row[1] = False
 
+            # [关键修复] RSU范围检查 - 车辆不在任何RSU覆盖范围内时禁用RSU
+            in_rsu_range = False
+            if len(self.rsus) > 0:
+                for rsu in self.rsus:
+                    if rsu.is_in_coverage(v.pos):
+                        in_rsu_range = True
+                        break
+            else:
+                # 向后兼容
+                in_rsu_range = (dist_rsu <= Cfg.RSU_RANGE)
+            
+            if not in_rsu_range:
+                target_mask_row[1] = False
+
             # [关键] V2I离开判断 - 车辆即将离开RSU覆盖范围时禁用RSU
-            speed = np.linalg.norm(v.vel)
-            if speed > 0.1:
-                time_to_leave = (Cfg.RSU_RANGE - dist_rsu) / speed
-                avg_data_size = np.mean(v.task_dag.rem_data)
-                est_trans_time = avg_data_size / max(est_v2i_rate, 1e-6)
-                if time_to_leave < est_trans_time:
-                    target_mask_row[1] = False
+            if in_rsu_range:
+                speed = np.linalg.norm(v.vel)
+                if speed > 0.1:
+                    time_to_leave = (Cfg.RSU_RANGE - dist_rsu) / speed
+                    avg_data_size = np.mean(v.task_dag.rem_data)
+                    est_trans_time = avg_data_size / max(est_v2i_rate, 1e-6)
+                    if time_to_leave < est_trans_time:
+                        target_mask_row[1] = False
 
             # [关键] 目标车辆队列满检查 - 动态禁用过载车辆（基于计算量）
             # 使用平均任务大小进行保守检查
@@ -1611,91 +1648,105 @@ class VecOffloadingEnv(gym.Env):
 
     def _calculate_constraint_penalty(self, vehicle_id, target, task_idx=None, task_comp=None):
         """
-        [奖励函数组件] 计算约束惩罚 r_pen（基于计算量）
-
-        只处理硬约束（物理违规），软约束（超时）在CFT计算中作为失败判断处理
-
-        根据用户设计框架：
-        - Deadline是"硬约束"，用于判断任务成功/失败（已在CFT计算中处理）
-        - 奖励函数应该只关注相对效率收益，不应该重复惩罚超时
+        [奖励函数组件] 计算约束惩罚 r_pen
+        
+        采用"掩码覆盖"设计：
+        - 硬约束触发时直接返回REWARD_MIN，不再计算软约束
+        - 软约束（距离预警）提供梯度信息
 
         Args:
             vehicle_id: 车辆ID
             target: 目标节点
             task_idx: 任务索引
-            task_comp: 任务计算量 (cycles)，用于基于计算量的溢出检查
+            task_comp: 任务计算量 (cycles)
 
         Returns:
-            float: 总惩罚值 (负值或0)
+            tuple: (soft_penalty, hard_constraint_triggered)
+                - soft_penalty: 软约束惩罚（距离预警）
+                - hard_constraint_triggered: 是否触发硬约束
         """
-        penalty = 0.0
+        soft_penalty = 0.0
+        hard_triggered = False
 
         v = self.vehicles[vehicle_id]
         
         if task_comp is None:
             task_comp = Cfg.MEAN_COMP_LOAD
 
-        # 处理target格式：'Local', 'RSU', int车辆ID, 或('RSU', rsu_id)元组
-        if target == 'Local':
-            pass
-        elif self._is_rsu_location(target):
-            # RSU执行：检查是否在RSU覆盖范围内
+        # ========== 硬约束检测 ==========
+        # 1. RSU范围检查
+        if self._is_rsu_location(target):
             in_range = False
+            rsu_dist = float('inf')
             if isinstance(target, tuple) and len(target) == 2:
-                # 多RSU场景：检查是否在指定的RSU覆盖范围内
                 rsu_id = target[1]
                 if 0 <= rsu_id < len(self.rsus):
                     in_range = self.rsus[rsu_id].is_in_coverage(v.pos)
+                    rsu_dist = np.linalg.norm(v.pos - self.rsus[rsu_id].position)
             else:
-                # 单个RSU场景（向后兼容）：检查是否在任何RSU覆盖范围内
                 if len(self.rsus) > 0:
                     for rsu in self.rsus:
                         if rsu.is_in_coverage(v.pos):
                             in_range = True
-                            break
+                            rsu_dist = min(rsu_dist, np.linalg.norm(v.pos - rsu.position))
                 else:
-                    # 向后兼容：使用配置的RSU位置
                     dist = np.linalg.norm(v.pos - Cfg.RSU_POS)
                     in_range = (dist <= Cfg.RSU_RANGE)
+                    rsu_dist = dist
             
             if not in_range:
-                penalty += Cfg.PENALTY_LINK_BREAK
+                hard_triggered = True
+            else:
+                # 距离预警（软约束）
+                safe_dist = Cfg.RSU_RANGE * Cfg.DIST_SAFE_FACTOR
+                if rsu_dist > safe_dist:
+                    dist_ratio = (rsu_dist - safe_dist) / (Cfg.RSU_RANGE - safe_dist + 1e-6)
+                    dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
+                    soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
+        
+        # 2. V2V范围检查
         elif isinstance(target, int):
             if target < len(self.vehicles):
                 target_veh = self.vehicles[target]
                 dist = np.linalg.norm(v.pos - target_veh.pos)
+                
                 if dist > Cfg.V2V_RANGE:
-                    penalty += Cfg.PENALTY_LINK_BREAK
-
-        # 队列溢出检查（基于计算量）
-        q_after_load = 0.0
-        q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
-        if target == 'Local':
-            q_after_load = v.task_queue.get_total_load() + task_comp
-            q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
-        elif self._is_rsu_location(target):
-            # RSU执行
-            if isinstance(target, tuple) and len(target) == 2:
-                # 多RSU场景：使用指定的RSU队列计算量
-                rsu_id = target[1]
-                if 0 <= rsu_id < len(self.rsus):
-                    q_after_load = self.rsus[rsu_id].queue_manager.get_total_load() + task_comp
+                    hard_triggered = True
                 else:
-                    q_after_load = task_comp
-                q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT
-            else:
-                # 单个RSU场景（向后兼容）：估算总计算量
-                q_after_load = (sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) + task_comp) if len(self.rsus) > 0 else task_comp
-                q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_CYCLES_LIMIT
-        elif isinstance(target, int):
-            if target < len(self.vehicles):
-                q_after_load = self.vehicles[target].task_queue.get_total_load() + task_comp
-                q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
-        
-        if q_after_load > q_max_load:
-            penalty += Cfg.PENALTY_OVERFLOW
+                    # 距离预警（软约束）
+                    safe_dist = Cfg.V2V_RANGE * Cfg.DIST_SAFE_FACTOR
+                    if dist > safe_dist:
+                        dist_ratio = (dist - safe_dist) / (Cfg.V2V_RANGE - safe_dist + 1e-6)
+                        dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
+                        soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
 
-        return penalty
+        # 3. 队列溢出检查（硬约束）
+        if not hard_triggered:
+            q_after_load = 0.0
+            q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
+            if target == 'Local':
+                q_after_load = v.task_queue.get_total_load() + task_comp
+                q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
+            elif self._is_rsu_location(target):
+                if isinstance(target, tuple) and len(target) == 2:
+                    rsu_id = target[1]
+                    if 0 <= rsu_id < len(self.rsus):
+                        q_after_load = self.rsus[rsu_id].queue_manager.get_total_load() + task_comp
+                    else:
+                        q_after_load = task_comp
+                    q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT
+                else:
+                    q_after_load = (sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) + task_comp) if len(self.rsus) > 0 else task_comp
+                    q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_CYCLES_LIMIT
+            elif isinstance(target, int):
+                if target < len(self.vehicles):
+                    q_after_load = self.vehicles[target].task_queue.get_total_load() + task_comp
+                    q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
+            
+            if q_after_load > q_max_load:
+                hard_triggered = True
+
+        return soft_penalty, hard_triggered
 
     def _clip_reward(self, reward):
         """
@@ -1712,16 +1763,17 @@ class VecOffloadingEnv(gym.Env):
     def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0, task_comp=None):
         """
         [MAPPO奖励函数] 计算单个智能体的奖励
-
-        基于 MAPPO 设计:
-        r_i,t = α * r_eff + β * r_cong + r_pen
+        
+        采用"掩码覆盖"设计：
+        - 硬约束触发时直接返回REWARD_MIN
+        - 否则计算 r = α*r_eff + β*r_cong + r_soft_pen
 
         Args:
             vehicle_id: 车辆ID
             target: 卸载目标 ('Local', 'RSU', 或车辆ID)
             task_idx: 当前调度的任务索引
             data_size: 任务数据量 (bits)
-            task_comp: 任务计算量 (cycles)，用于基于计算量的队列限制检查
+            task_comp: 任务计算量 (cycles)
 
         Returns:
             float: 归一化后的奖励值
@@ -1730,17 +1782,23 @@ class VecOffloadingEnv(gym.Env):
         dag = v.task_dag
         
         if task_comp is None:
-            # 如果没有提供，使用平均计算量作为默认值
             task_comp = Cfg.MEAN_COMP_LOAD
 
+        # 1. 检查约束惩罚（区分硬约束和软约束）
+        r_soft_pen, hard_triggered = self._calculate_constraint_penalty(vehicle_id, target, task_idx, task_comp)
+        
+        # 2. 硬约束触发时直接返回最小值（掩码覆盖）
+        if hard_triggered:
+            return Cfg.REWARD_MIN
+        
+        # 3. 计算效率收益和拥塞惩罚
         r_eff = self._calculate_efficiency_gain(dag, target, task_idx, vehicle_id)
-        # 传递vehicle_id以便正确获取本地队列负载
         r_cong = self._calculate_congestion_penalty(target, task_comp, vehicle_id)
-        r_pen = self._calculate_constraint_penalty(vehicle_id, target, task_idx, task_comp)
 
+        # 4. 组合奖励
         reward = (Cfg.EFF_WEIGHT * r_eff +
                   Cfg.CONG_WEIGHT * r_cong +
-                  r_pen)
+                  r_soft_pen)
 
         reward = self._clip_reward(reward)
 
