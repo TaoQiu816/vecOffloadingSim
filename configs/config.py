@@ -258,8 +258,12 @@ class SystemConfig:
     # E. 硬约束惩罚参数 (Hard Constraint) - 直接覆盖
     PENALTY_LINK_BREAK = -10.0   # 链路断开/超出范围（触发后直接返回）
     PENALTY_OVERFLOW = -10.0     # 队列溢出（触发后直接返回）
+    PENALTY_FAILURE = -10.0      # 任务失败惩罚（超时）
 
-    # F. 奖励范围控制
+    # F. 成功奖励参数 (Success Bonus) - 稀疏奖励强化
+    SUCCESS_BONUS = 10.0  # 任务成功完成时的固定奖励（用于打破数学期望陷阱）
+
+    # G. 奖励范围控制
     REWARD_MAX = 10.0    # 奖励上限 (防止奖励爆炸)
     REWARD_MIN = -10.0   # 奖励下限
 

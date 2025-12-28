@@ -1122,8 +1122,66 @@ class VecOffloadingEnv(gym.Env):
                     target_veh_id = target_index_to_veh_id.get(i)
                     if target_veh_id is not None:
                         n_veh = next((veh for veh in self.vehicles if veh.id == target_veh_id), None)
+                        if n_veh is None:
+                            target_mask_row[i] = False
+                            continue
+                        
                         # 使用基于计算量的检查（更准确）
-                        if n_veh and n_veh.is_queue_full(new_task_cycles=avg_task_comp):
+                        if n_veh.is_queue_full(new_task_cycles=avg_task_comp):
+                            target_mask_row[i] = False
+                            continue
+                        
+                        # [新增] V2V智能断链保护 - 预测任务能否在断开前完成
+                        # 计算相对速度（两车在通信范围内的有效连接时间）
+                        rel_vel = n_veh.vel - v.vel
+                        rel_speed = np.linalg.norm(rel_vel)
+                        
+                        # 计算当前距离（需要通过索引映射找到对应的j）
+                        j_idx = None
+                        for j, other_veh in enumerate(self.vehicles):
+                            if other_veh.id == target_veh_id:
+                                j_idx = j
+                                break
+                        if j_idx is None:
+                            target_mask_row[i] = False
+                            continue
+                        
+                        current_dist = dist_matrix[v_idx, j_idx]
+                        
+                        # 估算任务总耗时（传输 + 排队 + 计算）
+                        # 使用当前选中的任务数据量（如果可用），否则使用平均值
+                        if selected_subtask_idx >= 0 and selected_subtask_idx < v.task_dag.num_subtasks:
+                            task_data_size = v.task_dag.total_data[selected_subtask_idx]
+                            task_comp_size = v.task_dag.total_comp[selected_subtask_idx]
+                        else:
+                            task_data_size = np.mean(v.task_dag.total_data)
+                            task_comp_size = avg_task_comp
+                        
+                        # 传输时间（重新计算V2V速率）
+                        est_v2v_rate = self.channel.compute_one_rate(v, n_veh.pos, 'V2V', self.time)
+                        est_v2v_rate = max(est_v2v_rate, 1e-6)
+                        trans_time = task_data_size / est_v2v_rate
+                        
+                        # 排队时间（估算）
+                        queue_wait_time = n_veh.task_queue.get_estimated_wait_time(n_veh.cpu_freq)
+                        
+                        # 计算时间
+                        comp_time = task_comp_size / max(n_veh.cpu_freq, 1e-6)
+                        
+                        # 总任务耗时（加安全系数）
+                        total_task_time = (trans_time + queue_wait_time + comp_time) * 1.2  # 1.2是安全系数
+                        
+                        # 估算两车还能连多久
+                        if rel_speed > 0.1:  # 避免除零
+                            # 假设两车以相对速度相向/相离运动
+                            # 简化：使用当前距离和相对速度估算断开时间
+                            time_to_break = (Cfg.V2V_RANGE - current_dist) / rel_speed
+                        else:
+                            # 相对速度很小，认为可以连很久
+                            time_to_break = 1000.0  # 大值表示不会断开
+                        
+                        # 如果任务耗时 > 连接时间，mask掉（注定失败）
+                        if total_task_time > time_to_break:
                             target_mask_row[i] = False
 
             # [关键] 扩展掩码 - 每个子任务对应一行目标掩码
@@ -1807,6 +1865,11 @@ class VecOffloadingEnv(gym.Env):
                   Cfg.CONG_WEIGHT * r_cong +
                   r_soft_pen +
                   r_timeout)
+
+        # 6. [新增] 任务成功bonus（稀疏奖励强化，打破数学期望陷阱）
+        # 只在任务完成且未失败时给予，提供强烈的正反馈信号
+        if dag.is_finished and not dag.is_failed:
+            reward += Cfg.SUCCESS_BONUS
 
         reward = self._clip_reward(reward)
 
