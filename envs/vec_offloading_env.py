@@ -715,17 +715,6 @@ class VecOffloadingEnv(gym.Env):
             # 获取任务计算量（用于基于计算量的队列限制检查）
             task_comp = dag.total_comp[task_idx] if task_idx is not None and task_idx < len(dag.total_comp) else Cfg.MEAN_COMP_LOAD
             r = self.calculate_agent_reward(i, target, task_idx, data_size, task_comp)
-            
-            # [关键修复] 检查deadline超时，应用非线性超时惩罚
-            elapsed = self.time - dag.start_time
-            if dag.deadline > 0 and elapsed > dag.deadline and not dag.is_finished:
-                # DAG超时且未完成，给予非线性惩罚（tanh限制上界）
-                # 公式: r_timeout = -η * tanh(σ * (t - D) / D)
-                # 使用tanh确保惩罚有界，σ控制陡峭度
-                overtime_ratio = (elapsed - dag.deadline) / dag.deadline
-                r += -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
-                dag.set_failed()
-            
             rewards.append(r)
 
         all_finished = all(v.task_dag.is_finished for v in self.vehicles)
@@ -1795,10 +1784,21 @@ class VecOffloadingEnv(gym.Env):
         r_eff = self._calculate_efficiency_gain(dag, target, task_idx, vehicle_id)
         r_cong = self._calculate_congestion_penalty(target, task_comp, vehicle_id)
 
-        # 4. 组合奖励
+        # 4. 计算超时惩罚（软约束，仅在超时且未完成时应用）
+        r_timeout = 0.0
+        if dag.deadline > 0:
+            elapsed = self.time - dag.start_time
+            if elapsed > dag.deadline and not dag.is_finished:
+                # 非线性超时惩罚：r_timeout = -η * tanh(σ * (t - D) / D)
+                overtime_ratio = (elapsed - dag.deadline) / dag.deadline
+                r_timeout = -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
+                dag.set_failed()
+
+        # 5. 组合奖励（所有软约束项）
         reward = (Cfg.EFF_WEIGHT * r_eff +
                   Cfg.CONG_WEIGHT * r_cong +
-                  r_soft_pen)
+                  r_soft_pen +
+                  r_timeout)
 
         reward = self._clip_reward(reward)
 
