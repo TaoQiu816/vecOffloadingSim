@@ -26,18 +26,18 @@ class SystemConfig:
     # =========================================================================
     # 道路模型参数 (Road Model)
     # =========================================================================
-    MAP_SIZE = 2000.0  # 道路长度 L (m) - 城市快速路
-    NUM_LANES = 3  # 车道数量 N_lane
+    MAP_SIZE = 1000.0  # 道路长度 L (m) - 1公里路段，避免稀疏/拥堵
+    NUM_LANES = 2  # 车道数量 N_lane - 双车道，减少换道干扰
     LANE_WIDTH = 3.5  # 车道宽度 W_lane (m) - 标准车道宽度
     
     # 车辆参数
-    NUM_VEHICLES = 20  # 车辆总数 (初始车辆数，后续动态生成)
+    NUM_VEHICLES = 20  # 车辆总数 (初始车辆数，后续动态生成) - 密度50m/辆，RSU覆盖区6-8辆
     
     # =========================================================================
     # RSU部署参数 (RSU Deployment)
     # =========================================================================
-    NUM_RSU = 5  # RSU数量 M
-    RSU_Y_DIST = 20.0  # RSU离路边的距离 (m)
+    NUM_RSU = 3  # RSU数量 M - 1000m全覆盖+重叠区
+    RSU_Y_DIST = 10.0  # RSU离路边的距离 (m)
     # RSU覆盖半径在下面定义（RSU_RANGE）
     # RSU部署间距 D_inter 需要满足：D_inter <= 2 * sqrt(R_rsu^2 - Y_RSU^2) * 0.9
     # Y_RSU = ROAD_WIDTH + RSU_Y_DIST，其中ROAD_WIDTH = NUM_LANES * LANE_WIDTH
@@ -50,19 +50,19 @@ class SystemConfig:
     # =========================================================================
     # 车辆到达参数（泊松过程）
     # =========================================================================
-    VEHICLE_ARRIVAL_RATE = 0.1  # 车辆到达率 λ (vehicles/s)，即平均每10秒到达1辆车
+    VEHICLE_ARRIVAL_RATE = 0.2  # 车辆到达率 λ (vehicles/s)，即平均每5秒到达1辆车
     # 如果设为0，则禁用动态生成，只在reset时生成初始车辆
 
     DT = 0.1  # 仿真时间步长 (s) - 建议0.1s或1.0s，需保证 v_max * DT << R_rsu
-    MAX_STEPS = 500  # 每个 Episode 步数
+    MAX_STEPS = 200  # 每个 Episode 步数
 
     # =========================================================================
     # 车辆移动性参数（截断正态分布）
     # =========================================================================
-    VEL_MEAN = 16.6  # 速度均值 μ_v (m/s) ≈ 60 km/h
-    VEL_STD = 3.0  # 速度标准差 σ_v (m/s)
-    VEL_MIN = 10.0  # 最小速度 (m/s) ~ 36 km/h
-    VEL_MAX = 25.0  # 最大速度 (m/s) ~ 90 km/h
+    VEL_MEAN = 11.1  # 速度均值 μ_v (m/s) ≈ 40 km/h
+    VEL_STD = 2.0  # 速度标准差 σ_v (m/s)
+    VEL_MIN = 5.0  # 最小速度 (m/s) ~ 18 km/h
+    VEL_MAX = 16.6  # 最大速度 (m/s) ~ 60 km/h
     # 兼容旧代码引用
     MAX_VELOCITY = VEL_MAX
 
@@ -74,30 +74,31 @@ class SystemConfig:
     C_LIGHT = 3e8  # 光速
 
     # 带宽 (Hz)
-    BW_V2I = 40e6  # 40 MHz
+    BW_V2I = 20e6  # 20 MHz
     BW_V2V = 10e6  # 10 MHz
 
     # 噪声参数
     NOISE_POWER_DENSITY_DBM = -174
     NOISE_FIGURE = 9
-    NOISE_POWER_DBM = -174 + 10 * np.log10(BW_V2I) + NOISE_FIGURE
+    NOISE_POWER_DBM = -95.0  # 热噪声底噪
 
     # 发射功率 (dBm)
-    TX_POWER_MIN_DBM = 23
-    TX_POWER_MAX_DBM = 30
+    TX_POWER_UP_DBM = 23.0  # 车辆上行发射功率 (200mW)
+    TX_POWER_V2V_DBM = 23.0  # V2V侧链发射功率 (200mW)
+    TX_POWER_MIN_DBM = 20.0  # 功率控制下限
+    TX_POWER_MAX_DBM = 23.0  # 功率控制上限
 
-    # 路径损耗模型 (简化版: 自由空间 + 环境因子)
+    # 路径损耗模型 (Log-Distance)
     # PL = PL_0 + 10 * n * log10(d/d_0)
-    # 使用更实际的参数，确保 RSU 覆盖范围内 SNR >= 0
-    PL_ALPHA_V2I = 60.0  # PL_0: 1m 处的基准路径损耗 (dB)
-    PL_BETA_V2I = 2.2    # n: 路径损耗指数 (接近自由空间)
+    PL_ALPHA_V2I = 28.0  # V2I 参考路损 (LOS)
+    PL_BETA_V2I = 2.5    # V2I 衰减指数
 
     # V2V 路径损耗
-    PL_ALPHA_V2V = 60.0
-    PL_BETA_V2V = 3.0
+    PL_ALPHA_V2V = 28.0  # V2V 参考路损
+    PL_BETA_V2V = 3.5    # V2V 衰减指数 (高衰减，模拟遮挡/干扰)
 
-    # V2V 干扰因子
-    V2V_INTERFERENCE_FACTOR = 10.0
+    # V2V 背景干扰强度 (环境干扰底噪)
+    V2V_INTERFERENCE_DBM = -90.0  # V2V背景干扰强度 (dBm)
 
     # 速率估计 SNR 参数
     # SNR 到速率映射: rate = BW * log2(1 + SNR_linear)
@@ -138,14 +139,14 @@ class SystemConfig:
     # 4. 物理约束与掩码 (Constraints & Masking)
     # =========================================================================
     # 通信范围
-    RSU_RANGE = 500.0  # RSU 覆盖半径 R_rsu (m) - 已调整为适合道路模型的参数
+    RSU_RANGE = 400.0  # RSU 覆盖半径 R_rsu (m) - 已调整为适合道路模型的参数
     V2V_RANGE = 300.0  # V2V 通信半径 (m) (DVTP等文献常用值)
 
     # 队列约束 (拥堵控制)
-    # 调整策略: 增加RSU队列限制，创造足够的排队时间来形成梯度反转
-    # 当RSU队列>50时，排队时间(>0.17s)可能超过本地执行时间(0.05-0.17s)
-    VEHICLE_QUEUE_LIMIT = 20  # 车辆任务队列上限
-    RSU_QUEUE_LIMIT = 100  # RSU全局队列上限 (从40增加到100)
+    # [向后兼容] 保留旧的参数名（但不再用于队列限制检查）
+    # 这些参数仅用于计算归一化特征时的参考
+    VEHICLE_QUEUE_LIMIT = 20  # 车辆任务队列上限（已废弃，改用VEHICLE_QUEUE_CYCLES_LIMIT）
+    RSU_QUEUE_LIMIT = 100  # RSU全局队列上限（已废弃，改用RSU_QUEUE_CYCLES_LIMIT）
     
     # RSU多处理器配置
     RSU_NUM_PROCESSORS = 4  # RSU处理器数量（多核处理器架构）
@@ -166,32 +167,36 @@ class SystemConfig:
     PRIORITY_W3 = 1.0    # 出度权重（同计算量下的tie-breaking）
 
     # 单个子任务数据量 (Bits) -> 1 Mbit ~ 3 Mbit
-    # 明确乘以 8，转换为 bit
-    MIN_DATA = 200 * 1024 * 8  # 50 KB -> bits
-    MAX_DATA = 500 * 1024 * 8  # 500 KB -> bits
+    MIN_DATA = 1.0e6  # 1 Mbits 输入
+    MAX_DATA = 3.0e6  # 3 Mbits 输入
 
-    # 对应文献 100 KB ~ 500 KB（边传输量）
-    MIN_EDGE_DATA = 100 * 1024 * 8
-    MAX_EDGE_DATA = 500 * 1024 * 8
+    # 边传输数据量 (Bits) - 关键：设为计算量的 1/5 ~ 1/3
+    MIN_EDGE_DATA = 0.2e6  # 200 Kbits (传输约0.02s)
+    MAX_EDGE_DATA = 0.6e6  # 600 Kbits (传输约0.06s)
 
-    # [调整] 计算量: 模拟 AI 推理/复杂计算
-    # 目标：创造梯度反转点
-    # 本地执行时间: 2.0s - 6.0s (10个子任务 x 0.2-0.6亿次 @ 2GHz)
-    # RSU执行时间: 0.5s - 1.5s (4GHz vs 2GHz avg = 2x)
-    # RSU排队时间上限: 15s (队列100 x 0.6亿次 / 4GHz)
-    # 当RSU队列>50时，排队时间(>7.5s)可能超过本地执行时间(2-6s)，创造梯度反转
-    MIN_COMP = 0.2 * 1e9  # 2亿次
-    MAX_COMP = 0.6 * 1e9  # 6亿次
+    # 计算量 (Cycles)
+    MIN_COMP = 0.1e9  # ≈ 0.1s 本地计算
+    MAX_COMP = 0.3e9  # ≈ 0.3s 本地计算
 
     # 统一使用标准语法，移除内联类型注释
     MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles)
+    
+    # [新设计] 基于计算量（Cycles）的队列限制，比任务个数更科学准确
+    # 平均任务计算量
+    AVG_COMP = (MIN_COMP + MAX_COMP) / 2  # 0.4e9 cycles (4亿次)
+    
+    # 基于计算量的队列限制（从原来的任务个数转换）
+    # 车辆：原来20个任务 → 20 * AVG_COMP = 4.0e9 cycles
+    # RSU：原来100个任务 → 100 * AVG_COMP = 20.0e9 cycles
+    VEHICLE_QUEUE_CYCLES_LIMIT = 4.0e9  # 车辆队列最大计算量 (≈ 20 个平均任务)
+    RSU_QUEUE_CYCLES_LIMIT = 20.0e9  # RSU队列最大计算量 (≈ 100 个平均任务)
     # 或在类文档中统一说明类型
 
     # DAG 结构参数
     DAG_FAT = 0.6  # 宽度
     DAG_DENSITY = 0.4  # 密度
     DAG_REGULAR = 0.5
-    DAG_CCR = 0.5  # 通信计算比
+    DAG_CCR = 0.2  # 通信计算比 (结构生成参数)
 
     # =========================================================================
     # Deadline 计算参数 (Ideal Local Anchoring)
@@ -209,7 +214,7 @@ class SystemConfig:
     2. 防止作弊: 如果Deadline包含排队，智能体可通过堆积本地任务延长Deadline
     3. 卸载必要性: γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
     """
-    DEADLINE_TIGHTENING_FACTOR = 0.75  # γ: 紧缩因子 (0.7-0.8)
+    DEADLINE_TIGHTENING_FACTOR = 0.8  # γ: 紧缩因子 (强迫卸载)
     DEADLINE_TIGHTENING_MIN = 0.70  # γ最小值
     DEADLINE_TIGHTENING_MAX = 0.80  # γ最大值
 
@@ -234,18 +239,18 @@ class SystemConfig:
     # =========================================================================
     # A. 效率收益参数 (Efficiency Gain)
     EFF_WEIGHT = 1.0  # α: 效率收益权重系数
-    EFF_SCALE = 3.0   # λ: tanh缩放因子 (推荐 2.0-5.0)
+    EFF_SCALE = 5.0   # λ: tanh缩放因子 (高灵敏度)
 
     # B. 拥塞惩罚参数 (Congestion Penalty)
     CONG_WEIGHT = 0.5  # β: 拥塞惩罚权重系数
-    CONG_GAMMA = 2.0   # γ: 拥塞敏感度指数 (推荐 ≥2.0)
+    CONG_GAMMA = 2.0   # γ: 拥塞敏感度指数 (平方增长)
 
     # C. 软约束惩罚参数 (Soft Constraint - Timeout)
     PENALTY_TIMEOUT_WEIGHT = 10.0  # η: 超时惩罚系数 (动态惩罚)
 
-    # D. 硬约束惩罚参数 (Hard Constraint)
-    PENALTY_LINK_BREAK = -50.0   # 链路断开惩罚
-    PENALTY_OVERFLOW = -50.0     # 队列溢出惩罚
+    # D. 硬约束惩罚参数 (Hard Constraint) - Clip前
+    PENALTY_LINK_BREAK = -50.0   # 链路断开/超出范围
+    PENALTY_OVERFLOW = -50.0     # 队列溢出
     PENALTY_FAILURE = -50.0      # 任务失败惩罚 (保留向后兼容)
 
     # E. 奖励范围控制

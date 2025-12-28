@@ -10,12 +10,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
-from agents.mappo_agent import MAPPOAgent
-from agents.buffer import RolloutBuffer
+from models.offloading_policy import OffloadingPolicyNetwork
 from utils.data_recorder import DataRecorder
-from utils.graph_builder import GraphBuilder
-from utils.data_utils import process_env_obs
-from torch_geometric.data import Batch, Data, HeteroData
+from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
 
 
 def split_batch_to_list(dag_batch, topo_batch):
@@ -29,6 +26,67 @@ def split_batch_to_list(dag_batch, topo_batch):
     topo_list = topo_batch.to_data_list()
     
     return dag_list, topo_list
+
+
+def evaluate_baselines(env, num_episodes=10):
+    """
+    评估基准策略性能
+    
+    Args:
+        env: 环境实例
+        num_episodes: 评估回合数
+    
+    Returns:
+        baseline_results: 字典，包含各基准策略的平均奖励
+    """
+    baseline_results = {}
+    
+    # 1. 随机策略
+    random_policy = RandomPolicy(seed=42)
+    random_rewards = []
+    for _ in range(num_episodes):
+        obs_list, _ = env.reset()
+        ep_reward = 0
+        for step in range(TC.MAX_STEPS):
+            actions = random_policy.select_action(obs_list)
+            obs_list, rewards, done, _ = env.step(actions)
+            ep_reward += sum(rewards) / len(rewards)
+            if done:
+                break
+        random_rewards.append(ep_reward)
+    baseline_results['Random'] = np.mean(random_rewards)
+    
+    # 2. 全本地执行
+    local_policy = LocalOnlyPolicy()
+    local_rewards = []
+    for _ in range(num_episodes):
+        obs_list, _ = env.reset()
+        ep_reward = 0
+        for step in range(TC.MAX_STEPS):
+            actions = local_policy.select_action(obs_list)
+            obs_list, rewards, done, _ = env.step(actions)
+            ep_reward += sum(rewards) / len(rewards)
+            if done:
+                break
+        local_rewards.append(ep_reward)
+    baseline_results['Local-Only'] = np.mean(local_rewards)
+    
+    # 3. 贪婪策略
+    greedy_policy = GreedyPolicy(env)
+    greedy_rewards = []
+    for _ in range(num_episodes):
+        obs_list, _ = env.reset()
+        ep_reward = 0
+        for step in range(TC.MAX_STEPS):
+            actions = greedy_policy.select_action(obs_list)
+            obs_list, rewards, done, _ = env.step(actions)
+            ep_reward += sum(rewards) / len(rewards)
+            if done:
+                break
+        greedy_rewards.append(ep_reward)
+    baseline_results['Greedy'] = np.mean(greedy_rewards)
+    
+    return baseline_results
 
 
 def main():
@@ -76,36 +134,36 @@ def main():
     print(f" LR Actor:   {hyperparams['lr_actor']}")
     print(f"{'=' * 60}")
 
-    # 初始化环境和智能体
+    # 初始化环境
     env = VecOffloadingEnv()
 
-    # 获取输入维度
-    TASK_DIM = TC.TASK_INPUT_DIM
-    VEH_DIM = TC.VEH_INPUT_DIM
-    RSU_DIM = TC.RSU_INPUT_DIM
-
-    # 初始化MAPPO智能体
-    agent = MAPPOAgent(
-        task_dim=TASK_DIM,
-        veh_dim=VEH_DIM,
-        rsu_dim=RSU_DIM,
-        device=hyperparams['device']
-    )
-
-    # 初始化经验回放池
-    buffer = RolloutBuffer(
-        num_agents=Cfg.NUM_VEHICLES,
-        gamma=TC.GAMMA,
-        gae_lambda=TC.GAE_LAMBDA
-    )
+    # 初始化网络
+    network = OffloadingPolicyNetwork(
+        d_model=TC.EMBED_DIM,
+        num_heads=TC.NUM_HEADS,
+        num_layers=TC.NUM_LAYERS
+    ).to(device)
+    
+    # 优化器
+    optimizer = torch.optim.Adam([
+        {'params': network.parameters(), 'lr': TC.LR_ACTOR}
+    ])
 
     best_reward = -float('inf')
+    
+    # 评估基准策略（仅在训练开始时评估一次）
+    print("\n[Info] 评估基准策略...")
+    baseline_results = evaluate_baselines(env, num_episodes=10)
+    print(f"基准策略性能:")
+    for policy_name, avg_reward in baseline_results.items():
+        print(f"  {policy_name}: {avg_reward:.2f}")
+        recorder.writer.add_scalar(f'Baseline/{policy_name}', avg_reward, 0)
 
     # =========================================================================
     # 3. 训练主循环 (Training Loop)
     #
     # =========================================================================
-    print("[Info] Start Training...")
+    print("\n[Info] Start Training...")
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
@@ -147,7 +205,8 @@ def main():
             env_actions = agent.decode_actions(action_dict['action_d'], action_dict['power_val'], num_targets_decode)
 
             # 环境步进
-            next_raw_obs_list, rewards, done, info = env.step(env_actions)
+            next_raw_obs_list, rewards, terminated, truncated, info = env.step(env_actions)
+            done = terminated or truncated
 
             # 统计：累加每个智能体的实时奖励
             stats["agent_rewards"] += np.array(rewards)
@@ -334,7 +393,7 @@ def main():
     # 训练结束与绘图
     print("\n[Info] Training Finished.")
     print("[Info] Generating plots...")
-    recorder.auto_plot()
+    recorder.auto_plot(baseline_results=baseline_results)
     print(f"[Info] Plots saved to {recorder.plot_dir}")
 
 

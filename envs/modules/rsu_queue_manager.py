@@ -33,12 +33,22 @@ class RSUQueueManager:
         """
         self.num_processors = num_processors if num_processors is not None else getattr(Cfg, 'RSU_NUM_PROCESSORS', 4)
         queue_limit = queue_limit_per_processor if queue_limit_per_processor is not None else Cfg.RSU_QUEUE_LIMIT
-        # 每个处理器的队列上限：总限制除以处理器数量
+        # 每个处理器的队列上限：总限制除以处理器数量（任务个数，向后兼容）
         self.queue_limit_per_processor = queue_limit // self.num_processors
         
-        # 为每个处理器创建独立的FIFO队列
-        self.processor_queues = [FIFOQueue(max_buffer_size=self.queue_limit_per_processor) 
-                                 for _ in range(self.num_processors)]
+        # 每个处理器的计算量上限：总计算量限制除以处理器数量
+        # 使用基于计算量的限制（推荐）
+        total_cycles_limit = Cfg.RSU_QUEUE_CYCLES_LIMIT
+        self.queue_cycles_limit_per_processor = total_cycles_limit / self.num_processors
+        
+        # 为每个处理器创建独立的FIFO队列（使用计算量限制）
+        self.processor_queues = [
+            FIFOQueue(
+                max_buffer_size=self.queue_limit_per_processor,  # 向后兼容
+                max_load_cycles=self.queue_cycles_limit_per_processor  # 基于计算量的限制
+            )
+            for _ in range(self.num_processors)
+        ]
         
         # 记录每个任务分配的处理器ID（用于任务完成时正确移除）
         # 结构: {task_id: processor_id}，但这里我们无法直接获取task_id
@@ -60,11 +70,11 @@ class RSUQueueManager:
         min_load = float('inf')
         
         for proc_id, queue in enumerate(self.processor_queues):
-            # 计算负载：只考虑队列中的等待任务数量
-            load = queue.get_queue_length()
+            # 计算负载：使用总计算量（更准确）
+            load = queue.get_total_load()
             
             # 如果队列未满且负载更小，则选择它
-            if not queue.is_full() and load < min_load:
+            if not queue.is_full(new_task_cycles=comp_cycles) and load < min_load:
                 min_load = load
                 best_processor = proc_id
         
@@ -76,7 +86,7 @@ class RSUQueueManager:
                 return best_processor
             else:
                 # 该处理器队列已满，检查是否所有队列都满
-                if all(q.is_full() for q in self.processor_queues):
+                if all(q.is_full(new_task_cycles=comp_cycles) for q in self.processor_queues):
                     return None
                 # 如果还有未满的队列，应该重新查找（理论上不应该发生，因为best_processor已经是负载最低的）
                 # 但为了安全，这里返回None
@@ -138,14 +148,26 @@ class RSUQueueManager:
                      for queue in self.processor_queues]
         return min(wait_times) if wait_times else 0.0
     
-    def is_full(self):
+    def is_full(self, new_task_cycles=0):
         """
-        检查所有处理器队列是否都已满
+        检查所有处理器队列是否都已满（基于计算量）
+        
+        Args:
+            new_task_cycles: 要添加的新任务计算量（用于检查加入后是否溢出）
         
         Returns:
             bool: 如果所有队列都满返回True
         """
-        return all(queue.is_full() for queue in self.processor_queues)
+        return all(queue.is_full(new_task_cycles=new_task_cycles) for queue in self.processor_queues)
+    
+    def get_total_load(self):
+        """
+        获取总计算量（所有处理器的队列计算量之和）
+        
+        Returns:
+            float: 总计算量（cycles）
+        """
+        return sum(queue.get_total_load() for queue in self.processor_queues)
     
     def get_queue_length(self):
         """

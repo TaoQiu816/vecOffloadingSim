@@ -146,9 +146,12 @@ class DataRecorder:
         # 3. 始终更新 Latest (覆盖)，用于断点续训
         torch.save(save_dict, os.path.join(self.model_dir, "latest_model.pth"))
 
-    def auto_plot(self):
+    def auto_plot(self, baseline_results=None):
         """
         [可视化核心] 读取 CSV 并绘制全面的分析图表。
+        
+        Args:
+            baseline_results: 基准策略结果字典 {'Random': avg_reward, 'Local-Only': avg_reward, 'Greedy': avg_reward}
         """
         if not os.path.exists(self.episode_log_path):
             print("[DataRecorder] No episode log found to plot.")
@@ -171,13 +174,14 @@ class DataRecorder:
             plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方块的问题
 
             # 3. 辅助绘图函数 (带平滑处理)
-            def save_plot(x, y_dict, title, ylabel, filename, window=20):
+            def save_plot(x, y_dict, title, ylabel, filename, window=20, baseline_dict=None):
                 """
                 x: 横坐标数据
                 y_dict: {Label: Data} 字典
                 window: 滑动平均窗口大小
+                baseline_dict: 基准策略结果字典 (可选)
                 """
-                plt.figure(figsize=(10, 6))
+                plt.figure(figsize=(12, 7))
                 # 定义一组对比度高的颜色
                 colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
 
@@ -194,6 +198,16 @@ class DataRecorder:
                         plt.plot(x, y_smooth, color=color, linewidth=2, label=label)
                     else:
                         plt.plot(x, y, color=color, linewidth=2, label=label)
+                
+                # 绘制基准策略水平线
+                if baseline_dict is not None:
+                    baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                    baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                    for baseline_name, baseline_value in baseline_dict.items():
+                        color = baseline_colors.get(baseline_name, '#7f8c8d')
+                        style = baseline_styles.get(baseline_name, '--')
+                        plt.axhline(y=baseline_value, color=color, linestyle=style, 
+                                   linewidth=2, label=f'{baseline_name} Baseline', alpha=0.8)
 
                 plt.title(title, fontsize=14, fontweight='bold')
                 plt.xlabel('Episode', fontsize=12)
@@ -209,10 +223,12 @@ class DataRecorder:
             episodes = df['episode']
 
             #
-            # (A) 奖励曲线 (最核心指标)
+            # (A) 奖励曲线 (最核心指标) - 包含基准策略对比
             if 'total_reward' in df.columns:
-                save_plot(episodes, {'Total Reward': df['total_reward']},
-                          'Total Reward per Episode', 'Reward', 'reward_curve.png')
+                save_plot(episodes, {'MAPPO': df['total_reward']},
+                          'Training Convergence - Reward Comparison with Baselines', 
+                          'Average Reward', 'reward_curve_with_baselines.png',
+                          baseline_dict=baseline_results)
 
             # (B) Loss 曲线
             if 'loss' in df.columns:

@@ -121,14 +121,17 @@ class RSU:
         """
         return self.queue_manager.get_min_wait_time(self.cpu_freq)
     
-    def is_queue_full(self):
+    def is_queue_full(self, new_task_cycles=0):
         """
-        检查队列是否已满
+        检查队列是否已满（基于计算量）
+        
+        Args:
+            new_task_cycles: 要添加的新任务计算量（用于检查加入后是否溢出），默认为0表示仅检查当前状态
         
         Returns:
             bool: 如果所有处理器队列都满返回True
         """
-        return self.queue_manager.is_full()
+        return self.queue_manager.is_full(new_task_cycles=new_task_cycles)
     
     def clear_queue(self):
         """清空队列"""

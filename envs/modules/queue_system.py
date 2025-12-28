@@ -26,14 +26,16 @@ class FIFOQueue:
     注意：保持最简单的FIFO逻辑，不实现插队等复杂功能
     """
     
-    def __init__(self, max_buffer_size=20):
+    def __init__(self, max_buffer_size=20, max_load_cycles=None):
         """
         初始化FIFO队列
         
         Args:
-            max_buffer_size: 队列最大容量（任务数量）
+            max_buffer_size: 队列最大容量（任务数量，向后兼容）
+            max_load_cycles: 队列最大计算量（cycles），优先使用此参数
         """
-        self.max_buffer_size = max_buffer_size
+        self.max_buffer_size = max_buffer_size  # 保留向后兼容
+        self.max_load_cycles = max_load_cycles  # 基于计算量的限制（推荐）
         # 队列：存储每个任务的计算量（cycles）
         self._queue = deque()
         # 当前正在执行的任务的剩余计算量
@@ -49,9 +51,15 @@ class FIFOQueue:
         Returns:
             bool: 如果成功入队返回True，如果队列已满返回False
         """
-        # 入队检查：如果队列已满，拒绝新任务
-        if len(self._queue) >= self.max_buffer_size:
-            return False
+        # 优先使用基于计算量的限制（如果设置了）
+        if self.max_load_cycles is not None:
+            current_load = self.get_total_load()
+            if current_load + comp_cycles > self.max_load_cycles:
+                return False
+        else:
+            # 向后兼容：使用任务个数限制
+            if len(self._queue) >= self.max_buffer_size:
+                return False
         
         # 将任务加入队列
         self._queue.append(comp_cycles)
@@ -136,6 +144,24 @@ class FIFOQueue:
         """
         return len(self._queue)
     
+    def get_total_load(self):
+        """
+        获取队列总计算量（不包括正在执行的任务）
+        
+        Returns:
+            float: 等待中任务的总计算量（cycles）
+        """
+        return sum(self._queue)
+    
+    def get_total_load_with_current(self):
+        """
+        获取队列总计算量（包括正在执行的任务）
+        
+        Returns:
+            float: 所有任务的总计算量（cycles）
+        """
+        return sum(self._queue) + max(0.0, self._current_task_remaining)
+    
     def dequeue_one(self):
         """
         从队列中移除一个任务（FIFO顺序）
@@ -151,14 +177,23 @@ class FIFOQueue:
             return True
         return False
     
-    def is_full(self):
+    def is_full(self, new_task_cycles=0):
         """
-        检查队列是否已满
+        检查队列是否已满（基于计算量）
+        
+        Args:
+            new_task_cycles: 要添加的新任务计算量（用于检查加入后是否溢出）
         
         Returns:
             bool: 如果队列已满返回True
         """
-        return len(self._queue) >= self.max_buffer_size
+        if self.max_load_cycles is not None:
+            # 使用计算量限制
+            current_load = self.get_total_load()
+            return (current_load + new_task_cycles) > self.max_load_cycles
+        else:
+            # 向后兼容：使用任务个数限制
+            return len(self._queue) >= self.max_buffer_size
     
     def clear(self):
         """清空队列"""
@@ -170,5 +205,8 @@ class FIFOQueue:
         return len(self._queue)
     
     def __repr__(self):
-        return f"FIFOQueue(size={len(self._queue)}/{self.max_buffer_size}, current_remaining={self._current_task_remaining:.2e})"
+        load_str = f"load={self.get_total_load():.2e}"
+        if self.max_load_cycles is not None:
+            load_str += f"/{self.max_load_cycles:.2e}"
+        return f"FIFOQueue(count={len(self._queue)}, {load_str}, current_remaining={self._current_task_remaining:.2e})"
 

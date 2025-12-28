@@ -155,7 +155,7 @@ class ChannelModel:
                     vehicle.pos, target_pos, active_tx_vehicles, p_tx
                 )
             else:
-                interference = self.noise_w * Cfg.V2V_INTERFERENCE_FACTOR
+                interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
             
             # 信号功率包含瑞利衰落（每次重新采样）
             h_rayleigh = self._rayleigh_fading(1)[0]
@@ -248,7 +248,7 @@ class ChannelModel:
                 target_pos, vehicle.pos, active_tx_vehicles, p_tx
             )
         else:
-            interference = self.noise_w * Cfg.V2V_INTERFERENCE_FACTOR
+            interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
         
         # 可靠性公式：P_succ = exp(-γ_th * (N_0 + E[I]) / (P_tx * h_bar))
         gamma_th = getattr(Cfg, 'V2V_GAMMA_TH', 2.0)

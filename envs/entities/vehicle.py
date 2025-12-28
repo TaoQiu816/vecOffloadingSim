@@ -33,8 +33,11 @@ class Vehicle:
         self.vel = np.array([speed, 0.0])
 
         # --- 资源约束 (Queue Constraint) ---
-        # 使用FIFO队列系统管理任务
-        self.task_queue = FIFOQueue(max_buffer_size=Cfg.VEHICLE_QUEUE_LIMIT)
+        # 使用FIFO队列系统管理任务（基于计算量的限制）
+        self.task_queue = FIFOQueue(
+            max_buffer_size=Cfg.VEHICLE_QUEUE_LIMIT,  # 向后兼容
+            max_load_cycles=Cfg.VEHICLE_QUEUE_CYCLES_LIMIT  # 基于计算量的限制
+        )
         # 保持向后兼容的属性
         self.task_queue_len = 0
         self.max_queue_size = Cfg.VEHICLE_QUEUE_LIMIT
@@ -64,13 +67,15 @@ class Vehicle:
         # 格式: [{'child_id': int, 'parent_id': int, 'rem_data': float, 'speed': float}, ...]
         self.active_transfers = []
 
-    @property
-    def is_queue_full(self):
+    def is_queue_full(self, new_task_cycles=0):
         """
-        判断队列是否已满
+        判断队列是否已满（基于计算量）
         用于Env中的Action Masking
+        
+        Args:
+            new_task_cycles: 要添加的新任务计算量（用于检查加入后是否溢出）
         """
-        return self.task_queue.is_full()
+        return self.task_queue.is_full(new_task_cycles=new_task_cycles)
     
     def update_queue_sync(self):
         """同步队列长度属性（用于向后兼容）"""

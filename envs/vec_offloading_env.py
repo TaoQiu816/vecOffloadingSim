@@ -330,9 +330,11 @@ class VecOffloadingEnv(gym.Env):
                         actual_target = 'Local'
                     else:
                         # 选择负载最低的RSU（等待时间最小）
+                        # 获取当前任务的计算量（如果可用）
+                        task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else Cfg.MEAN_COMP_LOAD
                         min_wait = float('inf')
                         for rsu in rsu_in_range:
-                            if not rsu.is_queue_full():
+                            if not rsu.is_queue_full(new_task_cycles=task_comp):
                                 wait = rsu.get_estimated_wait_time()
                                 if wait < min_wait:
                                     min_wait = wait
@@ -345,7 +347,9 @@ class VecOffloadingEnv(gym.Env):
                             actual_target = ('RSU', selected_rsu.id)  # 使用元组标识RSU
                 elif isinstance(target, int):
                     t_veh = self.vehicles[target]
-                    if t_veh.task_queue.is_full():
+                    # 获取当前任务的计算量（如果可用）
+                    task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else Cfg.MEAN_COMP_LOAD
+                    if t_veh.is_queue_full(new_task_cycles=task_comp):
                         actual_target = 'Local'
 
                 # 计算等待时间（使用FIFO队列的精确计算）
@@ -390,7 +394,7 @@ class VecOffloadingEnv(gym.Env):
                             # RSU队列满，回退到Local
                             actual_target = 'Local'
                             v.curr_target = 'Local'
-                            if not v.task_queue.is_full():
+                            if not v.is_queue_full(new_task_cycles=task_comp):
                                 v.task_queue.enqueue(task_comp)
                 elif isinstance(actual_target, int):
                     t_veh = self.vehicles[actual_target]
@@ -708,7 +712,9 @@ class VecOffloadingEnv(gym.Env):
             task_idx = v.curr_subtask if v.curr_subtask is not None else 0
             data_size = dag.data_matrix[v.curr_subtask, :].sum() if v.curr_subtask is not None else 0
 
-            r = self.calculate_agent_reward(i, target, task_idx, data_size)
+            # 获取任务计算量（用于基于计算量的队列限制检查）
+            task_comp = dag.total_comp[task_idx] if task_idx is not None and task_idx < len(dag.total_comp) else Cfg.MEAN_COMP_LOAD
+            r = self.calculate_agent_reward(i, target, task_idx, data_size, task_comp)
             rewards.append(r)
 
         all_finished = all(v.task_dag.is_finished for v in self.vehicles)
@@ -940,9 +946,12 @@ class VecOffloadingEnv(gym.Env):
         """
         obs_list = []
         # 多RSU场景：使用所有RSU中的最小等待时间（用于观测）
+        # 对于观测空间，使用平均任务大小检查队列是否接近满（保守估计）
         if len(self.rsus) > 0:
             rsu_wait_time = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
-            rsu_is_full = all([rsu.is_queue_full() for rsu in self.rsus])
+            # 使用平均任务大小进行保守检查（如果没有具体任务信息）
+            avg_task_comp = Cfg.MEAN_COMP_LOAD
+            rsu_is_full = all([rsu.is_queue_full(new_task_cycles=avg_task_comp) for rsu in self.rsus])
         else:
             rsu_wait_time = 0.0
             rsu_is_full = True
@@ -1072,12 +1081,15 @@ class VecOffloadingEnv(gym.Env):
                 if time_to_leave < est_trans_time:
                     target_mask_row[1] = False
 
-            # [关键] 目标车辆队列满检查 - 动态禁用过载车辆
+            # [关键] 目标车辆队列满检查 - 动态禁用过载车辆（基于计算量）
+            # 使用平均任务大小进行保守检查
+            avg_task_comp = Cfg.MEAN_COMP_LOAD
             for i in range(2, num_targets):
                 if valid_targets_base[i] == 1:
                     target_veh_id = i - 2
                     n_veh = next((veh for veh in self.vehicles if veh.id == target_veh_id), None)
-                    if n_veh and n_veh.task_queue_len >= Cfg.VEHICLE_QUEUE_LIMIT:
+                    # 使用基于计算量的检查（更准确）
+                    if n_veh and n_veh.is_queue_full(new_task_cycles=avg_task_comp):
                         target_mask_row[i] = False
 
             # [关键] 扩展掩码 - 每个子任务对应一行目标掩码
@@ -1537,64 +1549,69 @@ class VecOffloadingEnv(gym.Env):
             rate = max(rate, 0)
         else:
             pl = Cfg.PL_ALPHA_V2V + Cfg.PL_BETA_V2V * np.log10(max(dist, 1.0))
-            interference = 10 ** (Cfg.V2V_INTERFERENCE_FACTOR / 10)
-            snr_db = Cfg.TX_POWER_MIN_DBM - pl - Cfg.NOISE_POWER_DBM - 10 * np.log10(interference)
+            interference_w = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
+            noise_w = Cfg.dbm2watt(Cfg.NOISE_POWER_DBM)
+            snr_db = Cfg.TX_POWER_MIN_DBM - pl - 10 * np.log10(noise_w + interference_w)
             snr_linear = 10 ** (snr_db / 10)
             rate = Cfg.BW_V2V * np.log2(1 + snr_linear)
             rate = max(rate, 0)
         return rate
 
-    def _calculate_congestion_penalty(self, target, task_data_size=0):
+    def _calculate_congestion_penalty(self, target, task_comp=0, vehicle_id=None):
         """
-        [奖励函数组件] 计算拥塞惩罚 r_cong
+        [奖励函数组件] 计算拥塞惩罚 r_cong（基于计算量）
 
         基于 MAPPO 设计:
-        r_cong = -((Q + D) / Q_max)^γ
+        r_cong = -((Q_load + task_comp) / Q_max_load)^γ
 
         Args:
             target: 目标节点
-            task_data_size: 当前任务的数据量 (bits)
+            task_comp: 当前任务的计算量 (cycles)
+            vehicle_id: 车辆ID（用于获取本地队列负载）
 
         Returns:
             float: 拥塞惩罚值 (≤ 0)
         """
         # 处理target格式：'Local', 'RSU', int车辆ID, 或('RSU', rsu_id)元组
         if target == 'Local':
-            q_curr = 0
-            q_max = Cfg.VEHICLE_QUEUE_LIMIT
+            # 车辆本地队列
+            if vehicle_id is not None and vehicle_id < len(self.vehicles):
+                q_curr_load = self.vehicles[vehicle_id].task_queue.get_total_load()
+                q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
+            else:
+                return 0.0
         elif self._is_rsu_location(target):
             # RSU执行
             if isinstance(target, tuple) and len(target) == 2:
-                # 多RSU场景：使用指定的RSU队列长度
+                # 多RSU场景：使用指定的RSU队列计算量
                 rsu_id = target[1]
                 if 0 <= rsu_id < len(self.rsus):
-                    q_curr = self.rsus[rsu_id].queue_length
-                    q_max = Cfg.RSU_QUEUE_LIMIT
+                    q_curr_load = self.rsus[rsu_id].queue_manager.get_total_load()
+                    q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT
                 else:
-                    q_curr = 0
-                    q_max = Cfg.RSU_QUEUE_LIMIT
+                    return 0.0
             else:
-                # 单个RSU场景（向后兼容）：使用所有RSU的总队列长度
-                q_curr = sum([rsu.queue_length for rsu in self.rsus]) if len(self.rsus) > 0 else 0
-                q_max = Cfg.RSU_QUEUE_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_LIMIT
+                # 单个RSU场景（向后兼容）：使用所有RSU的总计算量
+                q_curr_load = sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) if len(self.rsus) > 0 else 0
+                q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_CYCLES_LIMIT
         elif isinstance(target, int):
             if 0 <= target < len(self.vehicles):
-                q_curr = self.vehicles[target].task_queue_len
-                q_max = Cfg.VEHICLE_QUEUE_LIMIT
+                q_curr_load = self.vehicles[target].task_queue.get_total_load()
+                q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
             else:
                 return 0.0
         else:
             return 0.0
 
-        util_ratio = (q_curr + task_data_size / Cfg.MEAN_COMP_LOAD) / q_max
+        util_ratio = (q_curr_load + task_comp) / q_max_load
         util_ratio = np.clip(util_ratio, 0.0, 1.0)
         cong_penalty = -1.0 * (util_ratio ** Cfg.CONG_GAMMA)
 
         return cong_penalty
 
-    def _calculate_constraint_penalty(self, vehicle_id, target, task_idx=None):
+    def _calculate_constraint_penalty(self, vehicle_id, target, task_idx=None, task_comp=None):
         """
-        [奖励函数组件] 计算约束惩罚 r_pen
+        [奖励函数组件] 计算约束惩罚 r_pen（基于计算量）
 
         只处理硬约束（物理违规），软约束（超时）在CFT计算中作为失败判断处理
 
@@ -1606,6 +1623,7 @@ class VecOffloadingEnv(gym.Env):
             vehicle_id: 车辆ID
             target: 目标节点
             task_idx: 任务索引
+            task_comp: 任务计算量 (cycles)，用于基于计算量的溢出检查
 
         Returns:
             float: 总惩罚值 (负值或0)
@@ -1613,6 +1631,9 @@ class VecOffloadingEnv(gym.Env):
         penalty = 0.0
 
         v = self.vehicles[vehicle_id]
+        
+        if task_comp is None:
+            task_comp = Cfg.MEAN_COMP_LOAD
 
         # 处理target格式：'Local', 'RSU', int车辆ID, 或('RSU', rsu_id)元组
         if target == 'Local':
@@ -1646,32 +1667,32 @@ class VecOffloadingEnv(gym.Env):
                 if dist > Cfg.V2V_RANGE:
                     penalty += Cfg.PENALTY_LINK_BREAK
 
-        # 队列溢出检查
-        q_after = 0
-        q_limit = Cfg.VEHICLE_QUEUE_LIMIT
+        # 队列溢出检查（基于计算量）
+        q_after_load = 0.0
+        q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
         if target == 'Local':
-            q_after = v.task_queue_len
-            q_limit = Cfg.VEHICLE_QUEUE_LIMIT
+            q_after_load = v.task_queue.get_total_load() + task_comp
+            q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
         elif self._is_rsu_location(target):
             # RSU执行
             if isinstance(target, tuple) and len(target) == 2:
-                # 多RSU场景：使用指定的RSU队列长度
+                # 多RSU场景：使用指定的RSU队列计算量
                 rsu_id = target[1]
                 if 0 <= rsu_id < len(self.rsus):
-                    q_after = self.rsus[rsu_id].queue_length + 1
+                    q_after_load = self.rsus[rsu_id].queue_manager.get_total_load() + task_comp
                 else:
-                    q_after = 1
-                q_limit = Cfg.RSU_QUEUE_LIMIT
+                    q_after_load = task_comp
+                q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT
             else:
-                # 单个RSU场景（向后兼容）：估算总队列长度
-                q_after = (sum([rsu.queue_length for rsu in self.rsus]) + 1) if len(self.rsus) > 0 else 1
-                q_limit = Cfg.RSU_QUEUE_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_LIMIT
+                # 单个RSU场景（向后兼容）：估算总计算量
+                q_after_load = (sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) + task_comp) if len(self.rsus) > 0 else task_comp
+                q_max_load = Cfg.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else Cfg.RSU_QUEUE_CYCLES_LIMIT
         elif isinstance(target, int):
             if target < len(self.vehicles):
-                q_after = self.vehicles[target].task_queue_len + 1
-                q_limit = Cfg.VEHICLE_QUEUE_LIMIT
+                q_after_load = self.vehicles[target].task_queue.get_total_load() + task_comp
+                q_max_load = Cfg.VEHICLE_QUEUE_CYCLES_LIMIT
         
-        if q_after > q_limit:
+        if q_after_load > q_max_load:
             penalty += Cfg.PENALTY_OVERFLOW
 
         return penalty
@@ -1688,7 +1709,7 @@ class VecOffloadingEnv(gym.Env):
         """
         return np.clip(reward, Cfg.REWARD_MIN, Cfg.REWARD_MAX)
 
-    def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0):
+    def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0, task_comp=None):
         """
         [MAPPO奖励函数] 计算单个智能体的奖励
 
@@ -1700,16 +1721,22 @@ class VecOffloadingEnv(gym.Env):
             target: 卸载目标 ('Local', 'RSU', 或车辆ID)
             task_idx: 当前调度的任务索引
             data_size: 任务数据量 (bits)
+            task_comp: 任务计算量 (cycles)，用于基于计算量的队列限制检查
 
         Returns:
             float: 归一化后的奖励值
         """
         v = self.vehicles[vehicle_id]
         dag = v.task_dag
+        
+        if task_comp is None:
+            # 如果没有提供，使用平均计算量作为默认值
+            task_comp = Cfg.MEAN_COMP_LOAD
 
         r_eff = self._calculate_efficiency_gain(dag, target, task_idx, vehicle_id)
-        r_cong = self._calculate_congestion_penalty(target, data_size)
-        r_pen = self._calculate_constraint_penalty(vehicle_id, target, task_idx)
+        # 传递vehicle_id以便正确获取本地队列负载
+        r_cong = self._calculate_congestion_penalty(target, task_comp, vehicle_id)
+        r_pen = self._calculate_constraint_penalty(vehicle_id, target, task_idx, task_comp)
 
         reward = (Cfg.EFF_WEIGHT * r_eff +
                   Cfg.CONG_WEIGHT * r_cong +
