@@ -138,12 +138,13 @@ class MAPPOAgent:
         )
         
         # 计算target的log_prob和entropy
-        # [Logit Bias] 解决动作空间不平衡问题：给RSU和Local添加偏置
+        # [Logit Bias] 解决动作空间不平衡问题：给Local和RSU添加偏置
+        # 索引映射：Index 0=Local, Index 1=RSU, Index 2+=Neighbors
         from configs.train_config import TrainConfig as TC
         if TC.USE_LOGIT_BIAS:
             logit_bias = torch.zeros_like(target_logits)
-            logit_bias[:, 0] = TC.LOGIT_BIAS_RSU  # RSU (Index 0)
-            logit_bias[:, 1] = TC.LOGIT_BIAS_LOCAL  # Local (Index 1)
+            logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
+            logit_bias[:, 1] = TC.LOGIT_BIAS_RSU    # RSU (Index 1)
             target_logits = target_logits + logit_bias
         
         # 应用action_mask
@@ -230,7 +231,7 @@ class MAPPOAgent:
                         break
                 
                 if not has_invalid_grad:
-                self.optimizer.step()
+                    self.optimizer.step()
                     total_loss += loss.item()
                     num_updates += 1
         
