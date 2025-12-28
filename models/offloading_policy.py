@@ -64,7 +64,10 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         
         # 4. 资源特征编码器
-        self.resource_encoder = ResourceFeatureEncoder(d_model)
+        self.resource_encoder = ResourceFeatureEncoder(
+            max_vehicle_id=Cfg.MAX_VEHICLE_ID,
+            d_model=d_model
+        )
         
         # 5. Actor-Critic网络
         self.actor_critic = ActorCriticNetwork(

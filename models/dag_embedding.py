@@ -33,8 +33,8 @@ class LocationEncoder(nn.Module):
         self.d_model = d_model
         
         # 位置嵌入层
-        # num_embeddings = 3 + NUM_VEHICLES (覆盖所有可能的邻居ID)
-        num_locations = 3 + Cfg.NUM_VEHICLES
+        # num_embeddings = 3 + MAX_VEHICLE_ID (覆盖所有可能的邻居ID)
+        num_locations = 3 + Cfg.MAX_VEHICLE_ID
         self.location_embedding = nn.Embedding(num_locations, d_model)
     
     def forward(self, location_ids: torch.Tensor) -> torch.Tensor:
