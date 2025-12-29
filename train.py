@@ -17,7 +17,7 @@ from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
 
 
 def evaluate_baselines(env, num_episodes=10):
-    """评估基准策略性能"""
+    """评估基准策略性能（多次episode取平均）"""
     baseline_results = {}
     
     # 1. 随机策略
@@ -66,6 +66,104 @@ def evaluate_baselines(env, num_episodes=10):
     baseline_results['Greedy'] = np.mean(greedy_rewards)
     
     return baseline_results
+
+
+def evaluate_single_baseline_episode(env, policy_name):
+    """评估单个baseline策略的一个episode，返回完整的指标（与训练指标一致）"""
+    if policy_name == 'Random':
+        policy = RandomPolicy(seed=int(time.time()))
+    elif policy_name == 'Local-Only':
+        policy = LocalOnlyPolicy()
+    elif policy_name == 'Greedy':
+        policy = GreedyPolicy(env)
+    else:
+        raise ValueError(f"Unknown policy: {policy_name}")
+    
+    obs_list, _ = env.reset()
+    ep_reward = 0
+    total_steps = 0
+    
+    # 统计容器（与训练循环一致）
+    stats = {
+        "power_sum": 0.0,
+        "local_cnt": 0,
+        "rsu_cnt": 0,
+        "neighbor_cnt": 0,
+        "queue_len_sum": 0,
+        "rsu_queue_sum": 0,
+        "assigned_cpu_sum": 0.0,
+    }
+    
+    for step in range(TC.MAX_STEPS):
+        actions = policy.select_action(obs_list)
+        obs_list, rewards, done, truncated, _ = env.step(actions)
+        ep_reward += sum(rewards) / len(rewards)
+        total_steps += 1
+        
+        # 统计决策分布
+        for i, act in enumerate(actions):
+            if act['target'] == 0:
+                stats['local_cnt'] += 1
+            elif act['target'] == 1:
+                stats['rsu_cnt'] += 1
+            else:
+                stats['neighbor_cnt'] += 1
+            
+            stats['power_sum'] += act.get('power', 0.0)
+            stats['queue_len_sum'] += env.vehicles[i].task_queue_len if i < len(env.vehicles) else 0
+        
+        stats['rsu_queue_sum'] += sum([rsu.queue_length for rsu in env.rsus])
+        
+        if done or truncated:
+            break
+    
+    avg_step_reward = ep_reward / total_steps if total_steps > 0 else 0
+    total_decisions = stats['local_cnt'] + stats['rsu_cnt'] + stats['neighbor_cnt']
+    
+    # 成功率统计（与训练循环一致）
+    success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
+    veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
+    
+    total_subtasks = 0
+    completed_subtasks = 0
+    v2v_subtasks_attempted = 0
+    v2v_subtasks_completed = 0
+    for v in env.vehicles:
+        total_subtasks += v.task_dag.num_subtasks
+        completed_subtasks += np.sum(v.task_dag.status == 3)
+        
+        # 统计V2V子任务
+        if hasattr(v, 'exec_locations'):
+            for i, loc in enumerate(v.exec_locations):
+                if isinstance(loc, int):  # V2V卸载
+                    v2v_subtasks_attempted += 1
+                    if v.task_dag.status[i] == 3:  # 已完成
+                        v2v_subtasks_completed += 1
+    
+    subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
+    v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted * 100) if v2v_subtasks_attempted > 0 else 0.0
+    
+    # 计算平均指标
+    pct_local = (stats['local_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
+    pct_rsu = (stats['rsu_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
+    pct_v2v = (stats['neighbor_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
+    avg_power = stats['power_sum'] / total_decisions if total_decisions > 0 else 0
+    avg_veh_queue = stats['queue_len_sum'] / total_decisions if total_decisions > 0 else 0
+    avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0
+    
+    return {
+        'total_reward': ep_reward,
+        'avg_step_reward': avg_step_reward,
+        'veh_success_rate': veh_success_rate,
+        'subtask_success_rate': subtask_success_rate,
+        'v2v_subtask_success_rate': v2v_subtask_success_rate,
+        'pct_local': pct_local,
+        'pct_rsu': pct_rsu,
+        'pct_v2v': pct_v2v,
+        'avg_power': avg_power,
+        'avg_queue_len': avg_veh_queue,
+        'avg_rsu_queue': avg_rsu_queue,
+    }
 
 
 def main():
@@ -128,14 +226,11 @@ def main():
 
     best_reward = -float('inf')
     
-    # 评估基准策略
-    print("\n[Info] 评估基准策略...")
-    baseline_results = evaluate_baselines(env, num_episodes=10)
-    print(f"基准策略性能:")
-    for policy_name, avg_reward in baseline_results.items():
-        print(f"  {policy_name}: {avg_reward:.2f}")
-        if recorder.writer is not None:
-            recorder.writer.add_scalar(f'Baseline/{policy_name}', avg_reward, 0)
+    # Baseline策略列表
+    baseline_policies = ['Random', 'Local-Only', 'Greedy']
+    
+    # 存储baseline的episode级指标（用于绘图）
+    baseline_history = {policy: [] for policy in baseline_policies}
 
     print("\n[Info] Start Training...")
 
@@ -274,16 +369,27 @@ def main():
 
         total_subtasks = 0
         completed_subtasks = 0
+        v2v_subtasks_attempted = 0
+        v2v_subtasks_completed = 0
         for v in env.vehicles:
             total_subtasks += v.task_dag.num_subtasks
             completed_subtasks += np.sum(v.task_dag.status == 3)
+            
+            # 统计V2V子任务（通过检查task_locations）
+            if hasattr(v, 'exec_locations'):
+                for i, loc in enumerate(v.exec_locations):
+                    if isinstance(loc, int):  # V2V卸载
+                        v2v_subtasks_attempted += 1
+                        if v.task_dag.status[i] == 3:  # 已完成
+                            v2v_subtasks_completed += 1
 
         subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
+        v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted * 100) if v2v_subtasks_attempted > 0 else 0.0
 
         # 控制台输出
         if episode == 1 or episode % 10 == 0:
             header = (
-                f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} | {'MA_F':<4} {'CPU':<4} | "
+                f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} {'V2VS%':<6} | {'MA_F':<4} {'CPU':<4} | "
                 f"{'Loc%':<5} {'RSU%':<5} {'V2V%':<5} | {'AvgQ':<6} {'Pwr':<5} | {'Loss':<8} | {'Time':<4}"
             )
             print("-" * len(header))
@@ -292,7 +398,7 @@ def main():
 
         print(f"{episode:<5d} | "
               f"{ep_reward:<9.2f} {avg_step_reward:<7.3f} | "
-              f"{veh_success_rate:<5.1f} {subtask_success_rate:<5.1f} | "
+              f"{veh_success_rate:<5.1f} {subtask_success_rate:<5.1f} {v2v_subtask_success_rate:<6.1f} | "
               f"{fairness_index:<4.2f} {avg_assigned_cpu/1e9:<4.2f} | "
               f"{pct_local:<5.1f} {pct_rsu:<5.1f} {pct_v2v:<5.1f} | "
               f"{avg_veh_queue:<6.2f} {avg_power:<5.2f} | "
@@ -309,6 +415,7 @@ def main():
             "loss": update_loss,
             "veh_success_rate": veh_success_rate,
             "subtask_success_rate": subtask_success_rate,
+            "v2v_subtask_success_rate": v2v_subtask_success_rate,
             "pct_local": pct_local,
             "pct_rsu": pct_rsu,
             "pct_v2v": pct_v2v,
@@ -324,6 +431,52 @@ def main():
         }
         recorder.log_episode(episode_metrics)
 
+        # 定期评估baseline策略（与当前训练方法对比）
+        if episode % TC.EVAL_INTERVAL == 0 or episode == 1:
+            for policy_name in baseline_policies:
+                baseline_metrics = evaluate_single_baseline_episode(env, policy_name)
+                baseline_metrics['episode'] = episode
+                baseline_metrics['policy'] = policy_name
+                
+                # 存储历史记录
+                baseline_history[policy_name].append(baseline_metrics)
+                
+                # 记录到TensorBoard
+                if recorder.writer is not None:
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/total_reward', 
+                                              baseline_metrics['total_reward'], episode)
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/veh_success_rate', 
+                                              baseline_metrics['veh_success_rate'], episode)
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/subtask_success_rate', 
+                                              baseline_metrics['subtask_success_rate'], episode)
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/v2v_subtask_success_rate', 
+                                              baseline_metrics['v2v_subtask_success_rate'], episode)
+                
+                # 记录到CSV（使用log_episode，但添加policy字段）
+                baseline_episode_dict = {
+                    "episode": episode,
+                    "total_reward": baseline_metrics['total_reward'],
+                    "avg_step_reward": baseline_metrics['avg_step_reward'],
+                    "veh_success_rate": baseline_metrics['veh_success_rate'],
+                    "subtask_success_rate": baseline_metrics['subtask_success_rate'],
+                    "v2v_subtask_success_rate": baseline_metrics['v2v_subtask_success_rate'],
+                    "pct_local": baseline_metrics['pct_local'],
+                    "pct_rsu": baseline_metrics['pct_rsu'],
+                    "pct_v2v": baseline_metrics['pct_v2v'],
+                    "avg_power": baseline_metrics['avg_power'],
+                    "avg_queue_len": baseline_metrics['avg_queue_len'],
+                    "ma_fairness": 1.0,  # baseline无公平性概念，设为1.0
+                    "ma_reward_gap": 0.0,
+                    "ma_collaboration": baseline_metrics['pct_v2v'],
+                    "max_agent_reward": baseline_metrics['total_reward'],
+                    "min_agent_reward": baseline_metrics['total_reward'],
+                    "avg_assigned_cpu_ghz": 0.0,  # baseline无此指标
+                    "duration": 0.0,
+                    "loss": 0.0,
+                    "policy": policy_name  # 标识这是baseline
+                }
+                recorder.log_episode(baseline_episode_dict)
+
         # 模型保存
         if ep_reward > best_reward:
             best_reward = ep_reward
@@ -335,7 +488,7 @@ def main():
     # 训练结束与绘图
     print("\n[Info] Training Finished.")
     print("[Info] Generating plots...")
-    recorder.auto_plot(baseline_results=baseline_results)
+    recorder.auto_plot(baseline_history=baseline_history)
     print(f"[Info] Plots saved to {recorder.plot_dir}")
 
 

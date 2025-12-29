@@ -442,6 +442,15 @@ class VecOffloadingEnv(gym.Env):
                 task_finished = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
 
                 if task_finished:
+                    # [新增] 子任务成功奖励：V2V/RSU卸载成功时立即给予奖励
+                    if not hasattr(v, 'subtask_reward_buffer'):
+                        v.subtask_reward_buffer = 0.0
+                    
+                    if isinstance(tgt, int):  # V2V卸载
+                        v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
+                    elif isinstance(tgt, tuple) and tgt[0] == 'RSU':  # RSU卸载
+                        v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
+                    
                     # 任务完成时，从队列中移除一个任务（FIFO顺序）
                     if isinstance(tgt, tuple) and tgt[0] == 'RSU':
                         # 多RSU场景：从选定的RSU队列移除
@@ -715,6 +724,12 @@ class VecOffloadingEnv(gym.Env):
             # 获取任务计算量（用于基于计算量的队列限制检查）
             task_comp = dag.total_comp[task_idx] if task_idx is not None and task_idx < len(dag.total_comp) else Cfg.MEAN_COMP_LOAD
             r = self.calculate_agent_reward(i, target, task_idx, data_size, task_comp)
+            
+            # [新增] 加上本step累积的子任务奖励（计件工资）
+            if hasattr(v, 'subtask_reward_buffer'):
+                r += v.subtask_reward_buffer
+                v.subtask_reward_buffer = 0.0  # 清零，避免重复计算
+            
             rewards.append(r)
 
         all_finished = all(v.task_dag.is_finished for v in self.vehicles)
@@ -1132,10 +1147,6 @@ class VecOffloadingEnv(gym.Env):
                             continue
                         
                         # [新增] V2V智能断链保护 - 预测任务能否在断开前完成
-                        # 计算相对速度（两车在通信范围内的有效连接时间）
-                        rel_vel = n_veh.vel - v.vel
-                        rel_speed = np.linalg.norm(rel_vel)
-                        
                         # 计算当前距离（需要通过索引映射找到对应的j）
                         j_idx = None
                         for j, other_veh in enumerate(self.vehicles):
@@ -1171,14 +1182,29 @@ class VecOffloadingEnv(gym.Env):
                         # 总任务耗时（加安全系数）
                         total_task_time = (trans_time + queue_wait_time + comp_time) * 1.2  # 1.2是安全系数
                         
-                        # 估算两车还能连多久
-                        if rel_speed > 0.1:  # 避免除零
-                            # 假设两车以相对速度相向/相离运动
-                            # 简化：使用当前距离和相对速度估算断开时间
-                            time_to_break = (Cfg.V2V_RANGE - current_dist) / rel_speed
+                        # 估算两车还能连多久（考虑相对速度方向）
+                        # 计算相对速度向量
+                        rel_vel = n_veh.vel - v.vel
+                        # 计算位置差向量（从v指向n_veh）
+                        pos_diff = n_veh.pos - v.pos
+                        pos_diff_norm = np.linalg.norm(pos_diff)
+                        if pos_diff_norm < 1e-6:
+                            # 位置相同，使用大值
+                            time_to_break = 1000.0
                         else:
-                            # 相对速度很小，认为可以连很久
-                            time_to_break = 1000.0  # 大值表示不会断开
+                            # 计算相对速度在位置差方向上的投影（标量）
+                            # 如果投影为正，两车在远离；如果为负，两车在靠近
+                            rel_vel_proj = np.dot(rel_vel, pos_diff) / pos_diff_norm
+                            
+                            if rel_vel_proj > 0.1:  # 两车在远离
+                                # 使用相对速度的投影分量计算断开时间
+                                time_to_break = (Cfg.V2V_RANGE - current_dist) / rel_vel_proj
+                            elif rel_vel_proj < -0.1:  # 两车在靠近
+                                # 两车在靠近，连接时间会更长（设为大值表示不会断开）
+                                time_to_break = 1000.0
+                            else:  # 相对速度很小或垂直于位置差
+                                # 相对速度很小，认为可以连很久
+                                time_to_break = 1000.0
                         
                         # 如果任务耗时 > 连接时间，mask掉（注定失败）
                         if total_task_time > time_to_break:

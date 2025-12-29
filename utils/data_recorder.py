@@ -72,9 +72,14 @@ class DataRecorder:
         self.episode_header_written = False
 
         # [新增] 初始化 TensorBoard Writer
-        # log_dir 设置为 AutoDL 默认监控的路径
+        # log_dir 使用相对路径（兼容本地和AutoDL环境）
         if TENSORBOARD_AVAILABLE:
-            tb_log_dir = f"/root/tf-logs/{experiment_name}_{timestamp}"
+            # 优先使用 /root/tf-logs（AutoDL环境），否则使用项目目录下的 logs 文件夹
+            if os.path.exists('/root') and os.access('/root', os.W_OK):
+                tb_log_dir = f"/root/tf-logs/{experiment_name}_{timestamp}"
+            else:
+                # 本地环境使用项目目录
+                tb_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", f"{experiment_name}_{timestamp}")
             os.makedirs(tb_log_dir, exist_ok=True)
             self.writer = SummaryWriter(log_dir=tb_log_dir)
             print(f"[TensorBoard] Log dir: {tb_log_dir}")
@@ -125,9 +130,18 @@ class DataRecorder:
             # [新增] 将数据写入 TensorBoard
             step = episode_data['episode']
             if self.writer is not None:
-                for key, value in episode_data.items():
-                    if isinstance(value, (int, float)):
-                        self.writer.add_scalar(key, value, step)
+                # 区分训练数据和baseline数据
+                policy_name = episode_data.get('policy', None)
+                if policy_name:
+                    # baseline数据：使用Baseline/{policy_name}/前缀
+                    for key, value in episode_data.items():
+                        if key not in ['episode', 'policy'] and isinstance(value, (int, float)):
+                            self.writer.add_scalar(f'Baseline/{policy_name}/{key}', value, step)
+                else:
+                    # 训练数据：直接写入（保持向后兼容）
+                    for key, value in episode_data.items():
+                        if key not in ['episode', 'policy'] and isinstance(value, (int, float)):
+                            self.writer.add_scalar(key, value, step)
         except Exception as e:
             print(f"[Error] Failed to log episode: {e}")
 
@@ -159,12 +173,13 @@ class DataRecorder:
         # 3. 始终更新 Latest (覆盖)，用于断点续训
         torch.save(save_dict, os.path.join(self.model_dir, "latest_model.pth"))
 
-    def auto_plot(self, baseline_results=None):
+    def auto_plot(self, baseline_results=None, baseline_history=None):
         """
         [可视化核心] 读取 CSV 并绘制全面的分析图表。
         
         Args:
-            baseline_results: 基准策略结果字典 {'Random': avg_reward, 'Local-Only': avg_reward, 'Greedy': avg_reward}
+            baseline_results: 基准策略结果字典（已废弃，保留用于兼容性）
+            baseline_history: baseline历史记录字典 {'Random': [metrics_dict, ...], 'Local-Only': [...], 'Greedy': [...]}
         """
         if not os.path.exists(self.episode_log_path):
             print("[DataRecorder] No episode log found to plot.")
@@ -174,6 +189,14 @@ class DataRecorder:
             # 1. 读取数据
             df = pd.read_csv(self.episode_log_path)
             if df.empty: return
+            
+            # 分离训练数据和baseline数据
+            if 'policy' in df.columns:
+                df_train = df[df['policy'].isna() | (df['policy'] == '')].copy()
+                df_baseline = df[df['policy'].notna() & (df['policy'] != '')].copy()
+            else:
+                df_train = df.copy()
+                df_baseline = pd.DataFrame()
 
             # 2. 设置绘图风格 (兼容性设置)
             # 尝试使用 seaborn 风格，如果不可用则回退
@@ -186,13 +209,16 @@ class DataRecorder:
             plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial', 'sans-serif']
             plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方块的问题
 
-            # 3. 辅助绘图函数 (带平滑处理)
-            def save_plot(x, y_dict, title, ylabel, filename, window=20, baseline_dict=None):
+            # 3. 辅助绘图函数 (带平滑处理和baseline时间序列)
+            def save_plot(x, y_dict, title, ylabel, filename, window=20, baseline_dict=None, 
+                         df_baseline=None, metric_key=None):
                 """
                 x: 横坐标数据
                 y_dict: {Label: Data} 字典
                 window: 滑动平均窗口大小
-                baseline_dict: 基准策略结果字典 (可选)
+                baseline_dict: 基准策略结果字典（已废弃，保留用于兼容性）
+                df_baseline: baseline数据DataFrame（包含policy列和metric_key列）
+                metric_key: 要绘制的指标列名（如'total_reward'）
                 """
                 plt.figure(figsize=(12, 7))
                 # 定义一组对比度高的颜色
@@ -208,12 +234,30 @@ class DataRecorder:
                     # 绘制平滑曲线
                     if len(y) > window:
                         y_smooth = y.rolling(window=window, min_periods=1).mean()
-                        plt.plot(x, y_smooth, color=color, linewidth=2, label=label)
+                        plt.plot(x, y_smooth, color=color, linewidth=2.5, label=label, zorder=5)
                     else:
-                        plt.plot(x, y, color=color, linewidth=2, label=label)
+                        plt.plot(x, y, color=color, linewidth=2.5, label=label, zorder=5)
                 
-                # 绘制基准策略水平线
-                if baseline_dict is not None:
+                # 绘制baseline时间序列（如果提供了数据）
+                if df_baseline is not None and metric_key is not None and not df_baseline.empty:
+                    baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                    baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                    baseline_linewidths = {'Random': 2.0, 'Local-Only': 2.0, 'Greedy': 2.0}
+                    
+                    for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                        policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                        if not policy_data.empty and metric_key in policy_data.columns:
+                            x_baseline = policy_data['episode']
+                            y_baseline = policy_data[metric_key]
+                            color = baseline_colors.get(policy_name, '#7f8c8d')
+                            style = baseline_styles.get(policy_name, '--')
+                            linewidth = baseline_linewidths.get(policy_name, 2.0)
+                            plt.plot(x_baseline, y_baseline, color=color, linestyle=style, 
+                                   linewidth=linewidth, label=f'{policy_name} Baseline', 
+                                   alpha=0.8, zorder=4, marker='o', markersize=4)
+                
+                # 兼容性：绘制水平线（如果提供了baseline_dict但没有df_baseline）
+                elif baseline_dict is not None:
                     baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
                     baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
                     for baseline_name, baseline_value in baseline_dict.items():
@@ -225,7 +269,7 @@ class DataRecorder:
                 plt.title(title, fontsize=14, fontweight='bold')
                 plt.xlabel('Episode', fontsize=12)
                 plt.ylabel(ylabel, fontsize=12)
-                plt.legend(fontsize=10, loc='best')
+                plt.legend(fontsize=10, loc='best', framealpha=0.9)
                 plt.grid(True, linestyle='--', alpha=0.7)
 
                 save_path = os.path.join(self.plot_dir, filename)
@@ -233,60 +277,83 @@ class DataRecorder:
                 plt.close()
 
             # 4. 生成各类图表
-            episodes = df['episode']
+            episodes = df_train['episode']
 
             #
             # (A) 奖励曲线 (最核心指标) - 包含基准策略对比
-            if 'total_reward' in df.columns:
-                save_plot(episodes, {'MAPPO': df['total_reward']},
+            if 'total_reward' in df_train.columns:
+                save_plot(episodes, {'MAPPO': df_train['total_reward']},
                           'Training Convergence - Reward Comparison with Baselines', 
                           'Average Reward', 'reward_curve_with_baselines.png',
-                          baseline_dict=baseline_results)
+                          baseline_dict=baseline_results, df_baseline=df_baseline, metric_key='total_reward')
 
             # (B) Loss 曲线
-            if 'loss' in df.columns:
-                save_plot(episodes, {'Loss': df['loss']},
+            if 'loss' in df_train.columns:
+                save_plot(episodes, {'Loss': df_train['loss']},
                           'Training Loss (Actor+Critic)', 'Loss Value', 'loss_curve.png')
 
-            # (C) 成功率 (%)
-            if 'success_rate' in df.columns:
-                save_plot(episodes, {'Success Rate': df['success_rate']},
-                          'System Success Rate (%)', 'Rate (%)', 'success_rate.png')
+            # (C) 成功率 (%) - Veh%
+            if 'veh_success_rate' in df_train.columns:
+                save_plot(episodes, {'MAPPO': df_train['veh_success_rate']},
+                          'Vehicle Success Rate (DAG Completion %)', 'Rate (%)', 'veh_success_rate_with_baselines.png',
+                          df_baseline=df_baseline, metric_key='veh_success_rate')
+            
+            # (C2) 子任务成功率 (%)
+            if 'subtask_success_rate' in df_train.columns:
+                save_plot(episodes, {'MAPPO': df_train['subtask_success_rate']},
+                          'Subtask Success Rate (%)', 'Rate (%)', 'subtask_success_rate_with_baselines.png',
+                          df_baseline=df_baseline, metric_key='subtask_success_rate')
 
             #
             # (D) 卸载决策分布 (%)
             offload_data = {}
             for k, label in zip(['pct_local', 'pct_rsu', 'pct_v2v'], ['Local', 'RSU', 'V2V']):
-                if k in df.columns: offload_data[label] = df[k]
+                if k in df_train.columns: offload_data[label] = df_train[k]
             if offload_data:
                 save_plot(episodes, offload_data, 'Offloading Decision Distribution', 'Proportion (%)',
                           'offloading_ratio.png')
+                
+                # 为每个baseline策略绘制卸载决策分布
+                if not df_baseline.empty:
+                    for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                        policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                        if not policy_data.empty:
+                            baseline_offload = {}
+                            for k, label in zip(['pct_local', 'pct_rsu', 'pct_v2v'], ['Local', 'RSU', 'V2V']):
+                                if k in policy_data.columns:
+                                    baseline_offload[f'{policy_name} {label}'] = policy_data[k]
+                            if baseline_offload:
+                                x_baseline = policy_data['episode']
+                                save_plot(x_baseline, baseline_offload, 
+                                         f'Offloading Decision Distribution - {policy_name}', 
+                                         'Proportion (%)', f'offloading_ratio_{policy_name.lower().replace("-", "_")}.png')
 
             # (E) [多智能体] 公平性指标 (Jain's Fairness Index)
-            if 'ma_fairness' in df.columns:
-                save_plot(episodes, {'Fairness Index': df['ma_fairness']},
+            if 'ma_fairness' in df_train.columns:
+                save_plot(episodes, {'Fairness Index': df_train['ma_fairness']},
                           'System Fairness (Jain Index)', 'Index [0-1]', 'ma_fairness.png')
 
             # (F) [多智能体] 协作活跃度 (V2V Collaboration Rate)
-            if 'ma_collaboration' in df.columns:
-                save_plot(episodes, {'Collaboration Rate': df['ma_collaboration']},
-                          'Agent Collaboration (V2V) Rate', 'Rate (%)', 'ma_collaboration.png')
+            if 'ma_collaboration' in df_train.columns:
+                save_plot(episodes, {'MAPPO': df_train['ma_collaboration']},
+                          'Agent Collaboration (V2V) Rate', 'Rate (%)', 'ma_collaboration_with_baselines.png',
+                          df_baseline=df_baseline, metric_key='ma_collaboration')
 
             # (G) [多智能体] 奖励差距 (Reward Gap)
-            if 'ma_reward_gap' in df.columns:
-                save_plot(episodes, {'Reward Gap': df['ma_reward_gap']},
+            if 'ma_reward_gap' in df_train.columns:
+                save_plot(episodes, {'Reward Gap': df_train['ma_reward_gap']},
                           'Individual Reward Gap (Max - Min)', 'Gap Value', 'ma_reward_gap.png')
 
             # (H) 队列拥堵情况
             queue_data = {}
-            if 'avg_veh_queue' in df.columns: queue_data['Vehicle Avg'] = df['avg_veh_queue']
-            if 'avg_rsu_queue' in df.columns: queue_data['RSU Avg'] = df['avg_rsu_queue']
+            if 'avg_veh_queue' in df_train.columns: queue_data['Vehicle Avg'] = df_train['avg_veh_queue']
+            if 'avg_rsu_queue' in df_train.columns: queue_data['RSU Avg'] = df_train['avg_rsu_queue']
             if queue_data:
                 save_plot(episodes, queue_data, 'Average Queue Length', 'Num Tasks', 'queue_len.png')
 
             # (I) 算力分配效率
-            if 'avg_assigned_cpu_ghz' in df.columns:
-                save_plot(episodes, {'Assigned CPU': df['avg_assigned_cpu_ghz']},
+            if 'avg_assigned_cpu_ghz' in df_train.columns:
+                save_plot(episodes, {'Assigned CPU': df_train['avg_assigned_cpu_ghz']},
                           'Average Assigned Computing Power', 'GHz', 'cpu_efficiency.png')
 
             # (J) [新增] 智能体个体奖励分布分析

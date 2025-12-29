@@ -216,8 +216,8 @@ class SystemConfig:
     3. 卸载必要性: γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
     """
     DEADLINE_TIGHTENING_FACTOR = 0.85  # γ: 紧缩因子 (强迫卸载)
-    DEADLINE_TIGHTENING_MIN = 0.75  # γ最小值
-    DEADLINE_TIGHTENING_MAX = 0.95  # γ最大值
+    DEADLINE_TIGHTENING_MIN = 2.5  # γ最小值（调整为>1.0以考虑传输和排队时间）
+    DEADLINE_TIGHTENING_MAX = 4.0  # γ最大值（留出V2V传输和排队余地）
 
     # 验证: γ < 1.0 确保本地计算100%失败
     # 当γ=0.75，本地耗时1.0s的任务，Deadline为0.75s
@@ -261,11 +261,12 @@ class SystemConfig:
     PENALTY_FAILURE = -10.0      # 任务失败惩罚（超时）
 
     # F. 成功奖励参数 (Success Bonus) - 稀疏奖励强化
-    SUCCESS_BONUS = 10.0  # 任务成功完成时的固定奖励（用于打破数学期望陷阱）
+    SUCCESS_BONUS = 20.0  # 任务成功完成时的固定奖励（增大以提高V2V探索动力）
+    SUBTASK_SUCCESS_BONUS = 2.0  # 单个V2V/RSU子任务成功完成时的奖励（计件工资）
 
     # G. 奖励范围控制
-    REWARD_MAX = 10.0    # 奖励上限 (防止奖励爆炸)
-    REWARD_MIN = -10.0   # 奖励下限
+    REWARD_MAX = 30.0    # 奖励上限（扩大以容纳SUCCESS_BONUS）
+    REWARD_MIN = -15.0   # 奖励下限（扩大以容纳大惩罚）
 
     # =========================================================================
     # 8. 辅助方法
