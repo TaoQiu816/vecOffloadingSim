@@ -72,6 +72,7 @@ class DAGTask:
         # 初始化：入度为0的节点设为READY，其他为PENDING
         self.status[self.in_degree == 0] = 1
         self._is_failed = False
+        self.timeout_logged = False  # 用于死因诊断，避免重复打印
         
         # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
         try:

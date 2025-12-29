@@ -178,8 +178,9 @@ class DAGGenerator:
         # 获取截止时间因子范围
         gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 0.70)
         gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 0.80)
-        gamma_min = max(0.1, min(gamma_min, 0.99))
-        gamma_max = max(gamma_min, min(gamma_max, 0.99))
+        # [修复] 移除0.99上限约束，允许gamma>1.0以放宽deadline
+        gamma_min = max(0.1, gamma_min)
+        gamma_max = max(gamma_min, gamma_max)
         gamma = np.random.uniform(gamma_min, gamma_max)
 
         # 计算截止时间

@@ -128,7 +128,7 @@ class SystemConfig:
     # 本地时间 ≈ 4.5s, 在队列35-50时形成梯度反转
     MAX_VEHICLE_CPU_FREQ = 3.0e9  # 最大 CPU 频率，3 GHz
     MIN_VEHICLE_CPU_FREQ = 1.0e9  # 最小 CPU 频率，1 GHz
-    F_RSU = 4.0 * 1e9  # RSU: 4 GHz (约2倍于车辆平均频率)
+    F_RSU = 10.0 * 1e9  # RSU: 4 GHz (约2倍于车辆平均频率)
     # 2. 依然保留 F_VEHICLE，但将其注释为“基准参考值”
     # 这样既能满足代码的调用需求（不报错），又不影响你每辆车的随机性
     #F_VEHICLE = 2.0e9  # 设为平均值 2 GHz
@@ -216,8 +216,8 @@ class SystemConfig:
     3. 卸载必要性: γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
     """
     DEADLINE_TIGHTENING_FACTOR = 0.85  # γ: 紧缩因子 (强迫卸载)
-    DEADLINE_TIGHTENING_MIN = 2.5  # γ最小值（调整为>1.0以考虑传输和排队时间）
-    DEADLINE_TIGHTENING_MAX = 4.0  # γ最大值（留出V2V传输和排队余地）
+    DEADLINE_TIGHTENING_MIN = 5.0  # γ最小值（大幅放宽以确保V2V+排队+依赖链有充足时间）
+    DEADLINE_TIGHTENING_MAX = 8.0  # γ最大值（暴力打通物理层，必须看到Veh% > 0）
 
     # 验证: γ < 1.0 确保本地计算100%失败
     # 当γ=0.75，本地耗时1.0s的任务，Deadline为0.75s
@@ -252,7 +252,7 @@ class SystemConfig:
     DIST_SENSITIVITY = 2.0       # κ: 距离敏感度，平方增长
     
     # D. 软约束惩罚参数 - 超时惩罚 (Soft Constraint - Timeout)
-    TIMEOUT_PENALTY_WEIGHT = 5.0  # η: 超时惩罚上限（tanh饱和值）
+    TIMEOUT_PENALTY_WEIGHT = 1.0  # η: 超时惩罚上限（大幅降低，避免step惩罚淹没terminal奖励）
     TIMEOUT_STEEPNESS = 3.0       # σ: 超时陡峭度，确保微小超时也有显著惩罚
 
     # E. 硬约束惩罚参数 (Hard Constraint) - 直接覆盖

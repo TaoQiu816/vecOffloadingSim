@@ -1885,6 +1885,19 @@ class VecOffloadingEnv(gym.Env):
                 overtime_ratio = (elapsed - dag.deadline) / dag.deadline
                 r_timeout = -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
                 dag.set_failed()
+                
+                # [死因诊断] 第一次超时时打印关键信息
+                if not dag.timeout_logged:
+                    completed = np.sum(dag.status == 3)
+                    running = np.sum(dag.status == 2)
+                    ready = np.sum(dag.status == 1)
+                    pending = np.sum(dag.status == 0)
+                    print(f"[AUTOPSY] Veh{vehicle_id} DAG timeout: "
+                          f"{completed}/{dag.num_subtasks} done, "
+                          f"{running} running, {ready} ready, {pending} pending | "
+                          f"elapsed={elapsed:.2f}s, deadline={dag.deadline:.2f}s, "
+                          f"overtime={elapsed-dag.deadline:.2f}s")
+                    dag.timeout_logged = True
 
         # 5. 组合奖励（所有软约束项）
         reward = (Cfg.EFF_WEIGHT * r_eff +
