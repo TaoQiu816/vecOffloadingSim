@@ -442,14 +442,13 @@ class VecOffloadingEnv(gym.Env):
                 task_finished = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
 
                 if task_finished:
-                    # [新增] 子任务成功奖励：V2V/RSU卸载成功时立即给予奖励
+                    # [新增] 子任务成功奖励：任何任务完成都给奖励（全域激励）
+                    # 包括Local、RSU、V2V，避免智能体歧视Local任务导致依赖链阻塞
                     if not hasattr(v, 'subtask_reward_buffer'):
                         v.subtask_reward_buffer = 0.0
                     
-                    if isinstance(tgt, int):  # V2V卸载
-                        v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
-                    elif isinstance(tgt, tuple) and tgt[0] == 'RSU':  # RSU卸载
-                        v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
+                    # 无论在哪里执行，完成就给奖励
+                    v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
                     
                     # 任务完成时，从队列中移除一个任务（FIFO顺序）
                     if isinstance(tgt, tuple) and tgt[0] == 'RSU':
@@ -1886,18 +1885,18 @@ class VecOffloadingEnv(gym.Env):
                 r_timeout = -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
                 dag.set_failed()
                 
-                # [死因诊断] 第一次超时时打印关键信息
-                if not dag.timeout_logged:
-                    completed = np.sum(dag.status == 3)
-                    running = np.sum(dag.status == 2)
-                    ready = np.sum(dag.status == 1)
-                    pending = np.sum(dag.status == 0)
-                    print(f"[AUTOPSY] Veh{vehicle_id} DAG timeout: "
-                          f"{completed}/{dag.num_subtasks} done, "
-                          f"{running} running, {ready} ready, {pending} pending | "
-                          f"elapsed={elapsed:.2f}s, deadline={dag.deadline:.2f}s, "
-                          f"overtime={elapsed-dag.deadline:.2f}s")
-                    dag.timeout_logged = True
+                # [死因诊断] 已关闭，避免打印过多
+                # if not dag.timeout_logged:
+                #     completed = np.sum(dag.status == 3)
+                #     running = np.sum(dag.status == 2)
+                #     ready = np.sum(dag.status == 1)
+                #     pending = np.sum(dag.status == 0)
+                #     print(f"[AUTOPSY] Veh{vehicle_id} DAG timeout: "
+                #           f"{completed}/{dag.num_subtasks} done, "
+                #           f"{running} running, {ready} ready, {pending} pending | "
+                #           f"elapsed={elapsed:.2f}s, deadline={dag.deadline:.2f}s, "
+                #           f"overtime={elapsed-dag.deadline:.2f}s")
+                #     dag.timeout_logged = True
 
         # 5. 组合奖励（所有软约束项）
         reward = (Cfg.EFF_WEIGHT * r_eff +

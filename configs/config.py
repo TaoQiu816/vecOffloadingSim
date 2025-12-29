@@ -156,9 +156,9 @@ class SystemConfig:
     # 5. DAG 任务生成参数 (Task Generation)
     # 目标: 生成时延敏感型任务，迫使 Agent 进行卸载
     # =========================================================================
-    # 任务节点数范围
-    MIN_NODES = 8
-    MAX_NODES = 12
+    # 任务节点数范围（降维打击：减少依赖链深度）
+    MIN_NODES = 4  # 从8降到4
+    MAX_NODES = 6  # 从12降到6，极大降低依赖链深度
     
     # =========================================================================
     # DAG任务优先级算法权重
@@ -175,9 +175,9 @@ class SystemConfig:
     MIN_EDGE_DATA = 0.2e6  # 200 Kbits (传输约0.02s)
     MAX_EDGE_DATA = 0.6e6  # 600 Kbits (传输约0.06s)
 
-    # 计算量 (Cycles)
-    MIN_COMP = 0.1e9  # ≈ 0.1s 本地计算
-    MAX_COMP = 0.3e9  # ≈ 0.3s 本地计算
+    # 计算量 (Cycles) - 负重减轻：让任务更轻量，减少排队积压
+    MIN_COMP = 0.5e8  # ≈ 0.05s 本地计算（从1e8降到0.5e8）
+    MAX_COMP = 2.0e8  # ≈ 0.2s 本地计算（从3e8降到2e8）
 
     # 统一使用标准语法，移除内联类型注释
     MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles)
@@ -193,9 +193,9 @@ class SystemConfig:
     RSU_QUEUE_CYCLES_LIMIT = 20.0e9  # RSU队列最大计算量 (≈ 100 个平均任务)
     # 或在类文档中统一说明类型
 
-    # DAG 结构参数
+    # DAG 结构参数（简化结构：降低连接密度）
     DAG_FAT = 0.6  # 宽度
-    DAG_DENSITY = 0.4  # 密度
+    DAG_DENSITY = 0.2  # 密度（从0.4降到0.2，减少依赖复杂度）
     DAG_REGULAR = 0.5
     DAG_CCR = 0.2  # 通信计算比 (结构生成参数)
 
