@@ -72,9 +72,14 @@ class DataRecorder:
         self.episode_header_written = False
 
         # [新增] 初始化 TensorBoard Writer
-        # log_dir 设置为 AutoDL 默认监控的路径
+        # log_dir 使用相对路径（兼容本地和AutoDL环境）
         if TENSORBOARD_AVAILABLE:
-            tb_log_dir = f"/root/tf-logs/{experiment_name}_{timestamp}"
+            # 优先使用 /root/tf-logs（AutoDL环境），否则使用项目目录下的 logs 文件夹
+            if os.path.exists('/root') and os.access('/root', os.W_OK):
+                tb_log_dir = f"/root/tf-logs/{experiment_name}_{timestamp}"
+            else:
+                # 本地环境使用项目目录
+                tb_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", f"{experiment_name}_{timestamp}")
             os.makedirs(tb_log_dir, exist_ok=True)
             self.writer = SummaryWriter(log_dir=tb_log_dir)
             print(f"[TensorBoard] Log dir: {tb_log_dir}")

@@ -1132,10 +1132,6 @@ class VecOffloadingEnv(gym.Env):
                             continue
                         
                         # [新增] V2V智能断链保护 - 预测任务能否在断开前完成
-                        # 计算相对速度（两车在通信范围内的有效连接时间）
-                        rel_vel = n_veh.vel - v.vel
-                        rel_speed = np.linalg.norm(rel_vel)
-                        
                         # 计算当前距离（需要通过索引映射找到对应的j）
                         j_idx = None
                         for j, other_veh in enumerate(self.vehicles):
@@ -1171,14 +1167,29 @@ class VecOffloadingEnv(gym.Env):
                         # 总任务耗时（加安全系数）
                         total_task_time = (trans_time + queue_wait_time + comp_time) * 1.2  # 1.2是安全系数
                         
-                        # 估算两车还能连多久
-                        if rel_speed > 0.1:  # 避免除零
-                            # 假设两车以相对速度相向/相离运动
-                            # 简化：使用当前距离和相对速度估算断开时间
-                            time_to_break = (Cfg.V2V_RANGE - current_dist) / rel_speed
+                        # 估算两车还能连多久（考虑相对速度方向）
+                        # 计算相对速度向量
+                        rel_vel = n_veh.vel - v.vel
+                        # 计算位置差向量（从v指向n_veh）
+                        pos_diff = n_veh.pos - v.pos
+                        pos_diff_norm = np.linalg.norm(pos_diff)
+                        if pos_diff_norm < 1e-6:
+                            # 位置相同，使用大值
+                            time_to_break = 1000.0
                         else:
-                            # 相对速度很小，认为可以连很久
-                            time_to_break = 1000.0  # 大值表示不会断开
+                            # 计算相对速度在位置差方向上的投影（标量）
+                            # 如果投影为正，两车在远离；如果为负，两车在靠近
+                            rel_vel_proj = np.dot(rel_vel, pos_diff) / pos_diff_norm
+                            
+                            if rel_vel_proj > 0.1:  # 两车在远离
+                                # 使用相对速度的投影分量计算断开时间
+                                time_to_break = (Cfg.V2V_RANGE - current_dist) / rel_vel_proj
+                            elif rel_vel_proj < -0.1:  # 两车在靠近
+                                # 两车在靠近，连接时间会更长（设为大值表示不会断开）
+                                time_to_break = 1000.0
+                            else:  # 相对速度很小或垂直于位置差
+                                # 相对速度很小，认为可以连很久
+                                time_to_break = 1000.0
                         
                         # 如果任务耗时 > 连接时间，mask掉（注定失败）
                         if total_task_time > time_to_break:
