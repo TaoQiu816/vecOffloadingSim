@@ -8,6 +8,8 @@
 *.egg-info/
 dist/
 build/
+.cursor
+.cursorrules
 
 # 虚拟环境（本地/服务器环境，无需上传）
 venv/
