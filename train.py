@@ -120,7 +120,7 @@ def evaluate_single_baseline_episode(env, policy_name):
     
     avg_step_reward = ep_reward / total_steps if total_steps > 0 else 0
     total_decisions = stats['local_cnt'] + stats['rsu_cnt'] + stats['neighbor_cnt']
-    
+
     # 成功率统计（与训练循环一致）
     episode_vehicle_count = len(env.vehicles)
     success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
@@ -146,13 +146,14 @@ def evaluate_single_baseline_episode(env, policy_name):
     subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
     v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
     
-    # 计算平均指标
-    pct_local = (stats['local_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
-    pct_rsu = (stats['rsu_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
-    pct_v2v = (stats['neighbor_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
-    avg_power = stats['power_sum'] / total_decisions if total_decisions > 0 else 0
-    avg_veh_queue = stats['queue_len_sum'] / total_decisions if total_decisions > 0 else 0
-    avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0
+    # 计算平均指标（内部用比例）
+    dec_den = total_decisions if total_decisions > 0 else 1
+    frac_local = (stats['local_cnt'] / dec_den) if total_decisions > 0 else 0.0
+    frac_rsu = (stats['rsu_cnt'] / dec_den) if total_decisions > 0 else 0.0
+    frac_v2v = (stats['neighbor_cnt'] / dec_den) if total_decisions > 0 else 0.0
+    avg_power = stats['power_sum'] / dec_den if total_decisions > 0 else 0.0
+    avg_veh_queue = stats['queue_len_sum'] / dec_den if total_decisions > 0 else 0.0
+    avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0.0
     
     return {
         'total_reward': ep_reward,
@@ -162,9 +163,9 @@ def evaluate_single_baseline_episode(env, policy_name):
         'task_success_rate': task_success_rate,
         'subtask_success_rate': subtask_success_rate,
         'v2v_subtask_success_rate': v2v_subtask_success_rate,
-        'pct_local': pct_local,
-        'pct_rsu': pct_rsu,
-        'pct_v2v': pct_v2v,
+        'decision_frac_local': frac_local,
+        'decision_frac_rsu': frac_rsu,
+        'decision_frac_v2v': frac_v2v,
         'avg_power': avg_power,
         'avg_queue_len': avg_veh_queue,
         'avg_rsu_queue': avg_rsu_queue,
@@ -404,9 +405,9 @@ def main():
         avg_veh_queue = stats['queue_len_sum'] / total_decisions
         avg_rsu_queue = stats['rsu_queue_sum'] / total_steps
 
-        pct_local = (stats['local_cnt'] / total_decisions) * 100
-        pct_rsu = (stats['rsu_cnt'] / total_decisions) * 100
-        pct_v2v = (stats['neighbor_cnt'] / total_decisions) * 100
+        frac_local = (stats['local_cnt'] / total_decisions)
+        frac_rsu = (stats['rsu_cnt'] / total_decisions)
+        frac_v2v = (stats['neighbor_cnt'] / total_decisions)
 
         # 成功率统计（存储为0-1，展示时再乘100）
         episode_vehicle_count = len(env.vehicles)
@@ -433,6 +434,20 @@ def main():
         subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
         v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
 
+        if Cfg.DEBUG_ASSERT_METRICS:
+            for name, val in [
+                ("veh_success_rate", veh_success_rate),
+                ("task_success_rate", task_success_rate),
+                ("subtask_success_rate", subtask_success_rate),
+                ("v2v_subtask_success_rate", v2v_subtask_success_rate),
+                ("decision_frac_local", frac_local),
+                ("decision_frac_rsu", frac_rsu),
+                ("decision_frac_v2v", frac_v2v),
+            ]:
+                assert 0.0 <= val <= 1.0 + 1e-6, f"{name} out of range: {val}"
+            assert abs((frac_local + frac_rsu + frac_v2v) - 1.0) <= 1e-3 or total_decisions == 0, \
+                f"decision fractions not summing to 1: {frac_local + frac_rsu + frac_v2v}"
+
         # 控制台输出
         if episode == 1 or episode % 10 == 0:
             header = (
@@ -447,7 +462,7 @@ def main():
               f"{ep_reward:<9.2f} {avg_step_reward:<7.3f} | "
               f"{veh_success_rate*100:<5.1f} {subtask_success_rate*100:<5.1f} {v2v_subtask_success_rate*100:<6.1f} | "
               f"{fairness_index:<4.2f} {avg_assigned_cpu/1e9:<4.2f} | "
-              f"{pct_local:<5.1f} {pct_rsu:<5.1f} {pct_v2v:<5.1f} | "
+              f"{frac_local*100:<5.1f} {frac_rsu*100:<5.1f} {frac_v2v*100:<5.1f} | "
               f"{avg_veh_queue:<6.2f} {avg_power:<5.2f} | "
               f"{update_loss:<8.3f} | "
               f"{duration:<4.1f}")
@@ -465,9 +480,9 @@ def main():
             "task_success_rate": task_success_rate,
             "subtask_success_rate": subtask_success_rate,
             "v2v_subtask_success_rate": v2v_subtask_success_rate,
-            "pct_local": pct_local,
-            "pct_rsu": pct_rsu,
-            "pct_v2v": pct_v2v,
+            "decision_frac_local": frac_local,
+            "decision_frac_rsu": frac_rsu,
+            "decision_frac_v2v": frac_v2v,
             "avg_power": avg_power,
             "avg_queue_len": avg_veh_queue,
             "ma_fairness": fairness_index,
@@ -513,14 +528,14 @@ def main():
                     "task_success_rate": baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']),
                     "subtask_success_rate": baseline_metrics['subtask_success_rate'],
                     "v2v_subtask_success_rate": baseline_metrics['v2v_subtask_success_rate'],
-                    "pct_local": baseline_metrics['pct_local'],
-                    "pct_rsu": baseline_metrics['pct_rsu'],
-                    "pct_v2v": baseline_metrics['pct_v2v'],
+                    "decision_frac_local": baseline_metrics['decision_frac_local'],
+                    "decision_frac_rsu": baseline_metrics['decision_frac_rsu'],
+                    "decision_frac_v2v": baseline_metrics['decision_frac_v2v'],
                     "avg_power": baseline_metrics['avg_power'],
                     "avg_queue_len": baseline_metrics['avg_queue_len'],
                     "ma_fairness": 1.0,  # baseline无公平性概念，设为1.0
                     "ma_reward_gap": 0.0,
-                    "ma_collaboration": baseline_metrics['pct_v2v'],
+                    "ma_collaboration": baseline_metrics['decision_frac_v2v'],
                     "max_agent_reward": baseline_metrics['total_reward'],
                     "min_agent_reward": baseline_metrics['total_reward'],
                     "avg_assigned_cpu_ghz": 0.0,  # baseline无此指标

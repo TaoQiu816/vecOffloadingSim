@@ -285,6 +285,7 @@ class SystemConfig:
 
     # I. 动作/奖励调试开关
     DEBUG_ASSERT_ILLEGAL_ACTION = False  # True时illegal_action直接断言
+    DEBUG_ASSERT_METRICS = False  # True时对成功率/决策分布做范围断言
 
     # =========================================================================
     # 8. 动态归一化与统计

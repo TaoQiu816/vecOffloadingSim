@@ -9,8 +9,16 @@ from statistics import mean, stdev
 METRICS = [
     "success_rate",
     "vehicle_success_rate",
+    "success_rate_end",
     "deadline_miss_rate",
     "task_success_rate",
+    "subtask_success_rate",
+    "decision_frac_local",
+    "decision_frac_rsu",
+    "decision_frac_v2v",
+    "total_decisions_count",
+    "episode_vehicle_count",
+    "episode_vehicle_seen",
     "mean_cft",
     "delay_norm.mean",
     "delay_norm.p95",
@@ -60,6 +68,21 @@ def extract_metric(ep, key):
         return ep.get("metrics", {}).get(base, {}).get(stat, 0.0)
     return ep.get("metrics", {}).get(key, {}).get("mean", 0.0)
 
+
+def _metric_present(ep, key):
+    if key in ep:
+        return True
+    if key in ("vehicle_success_rate", "success_rate", "success_rate_end") and ("vehicle_success_rate" in ep or "success_rate" in ep):
+        return True
+    if key == "task_success_rate" and ("task_success_rate" in ep or "vehicle_success_rate" in ep or "success_rate" in ep):
+        return True
+    if key == "subtask_success_rate" and ("subtask_success_rate" in ep or ("total_subtasks" in ep and "completed_subtasks" in ep)):
+        return True
+    if "." in key:
+        base, stat = key.split(".", 1)
+        return base in ep.get("metrics", {}) and stat in ep.get("metrics", {}).get(base, {})
+    return key in ep.get("metrics", {})
+
 def _parse_seed(path, first_line):
     seed = first_line.get("seed")
     if seed is not None:
@@ -96,6 +119,7 @@ def _validate_lines(lines):
 def load_runs(log_dir, run_id=None):
     runs = []
     excluded = []
+    missing_counts = {}
     for path in glob.glob(os.path.join(log_dir, "*.jsonl")):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -115,6 +139,9 @@ def load_runs(log_dir, run_id=None):
             continue
         reward_mode = lines[0].get("reward_mode", "unknown")
         bonus_mode = lines[0].get("bonus_mode", "unknown")
+        metrics, missing = aggregate_run(lines)
+        for m in missing:
+            missing_counts[m] = missing_counts.get(m, 0) + 1
         runs.append({
             "path": path,
             "reward_mode": reward_mode,
@@ -123,16 +150,25 @@ def load_runs(log_dir, run_id=None):
             "run_id": lines[0].get("run_id"),
             "mtime": os.path.getmtime(path),
             "lines": lines,
+            "metrics": metrics,
         })
-    return runs, excluded
+    return runs, excluded, missing_counts
 
 
 def aggregate_run(lines):
     agg = {}
+    missing = set()
     for key in METRICS:
-        vals = [extract_metric(ep, key) for ep in lines]
+        vals = []
+        present = False
+        for ep in lines:
+            if _metric_present(ep, key):
+                present = True
+            vals.append(extract_metric(ep, key))
+        if not present:
+            missing.add(key)
         agg[key] = safe_mean(vals)
-    return agg
+    return agg, missing
 
 
 def _dedup_latest(runs):
@@ -149,7 +185,7 @@ def summarize_groups(runs):
     grouped = {}
     for run in runs:
         key = (run["reward_mode"], run["bonus_mode"])
-        grouped.setdefault(key, []).append(aggregate_run(run["lines"]))
+        grouped.setdefault(key, []).append(run["metrics"])
 
     summary = {}
     for key, run_metrics in grouped.items():
@@ -177,15 +213,23 @@ def write_csv(summary, out_path):
             f.write(",".join(row) + "\n")
 
 
-def write_md(summary, out_path, excluded):
+def write_md(summary, out_path, excluded, missing_counts):
     cols = [
         "reward_mode",
         "bonus_mode",
         "success_rate",
         "vehicle_success_rate",
+        "success_rate_end",
         "deadline_miss_rate",
         "task_success_rate",
+        "subtask_success_rate",
         "mean_cft",
+        "decision_frac_local",
+        "decision_frac_rsu",
+        "decision_frac_v2v",
+        "total_decisions_count",
+        "episode_vehicle_count",
+        "episode_vehicle_seen",
         "delay_norm.mean",
         "delay_norm.p95",
         "energy_norm.mean",
@@ -242,6 +286,11 @@ def write_md(summary, out_path, excluded):
             f.write("\n**Excluded Files**\n\n")
             for item in excluded:
                 f.write(f"- {item['path']}: {item['reason']}\n")
+    if missing_counts:
+        with open(out_path, "a", encoding="utf-8") as f:
+            f.write("\n**Missing Fields Summary**\n\n")
+            for k, v in sorted(missing_counts.items()):
+                f.write(f"- {k}: missing in {v} file(s)\n")
 
 
 def plot_summary(summary, out_dir):
@@ -295,7 +344,7 @@ def plot_summary(summary, out_dir):
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
-    runs, excluded = load_runs(args.log_dir, run_id=args.run_id)
+    runs, excluded, missing_counts = load_runs(args.log_dir, run_id=args.run_id)
     if not runs:
         print("[Error] No jsonl logs found.")
         return
@@ -304,7 +353,7 @@ def main():
     csv_path = os.path.join(args.out_dir, "ablation_summary.csv")
     md_path = os.path.join(args.out_dir, "ablation_summary.md")
     write_csv(summary, csv_path)
-    write_md(summary, md_path, excluded)
+    write_md(summary, md_path, excluded, missing_counts)
     if args.plot:
         plot_summary(summary, args.out_dir)
     print(f"[OK] Wrote {csv_path}")

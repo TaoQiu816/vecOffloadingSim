@@ -313,8 +313,9 @@ class DataRecorder:
             #
             # (D) 卸载决策分布 (%)
             offload_data = {}
-            for k, label in zip(['pct_local', 'pct_rsu', 'pct_v2v'], ['Local', 'RSU', 'V2V']):
-                if k in df_train.columns: offload_data[label] = df_train[k]
+            for k, label in zip(['decision_frac_local', 'decision_frac_rsu', 'decision_frac_v2v'], ['Local', 'RSU', 'V2V']):
+                if k in df_train.columns:
+                    offload_data[label] = df_train[k] * 100
             if offload_data:
                 save_plot(episodes, offload_data, 'Offloading Decision Distribution', 'Proportion (%)',
                           'offloading_ratio.png')
@@ -325,9 +326,9 @@ class DataRecorder:
                         policy_data = df_baseline[df_baseline['policy'] == policy_name]
                         if not policy_data.empty:
                             baseline_offload = {}
-                            for k, label in zip(['pct_local', 'pct_rsu', 'pct_v2v'], ['Local', 'RSU', 'V2V']):
+                            for k, label in zip(['decision_frac_local', 'decision_frac_rsu', 'decision_frac_v2v'], ['Local', 'RSU', 'V2V']):
                                 if k in policy_data.columns:
-                                    baseline_offload[f'{policy_name} {label}'] = policy_data[k]
+                                    baseline_offload[f'{policy_name} {label}'] = policy_data[k] * 100
                             if baseline_offload:
                                 x_baseline = policy_data['episode']
                                 save_plot(x_baseline, baseline_offload, 

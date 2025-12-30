@@ -93,6 +93,8 @@ class VecOffloadingEnv(gym.Env):
         self._max_v2v_contact_time = Cfg.V2V_RANGE / max(Cfg.VEL_MIN, 1e-6)
         self._last_candidates = {}
         self._last_rsu_choice = {}
+        # 动态车辆统计：记录整个episode出现过的车辆ID
+        self._vehicles_seen = set()
 
     def _audit_enabled(self):
         return os.environ.get("AUDIT_ASSERTS", "").lower() in ("1", "true", "yes")
@@ -102,6 +104,29 @@ class VecOffloadingEnv(gym.Env):
         assert len(ids) == len(set(ids)), "duplicate vehicle IDs detected"
         if ids:
             assert max(ids) < Cfg.MAX_VEHICLE_ID, "vehicle ID exceeds MAX_VEHICLE_ID"
+
+    def _assert_metric_bounds(self, extra):
+        if not Cfg.DEBUG_ASSERT_METRICS:
+            return
+        def _finite_and_between(val, lo=0.0, hi=1.0, name="val"):
+            assert np.isfinite(val), f"{name} is not finite: {val}"
+            assert lo - 1e-6 <= val <= hi + 1e-6, f"{name} out of range [{lo},{hi}]: {val}"
+        for key in ("vehicle_success_rate", "task_success_rate", "subtask_success_rate", "deadline_miss_rate"):
+            _finite_and_between(extra.get(key, 0.0), 0.0, 1.0, key)
+        # 决策分布检查
+        frac_local = extra.get("decision_frac_local", 0.0)
+        frac_rsu = extra.get("decision_frac_rsu", 0.0)
+        frac_v2v = extra.get("decision_frac_v2v", 0.0)
+        for name, val in (("decision_frac_local", frac_local), ("decision_frac_rsu", frac_rsu), ("decision_frac_v2v", frac_v2v)):
+            if extra.get("total_decisions_count", 0) > 0:
+                _finite_and_between(val, 0.0, 1.0, name)
+        total_frac = frac_local + frac_rsu + frac_v2v
+        if extra.get("total_decisions_count", 0) > 0:
+            assert abs(total_frac - 1.0) <= 1e-3 or total_frac == 0.0, (
+                f"decision fractions sum mismatch: {total_frac}, "
+                f"counts={extra.get('total_decisions_count')}, "
+                f"local={frac_local}, rsu={frac_rsu}, v2v={frac_v2v}"
+            )
     
     def _init_rsus(self):
         """
@@ -389,6 +414,12 @@ class VecOffloadingEnv(gym.Env):
         clip_max = self._reward_stats.counters.get("clip_hit_max", 0)
         reward_count = max(total_rewards, 1)
 
+        decision_total = self._reward_stats.counters.get("decision_total", 0)
+        decision_local = self._reward_stats.counters.get("decision_local", 0)
+        decision_rsu = self._reward_stats.counters.get("decision_rsu", 0)
+        decision_v2v = self._reward_stats.counters.get("decision_v2v", 0)
+        decision_den = max(decision_total, 1)
+
         extra = {
             "episode_id": self._episode_id,
             "episode_steps": self._episode_steps,
@@ -404,13 +435,20 @@ class VecOffloadingEnv(gym.Env):
             "illegal_action_rate": illegal_count / reward_count,
             "hard_trigger_rate": hard_count / reward_count,
             "clip_hit_ratio": (clip_min + clip_max) / reward_count,
+            "total_decisions_count": decision_total,
+            "decision_frac_local": decision_local / decision_den if decision_total > 0 else 0.0,
+            "decision_frac_rsu": decision_rsu / decision_den if decision_total > 0 else 0.0,
+            "decision_frac_v2v": decision_v2v / decision_den if decision_total > 0 else 0.0,
         }
         episode_vehicle_count = int(len(self.vehicles))
         episode_task_count = int(episode_vehicle_count)
+        episode_vehicle_seen = int(len(self._vehicles_seen)) if hasattr(self, "_vehicles_seen") else episode_vehicle_count
         extra["episode_vehicle_count"] = episode_vehicle_count
         extra["episode_task_count"] = episode_task_count
+        extra["episode_vehicle_seen"] = episode_vehicle_seen
         extra["vehicle_success_rate"] = 0.0
         extra["success_rate"] = 0.0
+        extra["success_rate_end"] = 0.0
         extra["task_success_rate"] = 0.0
         extra["deadline_miss_rate"] = 0.0
         extra["total_subtasks"] = 0
@@ -423,6 +461,7 @@ class VecOffloadingEnv(gym.Env):
             task_success_rate = success_count / max(episode_task_count, 1)
             extra["vehicle_success_rate"] = vehicle_success_rate
             extra["success_rate"] = vehicle_success_rate
+            extra["success_rate_end"] = vehicle_success_rate
             extra["task_success_rate"] = task_success_rate
             extra["deadline_miss_rate"] = failed_count / max(episode_vehicle_count, 1)
 
@@ -438,6 +477,7 @@ class VecOffloadingEnv(gym.Env):
             extra["mean_cft"] = float(np.mean(self.vehicle_cfts))
         else:
             extra["mean_cft"] = float(self.time)
+        self._assert_metric_bounds(extra)
         json_line = self._reward_stats.to_json_line(extra=extra)
         print(json_line)
         if self._jsonl_path:
@@ -465,6 +505,7 @@ class VecOffloadingEnv(gym.Env):
         self._dist_matrix_cache = None
         self._dist_matrix_time = -1.0
         self._rsu_dist_cache = {}
+        self._vehicles_seen = set()
         if abs(self.time - self._cft_cache_time) > Cfg.DT * 0.5:
             self._cft_cache = None
             self._cft_cache_valid = False
@@ -499,6 +540,7 @@ class VecOffloadingEnv(gym.Env):
             v.exec_locations = [None] * v.task_dag.num_subtasks
 
             self.vehicles.append(v)
+            self._vehicles_seen.add(v.id)
         
         # 道路模型：初始化动态车辆生成的下一辆到达时间（泊松过程）
         # 如果VEHICLE_ARRIVAL_RATE > 0，则启用动态生成
@@ -670,6 +712,13 @@ class VecOffloadingEnv(gym.Env):
                 # assign_task现在返回bool表示是否成功分配（防止重复调度）
                 assign_success = v.task_dag.assign_task(subtask_idx, actual_target)
                 if assign_success:
+                    if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                        self._reward_stats.add_counter("decision_rsu")
+                    elif isinstance(actual_target, int):
+                        self._reward_stats.add_counter("decision_v2v")
+                    else:
+                        self._reward_stats.add_counter("decision_local")
+                    self._reward_stats.add_counter("decision_total")
                     v.last_scheduled_subtask = subtask_idx
                     # 更新exec_locations记录任务执行位置（用于CFT计算）
                     # actual_target已经是正确的格式（'Local'、('RSU', rsu_id)或int vehicle_id）
@@ -987,6 +1036,7 @@ class VecOffloadingEnv(gym.Env):
                 new_vehicle.exec_locations = [None] * new_vehicle.task_dag.num_subtasks
                 
                 self.vehicles.append(new_vehicle)
+                self._vehicles_seen.add(new_vehicle.id)
                 self._next_vehicle_id += 1
                 
                 # 计算下一辆车的到达时间

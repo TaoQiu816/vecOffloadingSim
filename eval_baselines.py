@@ -156,9 +156,9 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     # 计算平均值
     total_decisions_all = sum(decision_stats.values())
     decision_distribution = {
-        'local': decision_stats['local'] / total_decisions_all * 100 if total_decisions_all > 0 else 0,
-        'rsu': decision_stats['rsu'] / total_decisions_all * 100 if total_decisions_all > 0 else 0,
-        'v2v': decision_stats['v2v'] / total_decisions_all * 100 if total_decisions_all > 0 else 0
+        'local': decision_stats['local'] / total_decisions_all if total_decisions_all > 0 else 0.0,
+        'rsu': decision_stats['rsu'] / total_decisions_all if total_decisions_all > 0 else 0.0,
+        'v2v': decision_stats['v2v'] / total_decisions_all if total_decisions_all > 0 else 0.0
     }
     
     results = {
@@ -184,8 +184,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     print(f"  车辆成功率: {results['avg_vehicle_success_rate']*100:.1f}% ± {results['std_vehicle_success_rate']*100:.1f}%")
     print(f"  子任务成功率: {results['avg_subtask_success_rate']*100:.1f}% ± {results['std_subtask_success_rate']*100:.1f}%")
     print(f"  平均完成时间: {results['avg_completion_time']:.2f}s ± {results['std_completion_time']:.2f}s")
-    print(f"  决策分布: Local={decision_distribution['local']:.1f}%, "
-          f"RSU={decision_distribution['rsu']:.1f}%, V2V={decision_distribution['v2v']:.1f}%")
+    print(f"  决策分布: Local={decision_distribution['local']*100:.1f}%, "
+          f"RSU={decision_distribution['rsu']*100:.1f}%, V2V={decision_distribution['v2v']*100:.1f}%")
     print(f"  平均队列长度: {results['avg_queue_length']:.2f}")
     print(f"  平均功率: {results['avg_power']:.2f}")
     
