@@ -14,8 +14,9 @@ class ChannelModel:
     """
 
     def __init__(self):
-        # 1. 噪声功率 (Watts)
-        self.noise_w = Cfg.dbm2watt(Cfg.NOISE_POWER_DBM)
+        # 1. 噪声功率谱密度 (含噪声系数)，基于带宽动态计算噪声功率
+        noise_psd_dbm_hz = Cfg.NOISE_POWER_DENSITY_DBM + Cfg.NOISE_FIGURE
+        self.noise_psd_w_hz = Cfg.dbm2watt(noise_psd_dbm_hz)
 
         # 2. 路径损耗常数 Beta0
         beta0_db = getattr(Cfg, 'BETA_0_DB', -30)
@@ -45,6 +46,7 @@ class ChannelModel:
 
             # 带宽竞争模型: 总带宽被所有用户均分
             eff_bandwidth = Cfg.BW_V2I / max(num_users, 1)
+            noise_w = self._noise_power(eff_bandwidth)
 
             for v in v2i_group:
                 # 距离计算
@@ -58,7 +60,7 @@ class ChannelModel:
                 p_rx = p_tx * h_bar
 
                 # SINR = P_rx / Noise (V2I 正交，忽略内部干扰)
-                sinr = p_rx / self.noise_w
+                sinr = p_rx / noise_w
 
                 # Shannon Capacity
                 rates[v.id] = eff_bandwidth * np.log2(1 + sinr)
@@ -114,7 +116,8 @@ class ChannelModel:
 
             # 3. 计算速率 (V2V 共享带宽，干扰受限) - 使用向量化计算
             # 向量化计算SINR和速率，避免循环
-            sinr = signal_powers / (self.noise_w + total_interference)
+            noise_w = self._noise_power(Cfg.BW_V2V)
+            sinr = signal_powers / (noise_w + total_interference)
             rates_vector = Cfg.BW_V2V * np.log2(1 + sinr)
             
             # 将结果写入字典
@@ -124,7 +127,7 @@ class ChannelModel:
 
         return rates
 
-    def compute_one_rate(self, vehicle, target_pos, link_type='V2I', curr_time=None, active_tx_vehicles=None):
+    def compute_one_rate(self, vehicle, target_pos, link_type='V2I', curr_time=None, active_tx_vehicles=None, v2i_user_count=None):
         """
         [单体预估] 计算假设场景下的速率
         用于 Observation 特征生成和 CFT 估算。
@@ -138,15 +141,22 @@ class ChannelModel:
 
         if link_type == 'V2I':
             # V2I: 带宽竞争模型，无衰落
-            est_users = max(Cfg.NUM_VEHICLES // 5, 1)
+            if v2i_user_count is not None:
+                est_users = max(int(v2i_user_count), 1)
+            elif active_tx_vehicles is not None:
+                est_users = max(len(active_tx_vehicles), 1)
+            else:
+                est_users = max(Cfg.NUM_VEHICLES // 5, 1)
             bandwidth = Cfg.BW_V2I / est_users
+            noise_w = self._noise_power(bandwidth)
             h_bar = self._path_loss(dist, Cfg.ALPHA_V2I)
             # V2I只有路径损耗，无衰落
-            sinr = (p_tx * h_bar) / self.noise_w
+            sinr = (p_tx * h_bar) / noise_w
             rate = bandwidth * np.log2(1 + sinr)
         else:
             # V2V: 包含瑞利衰落，全干扰模型
             bandwidth = Cfg.BW_V2V
+            noise_w = self._noise_power(bandwidth)
             h_bar = self._path_loss(dist, Cfg.ALPHA_V2V)
             
             # 计算干扰（只考虑大尺度路径损耗）
@@ -161,7 +171,7 @@ class ChannelModel:
             h_rayleigh = self._rayleigh_fading(1)[0]
             signal_power = p_tx * h_bar * h_rayleigh
             
-            sinr = signal_power / (self.noise_w + interference)
+            sinr = signal_power / (noise_w + interference)
             rate = bandwidth * np.log2(1 + sinr)
 
         return rate
@@ -249,10 +259,11 @@ class ChannelModel:
             )
         else:
             interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
-        
+
         # 可靠性公式：P_succ = exp(-γ_th * (N_0 + E[I]) / (P_tx * h_bar))
         gamma_th = getattr(Cfg, 'V2V_GAMMA_TH', 2.0)
-        numerator = gamma_th * (self.noise_w + interference)
+        noise_w = self._noise_power(Cfg.BW_V2V)
+        numerator = gamma_th * (noise_w + interference)
         denominator = p_tx * h_bar
         
         if denominator <= 0:
@@ -304,7 +315,8 @@ class ChannelModel:
             rx_veh.pos, tx_veh.pos, vehicles, p_tx
         )
 
-        sinr = signal_power / (self.noise_w + interference)
+        noise_w = self._noise_power(Cfg.BW_V2V)
+        sinr = signal_power / (noise_w + interference)
         rate = Cfg.BW_V2V * np.log2(1 + sinr)
 
         return rate
@@ -337,3 +349,10 @@ class ChannelModel:
         imag_part = np.random.randn(n)
         h_rayleigh = (real_part + 1j * imag_part) / np.sqrt(2.0)
         return np.abs(h_rayleigh) ** 2
+
+    def _noise_power(self, bandwidth_hz):
+        """
+        根据带宽计算等效噪声功率 (W)
+        """
+        bandwidth_hz = max(bandwidth_hz, 1.0)  # 防止0带宽
+        return self.noise_psd_w_hz * bandwidth_hz

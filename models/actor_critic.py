@@ -63,7 +63,7 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         Args:
             query: [Batch, 1, d_model], 查询（当前任务特征）
             resource_encoded: [Batch, N_res, d_model], 编码后的资源特征（用于K/V）
-            resource_raw: [Batch, N_res, 9], 原始资源特征（用于物理偏置）
+            resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 原始资源特征（用于物理偏置）
             key_padding_mask: [Batch, N_res], Padding mask
         
         Returns:
@@ -86,7 +86,7 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
         
         # 2. 物理流：计算物理偏置
-        # resource_raw: [B, N_res, 9]
+        # resource_raw: [B, N_res, RESOURCE_RAW_DIM]
         # [CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type]
         dist_norm = resource_raw[:, :, 2]  # Dist_Norm
         load_norm = resource_raw[:, :, 1]  # Queue_Norm
@@ -138,7 +138,7 @@ class ActorHead(nn.Module):
         """
         super().__init__()
         self.d_model = d_model
-        self.max_targets = 2 + Cfg.NUM_VEHICLES
+        self.max_targets = Cfg.MAX_TARGETS
         
         # Target头（成对特征MLP）
         # 输入：[h_fused, h_res] 拼接后为 2*d_model
@@ -427,7 +427,7 @@ class ActorCriticNetwork(nn.Module):
         Args:
             dag_features: [Batch, MAX_NODES, d_model], Transformer输出
             resource_encoded: [Batch, N_res, d_model], 编码后的资源特征
-            resource_raw: [Batch, N_res, 9], 原始资源特征（用于物理偏置）
+            resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 原始资源特征（用于物理偏置）
             subtask_index: [Batch], 当前选中的任务索引
             action_mask: [Batch, N_res], 动作掩码（True=可选）
             resource_padding_mask: [Batch, N_res], 资源Padding mask
@@ -514,7 +514,7 @@ class ActorCriticNetwork(nn.Module):
         Args:
             dag_features: [Batch, MAX_NODES, d_model], DAG Transformer输出
             resource_encoded: [Batch, N_res, d_model], 编码后的资源特征
-            resource_raw: [Batch, N_res, 9], 原始资源特征
+            resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 原始资源特征
             subtask_index: [Batch], 选中的任务索引
             action_mask: [Batch, N_res], 动作掩码
             task_mask: [Batch, MAX_NODES], DAG节点掩码
@@ -538,4 +538,3 @@ class ActorCriticNetwork(nn.Module):
         )
         
         return target_logits, alpha, beta, value
-

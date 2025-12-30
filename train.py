@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import os
 import sys
+import random
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -121,8 +122,10 @@ def evaluate_single_baseline_episode(env, policy_name):
     total_decisions = stats['local_cnt'] + stats['rsu_cnt'] + stats['neighbor_cnt']
     
     # 成功率统计（与训练循环一致）
+    episode_vehicle_count = len(env.vehicles)
     success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
-    veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
+    veh_success_rate = success_count / max(episode_vehicle_count, 1)
+    task_success_rate = success_count / max(episode_vehicle_count, 1)
     
     total_subtasks = 0
     completed_subtasks = 0
@@ -140,8 +143,8 @@ def evaluate_single_baseline_episode(env, policy_name):
                     if v.task_dag.status[i] == 3:  # 已完成
                         v2v_subtasks_completed += 1
     
-    subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
-    v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted * 100) if v2v_subtasks_attempted > 0 else 0.0
+    subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
+    v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
     
     # 计算平均指标
     pct_local = (stats['local_cnt'] / total_decisions * 100) if total_decisions > 0 else 0
@@ -155,6 +158,8 @@ def evaluate_single_baseline_episode(env, policy_name):
         'total_reward': ep_reward,
         'avg_step_reward': avg_step_reward,
         'veh_success_rate': veh_success_rate,
+        'vehicle_success_rate': veh_success_rate,
+        'task_success_rate': task_success_rate,
         'subtask_success_rate': subtask_success_rate,
         'v2v_subtask_success_rate': v2v_subtask_success_rate,
         'pct_local': pct_local,
@@ -167,6 +172,46 @@ def evaluate_single_baseline_episode(env, policy_name):
 
 
 def main():
+    disable_baseline_eval = False
+    env_reward_mode = os.environ.get("REWARD_MODE")
+    env_bonus_mode = os.environ.get("BONUS_MODE")
+    env_seed = os.environ.get("SEED")
+    env_max_episodes = os.environ.get("MAX_EPISODES")
+    env_max_steps = os.environ.get("MAX_STEPS")
+    env_eval_interval = os.environ.get("EVAL_INTERVAL")
+    env_save_interval = os.environ.get("SAVE_INTERVAL")
+    env_disable_baseline = os.environ.get("DISABLE_BASELINE_EVAL")
+    env_use_lr_decay = os.environ.get("USE_LR_DECAY")
+    env_device = os.environ.get("DEVICE_NAME")
+
+    if env_reward_mode:
+        Cfg.REWARD_MODE = env_reward_mode
+    if env_bonus_mode:
+        Cfg.BONUS_MODE = env_bonus_mode
+    if env_max_episodes:
+        TC.MAX_EPISODES = int(env_max_episodes)
+    if env_max_steps:
+        TC.MAX_STEPS = int(env_max_steps)
+    if env_eval_interval:
+        TC.EVAL_INTERVAL = int(env_eval_interval)
+    if env_save_interval:
+        TC.SAVE_INTERVAL = int(env_save_interval)
+    if env_use_lr_decay is not None:
+        TC.USE_LR_DECAY = env_use_lr_decay.lower() in ("1", "true", "yes")
+    if env_device:
+        TC.DEVICE_NAME = env_device
+    if env_disable_baseline:
+        disable_baseline_eval = env_disable_baseline.lower() in ("1", "true", "yes")
+
+    if env_seed is not None:
+        seed = int(env_seed)
+        Cfg.SEED = seed
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     # 开启 CuDNN 加速
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -363,9 +408,11 @@ def main():
         pct_rsu = (stats['rsu_cnt'] / total_decisions) * 100
         pct_v2v = (stats['neighbor_cnt'] / total_decisions) * 100
 
-        # 成功率统计
+        # 成功率统计（存储为0-1，展示时再乘100）
+        episode_vehicle_count = len(env.vehicles)
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
-        veh_success_rate = (success_count / Cfg.NUM_VEHICLES) * 100
+        veh_success_rate = success_count / max(episode_vehicle_count, 1)
+        task_success_rate = success_count / max(episode_vehicle_count, 1)
 
         total_subtasks = 0
         completed_subtasks = 0
@@ -383,8 +430,8 @@ def main():
                         if v.task_dag.status[i] == 3:  # 已完成
                             v2v_subtasks_completed += 1
 
-        subtask_success_rate = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
-        v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted * 100) if v2v_subtasks_attempted > 0 else 0.0
+        subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
+        v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
 
         # 控制台输出
         if episode == 1 or episode % 10 == 0:
@@ -398,7 +445,7 @@ def main():
 
         print(f"{episode:<5d} | "
               f"{ep_reward:<9.2f} {avg_step_reward:<7.3f} | "
-              f"{veh_success_rate:<5.1f} {subtask_success_rate:<5.1f} {v2v_subtask_success_rate:<6.1f} | "
+              f"{veh_success_rate*100:<5.1f} {subtask_success_rate*100:<5.1f} {v2v_subtask_success_rate*100:<6.1f} | "
               f"{fairness_index:<4.2f} {avg_assigned_cpu/1e9:<4.2f} | "
               f"{pct_local:<5.1f} {pct_rsu:<5.1f} {pct_v2v:<5.1f} | "
               f"{avg_veh_queue:<6.2f} {avg_power:<5.2f} | "
@@ -414,6 +461,8 @@ def main():
             "avg_step_reward": avg_step_reward,
             "loss": update_loss,
             "veh_success_rate": veh_success_rate,
+            "vehicle_success_rate": veh_success_rate,
+            "task_success_rate": task_success_rate,
             "subtask_success_rate": subtask_success_rate,
             "v2v_subtask_success_rate": v2v_subtask_success_rate,
             "pct_local": pct_local,
@@ -427,12 +476,14 @@ def main():
             "max_agent_reward": avg_agent_reward,
             "min_agent_reward": avg_agent_reward,
             "avg_assigned_cpu_ghz": avg_assigned_cpu / 1e9,
+            "episode_vehicle_count": episode_vehicle_count,
+            "episode_task_count": episode_vehicle_count,
             "duration": duration
         }
         recorder.log_episode(episode_metrics)
 
         # 定期评估baseline策略（与当前训练方法对比）
-        if episode % TC.EVAL_INTERVAL == 0 or episode == 1:
+        if (not disable_baseline_eval) and (episode % TC.EVAL_INTERVAL == 0 or episode == 1):
             for policy_name in baseline_policies:
                 baseline_metrics = evaluate_single_baseline_episode(env, policy_name)
                 baseline_metrics['episode'] = episode
@@ -458,6 +509,8 @@ def main():
                     "total_reward": baseline_metrics['total_reward'],
                     "avg_step_reward": baseline_metrics['avg_step_reward'],
                     "veh_success_rate": baseline_metrics['veh_success_rate'],
+                    "vehicle_success_rate": baseline_metrics['veh_success_rate'],
+                    "task_success_rate": baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']),
                     "subtask_success_rate": baseline_metrics['subtask_success_rate'],
                     "v2v_subtask_success_rate": baseline_metrics['v2v_subtask_success_rate'],
                     "pct_local": baseline_metrics['pct_local'],

@@ -48,12 +48,15 @@ class DAGTask:
         self.total_comp = np.array([p['comp'] for p in profiles], dtype=np.float32)
         self.rem_comp = self.total_comp.copy()
         self.total_data = np.array([p.get('input_data', 0.0) for p in profiles], dtype=np.float32)
-        self.total_data = np.maximum(self.total_data, 8000.0)  # 最小1KB，避免除零错误
-        self.rem_data = self.total_data.copy()
 
         # 依赖管理：入度和出度
         self.in_degree = np.sum(self.adj, axis=0)   # 前驱任务数
         self.out_degree = np.sum(self.adj, axis=1)  # 后继任务数
+
+        entry_mask = (self.in_degree == 0)
+        self.total_data[entry_mask] = np.maximum(self.total_data[entry_mask], 8000.0)
+        self.total_data[~entry_mask] = np.maximum(self.total_data[~entry_mask], 0.0)
+        self.rem_data = self.total_data.copy()
 
         # 执行位置跟踪：每个子任务只能分配一次执行位置
         # 值: 'Local' | 'RSU' | int(车辆ID) | None(未分配)

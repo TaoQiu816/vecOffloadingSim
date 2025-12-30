@@ -61,8 +61,8 @@ def plot_success_rate_comparison(results, save_dir):
     fig, ax = plt.subplots(figsize=(12, 6))
     
     policies = [r['policy_name'] for r in results]
-    vehicle_success = [r['avg_vehicle_success_rate'] for r in results]
-    subtask_success = [r['avg_subtask_success_rate'] for r in results]
+    vehicle_success = [r['avg_vehicle_success_rate'] * 100 for r in results]
+    subtask_success = [r['avg_subtask_success_rate'] * 100 for r in results]
     
     x = np.arange(len(policies))
     width = 0.35
@@ -173,8 +173,8 @@ def plot_radar_chart(results, save_dir):
     # 归一化指标到[0, 1]范围
     metrics = {
         'Reward': [r['avg_reward'] for r in results],
-        'Vehicle\nSuccess': [r['avg_vehicle_success_rate'] / 100 for r in results],
-        'Subtask\nSuccess': [r['avg_subtask_success_rate'] / 100 for r in results],
+        'Vehicle\nSuccess': [r['avg_vehicle_success_rate'] for r in results],
+        'Subtask\nSuccess': [r['avg_subtask_success_rate'] for r in results],
         'Completion\nTime': [1 / (r['avg_completion_time'] + 1e-6) if r['avg_completion_time'] > 0 else 0 
                             for r in results],  # 时间越短越好，取倒数
         'Queue\nLength': [1 / (r['avg_queue_length'] + 1) for r in results]  # 队列越短越好
@@ -258,4 +258,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -64,17 +64,16 @@ class GreedyPolicy:
                 else:
                     # Neighbor: 邻居车辆的CPU频率
                     # target_idx = 2 + neighbor_index
-                    neighbor_idx = target_idx - 2
-                    
-                    # 从环境中获取邻居车辆
-                    # 邻居列表：排除自身的所有车辆
-                    neighbors = [v for v in self.env.vehicles if v.id != i]
-                    
-                    if neighbor_idx < len(neighbors):
-                        neighbor_vehicle = neighbors[neighbor_idx]
-                        compute_power = neighbor_vehicle.cpu_freq
+                    resource_ids = obs['resource_ids']
+                    neighbor_token = resource_ids[target_idx]
+                    if neighbor_token >= 3:
+                        neighbor_id = neighbor_token - 3
+                        neighbor_vehicle = next(
+                            (veh for veh in self.env.vehicles if veh.id == neighbor_id),
+                            None
+                        )
+                        compute_power = neighbor_vehicle.cpu_freq if neighbor_vehicle else 0.0
                     else:
-                        # 如果邻居索引超出范围，设为极小值
                         compute_power = 0.0
                 
                 target_compute_power.append(compute_power)
@@ -94,4 +93,3 @@ class GreedyPolicy:
     def reset(self):
         """重置策略状态（贪婪策略无状态）"""
         pass
-

@@ -294,15 +294,21 @@ class DataRecorder:
 
             # (C) 成功率 (%) - Veh%
             if 'veh_success_rate' in df_train.columns:
-                save_plot(episodes, {'MAPPO': df_train['veh_success_rate']},
+                df_baseline_scaled = df_baseline.copy()
+                if 'veh_success_rate' in df_baseline_scaled.columns:
+                    df_baseline_scaled['veh_success_rate'] = df_baseline_scaled['veh_success_rate'] * 100
+                save_plot(episodes, {'MAPPO': df_train['veh_success_rate'] * 100},
                           'Vehicle Success Rate (DAG Completion %)', 'Rate (%)', 'veh_success_rate_with_baselines.png',
-                          df_baseline=df_baseline, metric_key='veh_success_rate')
+                          df_baseline=df_baseline_scaled, metric_key='veh_success_rate')
             
             # (C2) 子任务成功率 (%)
             if 'subtask_success_rate' in df_train.columns:
-                save_plot(episodes, {'MAPPO': df_train['subtask_success_rate']},
+                df_baseline_scaled = df_baseline.copy()
+                if 'subtask_success_rate' in df_baseline_scaled.columns:
+                    df_baseline_scaled['subtask_success_rate'] = df_baseline_scaled['subtask_success_rate'] * 100
+                save_plot(episodes, {'MAPPO': df_train['subtask_success_rate'] * 100},
                           'Subtask Success Rate (%)', 'Rate (%)', 'subtask_success_rate_with_baselines.png',
-                          df_baseline=df_baseline, metric_key='subtask_success_rate')
+                          df_baseline=df_baseline_scaled, metric_key='subtask_success_rate')
 
             #
             # (D) 卸载决策分布 (%)

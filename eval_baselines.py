@@ -53,6 +53,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     # 统计容器
     episode_rewards = []
     vehicle_success_rates = []
+    task_success_rates = []
     subtask_success_rates = []
     avg_completion_times = []
     decision_stats = {'local': 0, 'rsu': 0, 'v2v': 0}
@@ -87,7 +88,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
                 actions = policy.select_action(obs_list)
             
             # 环境步进
-            obs_list, rewards, done, info = env.step(actions)
+            obs_list, rewards, terminated, truncated, info = env.step(actions)
+            done = terminated or truncated
             
             # 统计
             ep_reward += sum(rewards) / len(rewards)
@@ -117,7 +119,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         
         # 成功率统计
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
-        vehicle_success_rates.append(success_count / Cfg.NUM_VEHICLES * 100)
+        vehicle_success_rates.append(success_count / max(len(env.vehicles), 1))
+        task_success_rates.append(success_count / max(len(env.vehicles), 1))
         
         total_subtasks = 0
         completed_subtasks = 0
@@ -135,7 +138,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
                     completion_times.append(ct_max)
         
         subtask_success_rates.append(
-            completed_subtasks / total_subtasks * 100 if total_subtasks > 0 else 0
+            completed_subtasks / total_subtasks if total_subtasks > 0 else 0.0
         )
         
         if completion_times:
@@ -164,6 +167,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         'std_reward': np.std(episode_rewards),
         'avg_vehicle_success_rate': np.mean(vehicle_success_rates),
         'std_vehicle_success_rate': np.std(vehicle_success_rates),
+        'avg_task_success_rate': np.mean(task_success_rates),
+        'std_task_success_rate': np.std(task_success_rates),
         'avg_subtask_success_rate': np.mean(subtask_success_rates),
         'std_subtask_success_rate': np.std(subtask_success_rates),
         'avg_completion_time': np.mean(avg_completion_times) if avg_completion_times else 0,
@@ -176,8 +181,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     # 打印结果
     print(f"\n结果摘要:")
     print(f"  平均奖励: {results['avg_reward']:.2f} ± {results['std_reward']:.2f}")
-    print(f"  车辆成功率: {results['avg_vehicle_success_rate']:.1f}% ± {results['std_vehicle_success_rate']:.1f}%")
-    print(f"  子任务成功率: {results['avg_subtask_success_rate']:.1f}% ± {results['std_subtask_success_rate']:.1f}%")
+    print(f"  车辆成功率: {results['avg_vehicle_success_rate']*100:.1f}% ± {results['std_vehicle_success_rate']*100:.1f}%")
+    print(f"  子任务成功率: {results['avg_subtask_success_rate']*100:.1f}% ± {results['std_subtask_success_rate']*100:.1f}%")
     print(f"  平均完成时间: {results['avg_completion_time']:.2f}s ± {results['std_completion_time']:.2f}s")
     print(f"  决策分布: Local={decision_distribution['local']:.1f}%, "
           f"RSU={decision_distribution['rsu']:.1f}%, V2V={decision_distribution['v2v']:.1f}%")
@@ -257,11 +262,10 @@ def main():
     for result in all_results:
         print(f"{result['policy_name']:<20} "
               f"{result['avg_reward']:<12.2f} "
-              f"{result['avg_vehicle_success_rate']:<12.1f} "
-              f"{result['avg_subtask_success_rate']:<12.1f} "
+              f"{result['avg_vehicle_success_rate']*100:<12.1f} "
+              f"{result['avg_subtask_success_rate']*100:<12.1f} "
               f"{result['avg_completion_time']:<12.2f}")
 
 
 if __name__ == "__main__":
     main()
-

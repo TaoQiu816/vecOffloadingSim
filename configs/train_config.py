@@ -63,8 +63,8 @@ class TrainConfig:
     
     # Logit Bias (用于解决动作空间不平衡问题)
     USE_LOGIT_BIAS = True  # 是否启用Logit Bias
-    LOGIT_BIAS_RSU = 2.0   # RSU的Logit偏置 (Index 0)
-    LOGIT_BIAS_LOCAL = 2.0  # Local的Logit偏置 (Index 1)
+    LOGIT_BIAS_RSU = 8.0   # RSU的Logit偏置（从2.0大幅提升到8.0，对抗V2V数量优势）
+    LOGIT_BIAS_LOCAL = 8.0  # Local的Logit偏置（从2.0大幅提升到8.0，强制探索平衡）
 
     # =========================
     # 4. 训练流程参数 (Training Loop)

@@ -13,8 +13,8 @@
 
 注意：
 - 这是预测性计算，不修改实际的FAT状态
-- 依赖数据传输使用最大传输功率（P_max）计算速率
-- 子任务输入数据上传使用Agent选择的传输功率（在环境层处理）
+- 依赖数据传输使用当前车辆的发射功率估计速率
+- 子任务输入数据上传使用车辆当前发射功率估计
 """
 
 import numpy as np
@@ -63,7 +63,14 @@ def get_topological_order(adj_matrix):
     return topo_order
 
 
-def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles_list, current_time):
+def _get_vehicle_by_id(vehicles_list, veh_id):
+    for veh in vehicles_list:
+        if veh.id == veh_id:
+            return veh
+    return None
+
+
+def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles_list, current_time, v2i_user_count=None):
     """
     计算DAG任务的EST（Earliest Start Time）和CT（Completion Time）
     
@@ -76,7 +83,7 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
     
     关键设计：
     - 这是预测性计算，只读取FAT值，不修改实际FAT状态
-    - 依赖数据传输使用最大传输功率（P_max）简化计算
+    - 依赖数据传输使用当前车辆的发射功率估计
     - 子任务输入数据上传的上传完成时间考虑上传信道FAT
     
     Args:
@@ -88,6 +95,7 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         rsus: RSU列表
         vehicles_list: 车辆列表
         current_time: 当前仿真时间
+        v2i_user_count: 估算V2I用户数（保持与环境口径一致）
     
     Returns:
         tuple: (EST数组, CT数组, CFT)
@@ -139,8 +147,8 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                 processor_fat = rsu.get_min_processor_fat()
         elif isinstance(loc, int):
             # 其他车辆执行：使用目标车辆处理器的FAT
-            if 0 <= loc < len(vehicles_list):
-                target_veh = vehicles_list[loc]
+            target_veh = _get_vehicle_by_id(vehicles_list, loc)
+            if target_veh is not None:
                 processor_fat = target_veh.fat_processor
         
         # ============================================================
@@ -159,13 +167,16 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                 rsu_id = loc[1]
                 if 0 <= rsu_id < len(rsus):
                     rsu_pos = rsus[rsu_id].position
-                    upload_rate = channel_model.compute_one_rate(vehicle, rsu_pos, 'V2I', current_time)
+                    upload_rate = channel_model.compute_one_rate(
+                        vehicle, rsu_pos, 'V2I', current_time,
+                        v2i_user_count=v2i_user_count
+                    )
                 else:
                     upload_rate = 1e6  # 默认速率（错误情况）
             elif isinstance(loc, int):
                 # V2V上传
-                if 0 <= loc < len(vehicles_list):
-                    target_veh = vehicles_list[loc]
+                target_veh = _get_vehicle_by_id(vehicles_list, loc)
+                if target_veh is not None:
                     upload_rate = channel_model.compute_one_rate(vehicle, target_veh.pos, 'V2V', current_time)
                 else:
                     upload_rate = 1e6  # 默认速率（错误情况）
@@ -219,8 +230,7 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                     same_location = (pred_loc == curr_loc)  # 同一车辆
                 
                 if not same_location:
-                    # 需要传输，使用最大传输功率计算速率（依赖数据传输使用P_max）
-                    # 这是简化处理：依赖数据传输默认使用最大功率
+                    # 需要传输，使用当前发射功率估计速率
                     
                     # 确定接收方位置
                     if curr_loc == 'Local':
@@ -234,9 +244,9 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                         else:
                             rx_pos = Cfg.RSU_POS
                             rx_vehicle = None
-                    elif isinstance(curr_loc, int) and 0 <= curr_loc < len(vehicles_list):
-                        rx_vehicle = vehicles_list[curr_loc]
-                        rx_pos = rx_vehicle.pos
+                    elif isinstance(curr_loc, int):
+                        rx_vehicle = _get_vehicle_by_id(vehicles_list, curr_loc)
+                        rx_pos = rx_vehicle.pos if rx_vehicle is not None else vehicle.pos
                     else:
                         rx_pos = vehicle.pos
                         rx_vehicle = vehicle
@@ -254,9 +264,11 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                         # 实际应该是V2I链路
                         tx_vehicle = vehicle
                         link_type = 'V2I'
-                    elif isinstance(pred_loc, int) and 0 <= pred_loc < len(vehicles_list):
+                    elif isinstance(pred_loc, int):
                         # 前驱在其他车辆
-                        tx_vehicle = vehicles_list[pred_loc]
+                        tx_vehicle = _get_vehicle_by_id(vehicles_list, pred_loc)
+                        if tx_vehicle is None:
+                            tx_vehicle = vehicle
                         if isinstance(curr_loc, tuple) and curr_loc[0] == 'RSU':
                             link_type = 'V2I'
                         else:
@@ -265,13 +277,13 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                         tx_vehicle = vehicle
                         link_type = 'V2V'
                     
-                    # 使用最大传输功率计算速率
-                    max_power_dbm = Cfg.TX_POWER_MAX_DBM
-                    original_power = tx_vehicle.tx_power_dbm
-                    tx_vehicle.tx_power_dbm = max_power_dbm  # 临时设置为最大功率
-                    
-                    transfer_rate = channel_model.compute_one_rate(tx_vehicle, rx_pos, link_type, current_time)
-                    tx_vehicle.tx_power_dbm = original_power  # 恢复原始功率
+                    if link_type == 'V2I':
+                        transfer_rate = channel_model.compute_one_rate(
+                            tx_vehicle, rx_pos, link_type, current_time,
+                            v2i_user_count=v2i_user_count
+                        )
+                    else:
+                        transfer_rate = channel_model.compute_one_rate(tx_vehicle, rx_pos, link_type, current_time)
                     
                     transfer_rate = max(transfer_rate, 1e-6)  # 避免除零
                     transfer_time = transfer_data / transfer_rate
@@ -299,8 +311,9 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
             else:
                 cpu_freq = Cfg.F_RSU  # 默认RSU频率
         elif isinstance(loc, int):
-            if 0 <= loc < len(vehicles_list):
-                cpu_freq = vehicles_list[loc].cpu_freq
+            target_veh = _get_vehicle_by_id(vehicles_list, loc)
+            if target_veh is not None:
+                cpu_freq = target_veh.cpu_freq
             else:
                 cpu_freq = vehicle.cpu_freq  # 错误情况，使用车辆频率
         else:
@@ -349,7 +362,7 @@ def calculate_t_local(vehicle, dag, channel_model):
     - 假设所有子任务都在本地车辆上执行
     - 考虑DAG依赖关系
     - 单处理器串行执行（任务必须等待前一个任务完成）
-    - 依赖数据传输使用本地传输速率（简化处理）
+    - 依赖数据传输使用本地传输速率估计
     
     用途：
     - 用于全局奖励计算：R_global = λ₁ * tanh(t_local / t - 1) + ...
@@ -365,7 +378,7 @@ def calculate_t_local(vehicle, dag, channel_model):
     
     Note:
         - 这是虚拟计算，不修改车辆状态
-        - 本地传输速率使用最大功率计算（简化处理）
+        - 本地传输速率使用当前发射功率估计
     """
     n = dag.num_subtasks
     local_fat = 0.0  # 本地处理器FAT（初始为0）
@@ -390,14 +403,8 @@ def calculate_t_local(vehicle, dag, channel_model):
             # 依赖数据传输时间（本地传输，但仍有开销）
             transfer_data = dag.data_matrix[pred_id, node_id]
             if transfer_data > 1e-9:
-                # 本地传输：使用最大功率计算速率（简化处理）
-                max_power_dbm = Cfg.TX_POWER_MAX_DBM
-                original_power = vehicle.tx_power_dbm
-                vehicle.tx_power_dbm = max_power_dbm  # 临时设置为最大功率
-                
                 # 本地传输使用V2V模型（车辆内部传输）
                 transfer_rate = channel_model.compute_one_rate(vehicle, vehicle.pos, 'V2V', 0.0)
-                vehicle.tx_power_dbm = original_power  # 恢复原始功率
                 
                 transfer_rate = max(transfer_rate, 1e-6)  # 避免除零
                 transfer_time = transfer_data / transfer_rate

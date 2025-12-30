@@ -2,7 +2,7 @@
 资源节点特征构建模块
 
 功能：
-- 构建统一的9维资源节点特征向量
+- 构建统一的资源节点特征向量
 - 支持Local、RSU、Neighbor三种资源类型
 - 用于Cross-Attention的Key/Value输入
 """
@@ -18,8 +18,8 @@ class ResourceFeatureBuilder:
     """
     资源节点特征构建器
     
-    输出统一的9维特征向量：
-    [CPU_Norm, Queue_Norm, Dist_Norm, Rate_Norm, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type]
+    输出统一的特征向量：
+    [CPU_Norm, Queue_Norm, Dist_Norm, Rate_Norm, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type, Slack_Norm, Contact_Norm]
     """
     
     def __init__(self):
@@ -56,7 +56,9 @@ class ResourceFeatureBuilder:
             0.0,  # 相对位置Y为0
             vel_x * self._inv_max_vel,
             vel_y * self._inv_max_vel,
-            1.0   # Node_Type = 1 (Local)
+            1.0,  # Node_Type = 1 (Local)
+            0.0,  # Slack_Norm (占位)
+            0.0   # Contact_Norm (占位)
         ], dtype=np.float32)
     
     def build_rsu_feature(self,
@@ -88,7 +90,9 @@ class ResourceFeatureBuilder:
             rel_y,  # 已归一化
             0.0,    # RSU速度为0
             0.0,    # RSU速度为0
-            2.0     # Node_Type = 2 (RSU)
+            2.0,    # Node_Type = 2 (RSU)
+            0.0,    # Slack_Norm (占位)
+            0.0     # Contact_Norm (占位)
         ], dtype=np.float32)
     
     def build_neighbor_feature(self,
@@ -123,7 +127,9 @@ class ResourceFeatureBuilder:
             rel_y,  # 已归一化
             vel_x * self._inv_max_vel,
             vel_y * self._inv_max_vel,
-            3.0     # Node_Type = 3 (Neighbor)
+            3.0,    # Node_Type = 3 (Neighbor)
+            0.0,    # Slack_Norm (占位)
+            0.0     # Contact_Norm (占位)
         ], dtype=np.float32)
     
     def build_batch_resource_features(self,
@@ -135,15 +141,18 @@ class ResourceFeatureBuilder:
             obs_list: 环境返回的观测列表
         
         Returns:
-            Tensor [Batch, 2+MAX_NEIGHBORS, 9]
+            Tensor [Batch, 2+MAX_NEIGHBORS, RESOURCE_RAW_DIM]
         """
         batch_size = len(obs_list)
-        max_neighbors = Cfg.NUM_VEHICLES
-        max_targets = 2 + max_neighbors
+        max_neighbors = Cfg.MAX_NEIGHBORS
+        max_targets = Cfg.MAX_TARGETS
         
-        resource_features = np.zeros((batch_size, max_targets, 9), dtype=np.float32)
+        resource_features = np.zeros((batch_size, max_targets, Cfg.RESOURCE_RAW_DIM), dtype=np.float32)
         
         for b, obs in enumerate(obs_list):
+            if 'resource_raw' in obs:
+                resource_features[b] = obs['resource_raw']
+                continue
             # 从观测中提取特征
             self_info = obs['self_info']
             rsu_info = obs['rsu_info']
@@ -267,7 +276,7 @@ class ResourceFeatureEncoder(nn.Module):
         self.d_model = d_model
         
         # 物理特征投影
-        self.feature_proj = nn.Linear(9, d_model)
+        self.feature_proj = nn.Linear(Cfg.RESOURCE_RAW_DIM, d_model)
         
         # ID编码器
         self.id_encoder = ResourceIDEncoder(max_vehicle_id, d_model, id_dropout)
@@ -280,7 +289,7 @@ class ResourceFeatureEncoder(nn.Module):
                 resource_ids: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            resource_features: [Batch, N_res, 9], 原始物理特征
+            resource_features: [Batch, N_res, RESOURCE_RAW_DIM], 原始物理特征
             resource_ids: [Batch, N_res], Global ID列表
         
         Returns:
@@ -299,4 +308,3 @@ class ResourceFeatureEncoder(nn.Module):
         h_res = self.layer_norm(h_res)
         
         return h_res
-

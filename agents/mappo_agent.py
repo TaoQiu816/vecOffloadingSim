@@ -94,6 +94,7 @@ class MAPPOAgent:
                 data_matrix=inputs['data_matrix'],
                 delta=inputs['delta'],
                 resource_ids=inputs['resource_ids'],
+                resource_raw=inputs['resource_raw'],
                 subtask_index=inputs['subtask_index'],
                 action_mask=inputs['action_mask'],
                 task_mask=inputs['task_mask']
@@ -132,6 +133,7 @@ class MAPPOAgent:
             data_matrix=inputs['data_matrix'],
             delta=inputs['delta'],
             resource_ids=inputs['resource_ids'],
+            resource_raw=inputs['resource_raw'],
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
             task_mask=inputs['task_mask']

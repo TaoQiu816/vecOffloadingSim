@@ -21,7 +21,7 @@ class LocationEncoder(nn.Module):
     - 0: Unscheduled (未调度)
     - 1: Local (本车)
     - 2: RSU
-    - 3 ~ 2+NUM_VEHICLES: Neighbor Vehicles
+    - 3 ~ 2+MAX_NEIGHBORS: Neighbor Vehicles
     """
     
     def __init__(self, d_model: int = 128):
@@ -265,4 +265,3 @@ class EdgeFeatureEncoder(nn.Module):
         edge_bias = edge_bias.permute(0, 3, 1, 2)
         
         return edge_bias
-

@@ -94,6 +94,7 @@ class OffloadingPolicyNetwork(nn.Module):
         action_mask_list = []
         subtask_index_list = []
         resource_ids_list = []
+        resource_raw_list = []
         
         # DAG拓扑特征（环境已提供）
         status_list = []
@@ -110,6 +111,7 @@ class OffloadingPolicyNetwork(nn.Module):
             action_mask_list.append(obs['action_mask'])
             subtask_index_list.append(obs['subtask_index'])
             resource_ids_list.append(obs['resource_ids'])
+            resource_raw_list.append(obs['resource_raw'])
             
             # 从环境提供的字段中获取
             status_list.append(obs['status'])
@@ -127,6 +129,7 @@ class OffloadingPolicyNetwork(nn.Module):
             'action_mask': torch.from_numpy(np.stack(action_mask_list)).bool().to(device),
             'subtask_index': torch.from_numpy(np.array(subtask_index_list, dtype=np.int64)).long().to(device),
             'resource_ids': torch.from_numpy(np.stack(resource_ids_list)).long().to(device),
+            'resource_raw': torch.from_numpy(np.stack(resource_raw_list)).float().to(device),
             'status': torch.from_numpy(np.stack(status_list)).long().to(device),
             'location': torch.from_numpy(np.stack(location_list)).long().to(device),
             'L_fwd': torch.from_numpy(np.stack(L_fwd_list)).long().to(device),
@@ -147,6 +150,7 @@ class OffloadingPolicyNetwork(nn.Module):
                 data_matrix: torch.Tensor,
                 delta: torch.Tensor,
                 resource_ids: torch.Tensor,
+                resource_raw: torch.Tensor,
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
                 task_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -163,6 +167,7 @@ class OffloadingPolicyNetwork(nn.Module):
             data_matrix: [Batch, MAX_NODES, MAX_NODES], 边数据量
             delta: [Batch, MAX_NODES, MAX_NODES], 最短路径距离
             resource_ids: [Batch, N_res], 资源ID列表
+            resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 资源原始特征
             subtask_index: [Batch], 当前选中任务索引
             action_mask: [Batch, N_res], 动作掩码（True=可选）
             task_mask: [Batch, MAX_NODES], 有效节点mask
@@ -194,17 +199,13 @@ class OffloadingPolicyNetwork(nn.Module):
             key_padding_mask=key_padding_mask
         )
         
-        # 4. 构建资源raw特征（用于物理偏置计算）
-        # 这里需要从obs中构建，暂时用零占位
-        batch_size = node_x.shape[0]
-        n_res = resource_ids.shape[1]
-        resource_raw = torch.zeros(batch_size, n_res, 9, device=node_x.device)
-        
-        # 5. 资源特征编码（物理特征 + ID嵌入）
+        # 4. 资源特征编码（物理特征 + ID嵌入）
         resource_encoded = self.resource_encoder(resource_raw, resource_ids)
         
-        # 6. 生成资源padding mask（所有资源ID=0的位置）
+        # 6. 生成资源padding mask（padding或不可选动作）
         resource_padding_mask = (resource_ids == 0)
+        if action_mask is not None:
+            resource_padding_mask = resource_padding_mask | (~action_mask)
         
         # 7. Actor-Critic输出
         target_logits, alpha, beta, value = self.actor_critic(
@@ -251,6 +252,7 @@ class OffloadingPolicyNetwork(nn.Module):
             data_matrix=inputs['data_matrix'],
             delta=inputs['delta'],
             resource_ids=inputs['resource_ids'],
+            resource_raw=inputs['resource_raw'],
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
             task_mask=inputs['task_mask']
@@ -354,4 +356,3 @@ class OffloadingPolicyNetwork(nn.Module):
         entropy = entropy_target + entropy_power
         
         return log_probs, entropy, values
-

@@ -59,42 +59,20 @@ def process_env_obs(obs_list, device):
         # 1. Task Mask: 哪些子任务是 Ready 的
         dag.mask = torch.BoolTensor(obs['task_mask'])
 
-        # 2. Target Mask: 哪些目标是物理可达的
-        # Env Mask: [Self, RSU, Nbr1, Nbr2...] (动态顺序)
-        # Policy Mask: [RSU, Self, Other_ID_0, Other_ID_1...] (固定顺序)
-        # 长度: 1(RSU) + N(Vehicles)
+        # 2. Target Mask: 使用环境的标准顺序
+        # Canonical Order: [Local, RSU, V2V_0, V2V_1, ...]
+        policy_target_mask = torch.as_tensor(obs['target_mask'], dtype=torch.bool)
+        if policy_target_mask.numel() != Cfg.MAX_TARGETS:
+            raise ValueError(f"target_mask length mismatch: {policy_target_mask.numel()} != {Cfg.MAX_TARGETS}")
 
-        policy_target_mask = torch.zeros(1 + num_vehicles, dtype=torch.bool)
-
-        # (1) RSU (Policy Index 0) <- Env Index 1
-        policy_target_mask[0] = bool(obs['target_mask'][1])
-
-        # (2) Self (Policy Index 1) <- Env Index 0
-        policy_target_mask[1] = bool(obs['target_mask'][0])
-
-        # (3) Others (Policy Index 2..N+1)
-        # 解析 Env Neighbors 列表，找到对应的 ID
-        nbr_dict = {}  # {real_id: is_reachable}
+        # 解析 Env Neighbors 列表，构建邻居字典（用于拓扑边）
+        nbr_dict = {}
         for i, nbr in enumerate(obs['neighbors']):
             nid = int(nbr[0])
-            # Env mask 中，邻居从 index 2 开始
             nbr_dict[nid] = bool(obs['target_mask'][i + 2])
-
-        # 遍历所有其他车辆 ID，填入 Mask
-        current_mask_idx = 2
-        # 注意：Action Decoder 的逻辑是 "Self First"，然后剩下的按 ID 排序
-        # 这里的顺序必须与下方构建 local_veh_x 的顺序一致
 
         # 构建一个不包含自己的 ID 列表
         other_ids = [i for i in range(num_vehicles) if i != v_id]
-
-        for other_id in other_ids:
-            # 如果这个 ID 在邻居列表里，且 Env 说可达，则 True
-            if other_id in nbr_dict and nbr_dict[other_id]:
-                policy_target_mask[current_mask_idx] = True
-            else:
-                policy_target_mask[current_mask_idx] = False
-            current_mask_idx += 1
 
         # 扩展 Mask 维度: [Num_Subtasks, Num_Targets]
         num_sub = x.size(0)
@@ -210,12 +188,12 @@ def process_env_obs(obs_list, device):
         global_topo['rsu', 'i2v', 'vehicle'].edge_index = empty_idx
         global_topo['rsu', 'i2v', 'vehicle'].edge_attr = empty_attr
 
-        # =========================================================================
-        # Part 3: 批处理与设备转移
-        # =========================================================================
-        dag_batch = Batch.from_data_list(dag_data_list).to(device)
-        local_topo_batch = Batch.from_data_list(local_topo_list).to(device)
-        global_topo = global_topo.to(device)
+    # =========================================================================
+    # Part 3: 批处理与设备转移
+    # =========================================================================
+    dag_batch = Batch.from_data_list(dag_data_list).to(device)
+    local_topo_batch = Batch.from_data_list(local_topo_list).to(device)
+    global_topo = global_topo.to(device)
 
-        # 返回3个值，去除多余的 None
-        return dag_batch, local_topo_batch, global_topo
+    # 返回3个值，去除多余的 None
+    return dag_batch, local_topo_batch, global_topo

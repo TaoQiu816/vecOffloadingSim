@@ -30,9 +30,13 @@ class SystemConfig:
     NUM_LANES = 2  # 车道数量 N_lane - 双车道，减少换道干扰
     LANE_WIDTH = 3.5  # 车道宽度 W_lane (m) - 标准车道宽度
     
-    # 车辆参数
-    NUM_VEHICLES = 20  # 车辆总数 (初始车辆数，后续动态生成) - 密度50m/辆，RSU覆盖区6-8辆
+    # 车辆参数（降低密度以减少V2V目标数量，避免动作空间失衡）
+    NUM_VEHICLES = 12  # 车辆总数（从20降到12，减少V2V目标约40%）
     MAX_VEHICLE_ID = 1000  # 最大车辆ID（用于Embedding表大小，需覆盖动态生成的所有车辆）
+    V2V_TOP_K = 11  # 每个智能体最多考虑的V2V候选数量
+    MAX_NEIGHBORS = max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))
+    MAX_TARGETS = 2 + MAX_NEIGHBORS
+    RESOURCE_RAW_DIM = 11  # 资源原始特征维度（用于ResourceFeatureEncoder）
     
     # =========================================================================
     # RSU部署参数 (RSU Deployment)
@@ -208,20 +212,18 @@ class SystemConfig:
     Deadline计算公式: T_deadline = γ × (W_k / f_local)
     - W_k: 任务总计算量 (Cycles)
     - f_local: 车辆本地CPU频率 (Hz)
-    - γ (紧缩因子): 核心参数，确保本地计算无法满足Deadline
+    - γ (松紧因子): 控制Deadline严格程度，γ<1趋向强制卸载，γ>1放宽Deadline
 
     为什么排除本地排队？
     1. 业务属性: 防碰撞等时延敏感任务只关心响应速度，不关心CPU忙闲
     2. 防止作弊: 如果Deadline包含排队，智能体可通过堆积本地任务延长Deadline
-    3. 卸载必要性: γ < 1.0 确保本地执行时间必然大于Deadline，强迫卸载
+    3. 卸载必要性: 通过设置γ<1可显式强迫卸载，设置γ>1用于放宽
     """
     DEADLINE_TIGHTENING_FACTOR = 0.85  # γ: 紧缩因子 (强迫卸载)
     DEADLINE_TIGHTENING_MIN = 5.0  # γ最小值（大幅放宽以确保V2V+排队+依赖链有充足时间）
     DEADLINE_TIGHTENING_MAX = 8.0  # γ最大值（暴力打通物理层，必须看到Veh% > 0）
 
-    # 验证: γ < 1.0 确保本地计算100%失败
-    # 当γ=0.75，本地耗时1.0s的任务，Deadline为0.75s
-    # 无论本地CPU频率多高、队列多空，都无法满足Deadline
+    # 说明: γ<1时，本地计算更难满足Deadline；γ>1时Deadline更宽松
 
     # =========================================================================
     # 6. 强化学习归一化常量 (RL Normalization)
@@ -250,6 +252,7 @@ class SystemConfig:
     DIST_PENALTY_WEIGHT = 2.0    # λ_d: 距离预警权重，最大产生-2.0惩罚
     DIST_SAFE_FACTOR = 0.8       # 安全距离因子，通信半径的80%为安全区
     DIST_SENSITIVITY = 2.0       # κ: 距离敏感度，平方增长
+    DIST_PENALTY_MODE = "on"     # {"on","off","risk"} 默认使用距离预警
     
     # D. 软约束惩罚参数 - 超时惩罚 (Soft Constraint - Timeout)
     TIMEOUT_PENALTY_WEIGHT = 1.0  # η: 超时惩罚上限（大幅降低，避免step惩罚淹没terminal奖励）
@@ -263,13 +266,39 @@ class SystemConfig:
     # F. 成功奖励参数 (Success Bonus) - 稀疏奖励强化
     SUCCESS_BONUS = 20.0  # 任务成功完成时的固定奖励（增大以提高V2V探索动力）
     SUBTASK_SUCCESS_BONUS = 2.0  # 单个V2V/RSU子任务成功完成时的奖励（计件工资）
+    BONUS_MODE = "both"  # {"none","subtask","success","both"} 默认保持当前双重奖励
 
-    # G. 奖励范围控制
+    # G. 时延/能耗代价权重（用于负增量成本奖励）
+    DELAY_WEIGHT = 1.0
+    ENERGY_WEIGHT = 0.5
+
+    # H. Reward 模式
+    REWARD_MODE = "incremental_cost"  # {"incremental_cost","delta_cft"}
+    ENERGY_IN_DELTA_CFT = False  # delta_cft模式是否额外加入能耗项
+    DELTA_CFT_REF_MODE = "prev"  # {"prev","const"} 归一化参考
+    DELTA_CFT_REF_CONST = 1.0  # DELTA_CFT_REF_MODE="const"时使用
+    DELTA_CFT_REF_EPS = 1e-6  # 避免除零
+
+    # H. 奖励范围控制
     REWARD_MAX = 30.0    # 奖励上限（扩大以容纳SUCCESS_BONUS）
     REWARD_MIN = -15.0   # 奖励下限（扩大以容纳大惩罚）
 
+    # I. 动作/奖励调试开关
+    DEBUG_ASSERT_ILLEGAL_ACTION = False  # True时illegal_action直接断言
+
     # =========================================================================
-    # 8. 辅助方法
+    # 8. 动态归一化与统计
+    # =========================================================================
+    NORM_RATE_MODE = "static"  # {"static","ema_p95"} max_rate归一化策略
+    RATE_EMA_ALPHA = 0.05      # EMA平滑系数
+    RATE_RESERVOIR_SIZE = 256  # 速率P95估计样本大小
+    RATE_MIN_SAMPLES = 32      # P95/EMA最小样本数（冷启动回退静态）
+
+    STATS_RESERVOIR_SIZE = 256  # 统计P95估计样本大小
+    STATS_SEED = 0
+
+    # =========================================================================
+    # 9. 辅助方法
     # =========================================================================
     @staticmethod
     def dbm2watt(dbm):

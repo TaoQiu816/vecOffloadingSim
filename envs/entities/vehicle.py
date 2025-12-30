@@ -48,6 +48,9 @@ class Vehicle:
 
         # [关键修正] 初始化为 'Local'，防止 Env.reset() 计算 CFT 时报错
         self.curr_target = 'Local'
+        self.last_scheduled_subtask = -1
+        self.last_action_step = -1
+        self.last_action_target = 'Local'
 
         # --- 通信状态 ---
         self.tx_power_dbm = Cfg.TX_POWER_MIN_DBM  # 发射功率 (受 RL 动作控制)

@@ -21,7 +21,7 @@ class DAGGenerator:
     
     核心原则：
     - 只负责"生"任务，不负责"做"任务（调度逻辑在环境层）
-    - Deadline计算基于理想本地执行时间，确保本地计算无法满足
+    - Deadline计算基于理想本地执行时间，可通过γ控制紧/松程度
     """
     
     def __init__(self):
@@ -146,11 +146,11 @@ class DAGGenerator:
         公式: T_deadline = γ × (W_total / f_local)
         - W_total: 所有子任务计算量之和 (Cycles)
         - f_local: 本地CPU频率 (Hz)
-        - γ: 截止时间因子（紧缩因子），范围 [gamma_min, gamma_max]
+        - γ: 截止时间因子（松紧因子），范围 [gamma_min, gamma_max]
         
         设计原则:
         - 基于理想本地执行时间（不考虑排队）
-        - γ < 1.0 确保本地执行无法满足Deadline，强迫卸载
+        - γ < 1.0 强制卸载，γ > 1.0 放宽Deadline
         
         Args:
             n: 节点数
