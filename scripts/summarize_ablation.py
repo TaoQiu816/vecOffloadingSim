@@ -102,15 +102,19 @@ def _has_required_fields(line):
 
 
 def _validate_lines(lines):
+    """
+    Legacy-friendly validation:
+    - target_episodes is optional; when missing, skip length check.
+    - required fields on the last line must still hold.
+    """
     target_eps = lines[0].get("target_episodes")
-    if target_eps is None:
-        return False, "missing_target_episodes"
-    try:
-        target_eps = int(target_eps)
-    except (TypeError, ValueError):
-        return False, "invalid_target_episodes"
-    if target_eps > 0 and len(lines) < int(0.8 * target_eps):
-        return False, "too_short"
+    if target_eps is not None:
+        try:
+            target_eps = int(target_eps)
+        except (TypeError, ValueError):
+            return False, "invalid_target_episodes"
+        if target_eps > 0 and len(lines) < int(0.8 * target_eps):
+            return False, "too_short"
     if not _has_required_fields(lines[-1]):
         return False, "missing_fields"
     return True, None
@@ -120,6 +124,7 @@ def load_runs(log_dir, run_id=None):
     runs = []
     excluded = []
     missing_counts = {}
+    legacy_counts = {}
     for path in glob.glob(os.path.join(log_dir, "*.jsonl")):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -137,6 +142,8 @@ def load_runs(log_dir, run_id=None):
         if not valid:
             excluded.append({"path": path, "reason": reason})
             continue
+        if lines[0].get("target_episodes") is None:
+            legacy_counts["missing_target_episodes"] = legacy_counts.get("missing_target_episodes", 0) + 1
         reward_mode = lines[0].get("reward_mode", "unknown")
         bonus_mode = lines[0].get("bonus_mode", "unknown")
         metrics, missing = aggregate_run(lines)
@@ -151,8 +158,9 @@ def load_runs(log_dir, run_id=None):
             "mtime": os.path.getmtime(path),
             "lines": lines,
             "metrics": metrics,
+            "legacy": "missing_target_episodes" if lines[0].get("target_episodes") is None else None,
         })
-    return runs, excluded, missing_counts
+    return runs, excluded, missing_counts, legacy_counts
 
 
 def aggregate_run(lines):
@@ -213,7 +221,7 @@ def write_csv(summary, out_path):
             f.write(",".join(row) + "\n")
 
 
-def write_md(summary, out_path, excluded, missing_counts):
+def write_md(summary, out_path, excluded, missing_counts, legacy_counts=None):
     cols = [
         "reward_mode",
         "bonus_mode",
@@ -281,16 +289,23 @@ def write_md(summary, out_path, excluded, missing_counts):
                 if warn:
                     f.write(f"- {reward_mode}/{bonus_mode}: WARN " + ", ".join(warn) + "\n")
 
-    if excluded:
-        with open(out_path, "a", encoding="utf-8") as f:
-            f.write("\n**Excluded Files**\n\n")
+    with open(out_path, "a", encoding="utf-8") as f:
+        f.write("\n**Excluded Files**\n\n")
+        if excluded:
             for item in excluded:
                 f.write(f"- {item['path']}: {item['reason']}\n")
-    if missing_counts:
-        with open(out_path, "a", encoding="utf-8") as f:
-            f.write("\n**Missing Fields Summary**\n\n")
+        else:
+            f.write("- None\n")
+        f.write("\n**Missing Fields Summary**\n\n")
+        if missing_counts:
             for k, v in sorted(missing_counts.items()):
                 f.write(f"- {k}: missing in {v} file(s)\n")
+        else:
+            f.write("- None\n")
+        if legacy_counts:
+            f.write("\n**Legacy Compatibility**\n\n")
+            for k, v in sorted(legacy_counts.items()):
+                f.write(f"- {k}: {v} file(s)\n")
 
 
 def plot_summary(summary, out_dir):
@@ -344,16 +359,28 @@ def plot_summary(summary, out_dir):
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
-    runs, excluded, missing_counts = load_runs(args.log_dir, run_id=args.run_id)
+    runs, excluded, missing_counts, legacy_counts = load_runs(args.log_dir, run_id=args.run_id)
+    files_found = len(glob.glob(os.path.join(args.log_dir, "*.jsonl")))
     if not runs:
-        print("[Error] No jsonl logs found.")
+        print(f"No valid runs after validation. files_found={files_found} excluded={len(excluded)}")
+        if excluded:
+            reasons = {}
+            for item in excluded:
+                reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+            top_reasons = ", ".join([f"{k}:{v}" for k, v in reasons.items()])
+            print(f"Top reasons: {top_reasons}")
+        summary = {}
+        csv_path = os.path.join(args.out_dir, "ablation_summary.csv")
+        md_path = os.path.join(args.out_dir, "ablation_summary.md")
+        write_csv(summary, csv_path)
+        write_md(summary, md_path, excluded, missing_counts, legacy_counts)
         return
     runs = _dedup_latest(runs)
     summary = summarize_groups(runs)
     csv_path = os.path.join(args.out_dir, "ablation_summary.csv")
     md_path = os.path.join(args.out_dir, "ablation_summary.md")
     write_csv(summary, csv_path)
-    write_md(summary, md_path, excluded, missing_counts)
+    write_md(summary, md_path, excluded, missing_counts, legacy_counts)
     if args.plot:
         plot_summary(summary, args.out_dir)
     print(f"[OK] Wrote {csv_path}")

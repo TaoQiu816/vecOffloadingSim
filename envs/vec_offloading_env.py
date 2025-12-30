@@ -431,7 +431,7 @@ class VecOffloadingEnv(gym.Env):
             "dist_penalty_mode": Cfg.DIST_PENALTY_MODE,
             "run_id": self._run_id,
             "seed": Cfg.SEED,
-            "target_episodes": int(self._target_episodes) if self._target_episodes else None,
+            "target_episodes": int(os.environ.get("MAX_EPISODES", 0)) if os.environ.get("MAX_EPISODES") else int(self._target_episodes) if self._target_episodes else None,
             "illegal_action_rate": illegal_count / reward_count,
             "hard_trigger_rate": hard_count / reward_count,
             "clip_hit_ratio": (clip_min + clip_max) / reward_count,
