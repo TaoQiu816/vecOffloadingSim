@@ -6,6 +6,7 @@ import torch
 import os
 import sys
 import random
+import re
 from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -64,6 +65,41 @@ def _format_table_row(values, columns):
             cell = str(val)
         parts.append(cell.rjust(width))
     return " ".join(parts)
+
+
+def _collect_obs_stats(obs_list):
+    if not obs_list:
+        return {}
+    def _stack(key):
+        arrs = [obs.get(key) for obs in obs_list if obs.get(key) is not None]
+        if not arrs:
+            return None
+        return np.stack(arrs)
+
+    stats = {}
+    node_x = _stack("node_x")
+    if node_x is not None:
+        stats["obs/node_x_mean"] = float(np.mean(node_x))
+        stats["obs/node_x_std"] = float(np.std(node_x))
+    self_info = _stack("self_info")
+    if self_info is not None:
+        stats["obs/self_info_mean"] = float(np.mean(self_info))
+        stats["obs/self_info_std"] = float(np.std(self_info))
+    neighbors = _stack("neighbors")
+    if neighbors is not None:
+        stats["obs/neighbors_mean"] = float(np.mean(neighbors))
+        stats["obs/neighbors_std"] = float(np.std(neighbors))
+    resource_raw = _stack("resource_raw")
+    if resource_raw is not None:
+        stats["obs/resource_raw_mean"] = float(np.mean(resource_raw))
+        stats["obs/resource_raw_std"] = float(np.std(resource_raw))
+    action_mask = _stack("action_mask")
+    if action_mask is not None:
+        stats["obs/action_mask_true_frac"] = float(np.mean(action_mask))
+    target_mask = _stack("target_mask")
+    if target_mask is not None:
+        stats["obs/target_mask_true_frac"] = float(np.mean(target_mask))
+    return stats
 
 
 def _inject_obs_stamp(obs_list, actions):
@@ -293,8 +329,25 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    run_id = os.environ.get("RUN_ID") or time.strftime("run_%Y%m%d_%H%M%S")
-    run_dir = os.environ.get("RUN_DIR") or os.path.join("runs", run_id)
+    start_ts = time.strftime("%Y%m%d_%H%M%S")
+    def _has_ts(name):
+        return bool(re.search(r"\d{8}_\d{6}$", name))
+    run_dir_env = os.environ.get("RUN_DIR")
+    run_id_env = os.environ.get("RUN_ID")
+    if run_dir_env:
+        run_dir = run_dir_env
+        base = os.path.basename(run_dir.rstrip(os.sep))
+        if not _has_ts(base):
+            run_dir = f"{run_dir_env}_{start_ts}"
+            base = os.path.basename(run_dir)
+        run_id = run_id_env or base
+        if not _has_ts(run_id):
+            run_id = f"{run_id}_{start_ts}"
+    else:
+        run_id = run_id_env or f"run_{start_ts}"
+        if not _has_ts(run_id):
+            run_id = f"{run_id}_{start_ts}"
+        run_dir = os.path.join("runs", run_id)
     run_dir = os.path.abspath(run_dir)
     logs_dir = os.path.join(run_dir, "logs")
     metrics_dir = os.path.join(run_dir, "metrics")
@@ -315,6 +368,11 @@ def main():
     if not reward_jsonl_path:
         reward_jsonl_path = os.path.join(logs_dir, "env_reward.jsonl")
         os.environ["REWARD_JSONL_PATH"] = reward_jsonl_path
+
+    tb_log_obs = os.environ.get("TB_LOG_OBS")
+    log_obs_stats = True
+    if tb_log_obs is not None:
+        log_obs_stats = tb_log_obs.lower() in ("1", "true", "yes")
 
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
@@ -714,6 +772,11 @@ def main():
             "duration": duration
         }
         recorder.log_episode(episode_metrics)
+        if log_obs_stats and recorder.writer is not None:
+            obs_stats = _collect_obs_stats(obs_list)
+            for key, val in obs_stats.items():
+                if isinstance(val, (int, float)) and np.isfinite(val):
+                    recorder.writer.add_scalar(key, val, episode)
 
         # 定期评估baseline策略（与当前训练方法对比）
         if (not disable_baseline_eval) and (episode % TC.EVAL_INTERVAL == 0 or episode == 1):

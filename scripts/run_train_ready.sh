@@ -9,11 +9,20 @@ export REWARD_MODE="${REWARD_MODE:-delta_cft}"
 export BONUS_MODE="${BONUS_MODE:-none}"
 export DEVICE_NAME="${DEVICE_NAME:-cuda}"
 export SEED="${SEED:-7}"
+START_TS="$(date +%Y%m%d_%H%M%S)"
 export RUN_ID="${RUN_ID:-train_ready_v1_seed7}"
+if [[ ! "${RUN_ID}" =~ [0-9]{8}_[0-9]{6}$ ]]; then
+  RUN_ID="${RUN_ID}_${START_TS}"
+fi
 export RUN_DIR="${RUN_DIR:-runs/${RUN_ID}}"
+if [[ ! "$(basename "${RUN_DIR}")" =~ [0-9]{8}_[0-9]{6}$ ]]; then
+  RUN_DIR="${RUN_DIR}_${START_TS}"
+  RUN_ID="$(basename "${RUN_DIR}")"
+fi
 export EPISODE_JSONL_STDOUT="${EPISODE_JSONL_STDOUT:-0}"
 export LOG_INTERVAL="${LOG_INTERVAL:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export TB_LOG_OBS="${TB_LOG_OBS:-1}"
 
 # Optional overrides
 export MAX_EPISODES="${MAX_EPISODES:-200}"

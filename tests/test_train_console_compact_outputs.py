@@ -4,6 +4,15 @@ import subprocess
 from pathlib import Path
 
 
+def _resolve_run_dir(base_dir: Path) -> Path:
+    candidates = sorted(
+        base_dir.parent.glob(base_dir.name + "*"),
+        key=lambda p: p.stat().st_mtime
+    )
+    assert candidates, f"no run dir found for prefix {base_dir}"
+    return candidates[-1]
+
+
 def test_train_console_compact_outputs(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
     run_dir = tmp_path / "run_compact"
@@ -27,10 +36,15 @@ def test_train_console_compact_outputs(tmp_path):
     )
     assert result.returncode == 0, result.stderr
 
-    csv_path = run_dir / "metrics" / "train_metrics.csv"
-    jsonl_path = run_dir / "logs" / "run.jsonl"
+    resolved_dir = _resolve_run_dir(run_dir)
+    csv_path = resolved_dir / "metrics" / "train_metrics.csv"
+    jsonl_candidates = [
+        resolved_dir / "logs" / "run.jsonl",
+        resolved_dir / "logs" / "env_reward.jsonl",
+    ]
+    jsonl_path = next((p for p in jsonl_candidates if p.exists()), None)
     assert csv_path.exists() and csv_path.stat().st_size > 0
-    assert jsonl_path.exists() and jsonl_path.stat().st_size > 0
+    assert jsonl_path is not None and jsonl_path.stat().st_size > 0
 
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) >= 2

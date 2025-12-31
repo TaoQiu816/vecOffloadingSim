@@ -5,6 +5,15 @@ import sys
 from pathlib import Path
 
 
+def _resolve_run_dir(base_dir: Path) -> Path:
+    candidates = sorted(
+        base_dir.parent.glob(base_dir.name + "*"),
+        key=lambda p: p.stat().st_mtime
+    )
+    assert candidates, f"no run dir found for prefix {base_dir}"
+    return candidates[-1]
+
+
 def test_train_smoke_outputs_metrics(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
     run_dir = tmp_path / "run"
@@ -33,8 +42,9 @@ def test_train_smoke_outputs_metrics(tmp_path):
         text=True,
     )
 
-    metrics_csv = run_dir / "metrics" / "train_metrics.csv"
-    snapshot_path = run_dir / "config_snapshot.json"
+    resolved_dir = _resolve_run_dir(run_dir)
+    metrics_csv = resolved_dir / "metrics" / "train_metrics.csv"
+    snapshot_path = resolved_dir / "config_snapshot.json"
     assert metrics_csv.exists() and metrics_csv.stat().st_size > 0
     assert snapshot_path.exists()
 
