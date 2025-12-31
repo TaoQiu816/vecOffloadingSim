@@ -12,6 +12,8 @@ export SEED="${SEED:-7}"
 export RUN_ID="${RUN_ID:-train_ready_v1_seed7}"
 export RUN_DIR="${RUN_DIR:-runs/${RUN_ID}}"
 export EPISODE_JSONL_STDOUT="${EPISODE_JSONL_STDOUT:-0}"
+export LOG_INTERVAL="${LOG_INTERVAL:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 # Optional overrides
 export MAX_EPISODES="${MAX_EPISODES:-200}"
@@ -29,7 +31,7 @@ echo "[INFO] REWARD_MODE=${REWARD_MODE}"
 echo "[INFO] RUN_DIR=${RUN_DIR}"
 
 echo "[INFO] start training..."
-python train.py | tee "${RUN_DIR}/logs/train.log"
+python -u train.py | tee "${RUN_DIR}/logs/train.log"
 
 echo "[INFO] plotting metrics..."
 python scripts/plot_training_metrics.py --run_dir "${RUN_DIR}"

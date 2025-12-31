@@ -252,6 +252,7 @@ def main():
     env_seed = os.environ.get("SEED")
     env_max_episodes = os.environ.get("MAX_EPISODES")
     env_max_steps = os.environ.get("MAX_STEPS")
+    env_log_interval = os.environ.get("LOG_INTERVAL")
     env_eval_interval = os.environ.get("EVAL_INTERVAL")
     env_save_interval = os.environ.get("SAVE_INTERVAL")
     env_disable_baseline = os.environ.get("DISABLE_BASELINE_EVAL")
@@ -266,6 +267,8 @@ def main():
         TC.MAX_EPISODES = int(env_max_episodes)
     if env_max_steps:
         TC.MAX_STEPS = int(env_max_steps)
+    if env_log_interval:
+        TC.LOG_INTERVAL = int(env_log_interval)
     if env_eval_interval:
         TC.EVAL_INTERVAL = int(env_eval_interval)
     if env_save_interval:
@@ -626,7 +629,7 @@ def main():
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
             if table_row_count % 20 == 0:
-                print(_format_table_header(table_columns))
+                print(_format_table_header(table_columns), flush=True)
             table_row = {
                 "ep": episode,
                 "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
@@ -644,7 +647,7 @@ def main():
                 "delta_cft": delta_cft_mean,
                 "elapsed": duration,
             }
-            print(_format_table_row(table_row, table_columns))
+            print(_format_table_row(table_row, table_columns), flush=True)
             table_row_count += 1
 
         metrics_row = {
