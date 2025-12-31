@@ -15,10 +15,94 @@ from envs.vec_offloading_env import VecOffloadingEnv
 from agents.mappo_agent import MAPPOAgent
 from models.offloading_policy import OffloadingPolicyNetwork
 
-# --- MAPPO ckpt loader (infer arch from checkpoint) ---
-import re
-import torch
-from models.offloading_policy import OffloadingPolicyNetwork
+def _load_mappo_network(ckpt_path: str):
+    """
+    Audit-only loader:
+    - Supports ckpt = {"network_state_dict": ..., "optimizer_state_dict": ...}
+    - Infers num_layers & d_model from keys
+    - Fixes shape mismatch by padding/truncation so load_state_dict won't crash
+    """
+    import re
+    import torch
+    from models.offloading_policy import OffloadingPolicyNetwork
+
+    obj = torch.load(ckpt_path, map_location="cpu")
+    sd = obj.get("network_state_dict", obj) if isinstance(obj, dict) else obj
+    if not isinstance(sd, dict):
+        raise TypeError(f"Unsupported checkpoint format: {type(obj)}")
+
+    # ---- infer num_layers ----
+    layer_ids = []
+    for k in sd.keys():
+        m = re.match(r"transformer\.layers\.(\d+)\.", k)
+        if m:
+            layer_ids.append(int(m.group(1)))
+    num_layers = (max(layer_ids) + 1) if layer_ids else 4
+
+    # ---- infer d_model ----
+    d_model = 128
+    kq = "transformer.layers.0.attention.W_q.weight"
+    if kq in sd and hasattr(sd[kq], "shape") and len(sd[kq].shape) >= 2:
+        # W_q is usually [d_model, d_model] or [d_model, ...]
+        d_model = int(sd[kq].shape[0])
+
+    # num_heads: keep default 8 (audit-only); print it clearly
+    num_heads = 8
+
+    print(f"[MAPPO] inferred d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
+
+    net = OffloadingPolicyNetwork(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
+
+    # ---- build compat state dict (avoid size mismatch crash) ----
+    model_sd = net.state_dict()
+    sd2 = {}
+    mismatches = []
+
+    for k, v_model in model_sd.items():
+        if k not in sd:
+            continue
+        v_ckpt = sd[k]
+        if not isinstance(v_ckpt, torch.Tensor):
+            continue
+        if v_ckpt.shape == v_model.shape:
+            sd2[k] = v_ckpt
+            continue
+
+        # shape mismatch -> pad/truncate into model shape
+        new_t = torch.zeros_like(v_model)
+        if len(v_ckpt.shape) != len(v_model.shape):
+            # different rank: can't safely map; skip
+            mismatches.append((k, tuple(v_ckpt.shape), tuple(v_model.shape), "rank_mismatch_skipped"))
+            continue
+
+        slices = tuple(slice(0, min(a, b)) for a, b in zip(v_ckpt.shape, v_model.shape))
+        new_t[slices] = v_ckpt[slices]
+        sd2[k] = new_t
+        mismatches.append((k, tuple(v_ckpt.shape), tuple(v_model.shape), "padded_or_truncated"))
+
+    compat_mode = len(mismatches) > 0
+    print(f"[MAPPO] compat_mode={compat_mode} (audit-only)")
+    if compat_mode:
+        print(f"[MAPPO] shape mismatches fixed: {len(mismatches)} (showing up to 10)")
+        for row in mismatches[:10]:
+            k, s_ckpt, s_model, how = row
+            print(f"  - {k}: ckpt{s_ckpt} -> model{s_model} [{how}]")
+
+    # Also include any perfectly matching keys not in model_sd loop (rare but safe)
+    for k, v in sd.items():
+        if k in model_sd and k not in sd2 and isinstance(v, torch.Tensor) and v.shape == model_sd[k].shape:
+            sd2[k] = v
+
+    # ---- load ----
+    missing, unexpected = net.load_state_dict(sd2, strict=False)
+    if missing:
+        print("[MAPPO] missing keys (first 20):", missing[:20])
+    if unexpected:
+        print("[MAPPO] unexpected keys (first 20):", unexpected[:20])
+
+    net.eval()
+    return net
+
 
 def infer_arch_from_state_dict(sd: dict):
     # 1) num_layers: from transformer.layers.{i}.
