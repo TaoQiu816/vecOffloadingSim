@@ -576,13 +576,18 @@ class VecOffloadingEnv(gym.Env):
             task_locations[vehicle.curr_subtask] = vehicle.curr_target
         return task_locations
 
-    def _compute_mean_cft_pi0(self, snapshot_time=None, v2i_user_count=None):
+    def _compute_mean_cft_pi0(self, snapshot_time=None, v2i_user_count=None, vehicle_ids=None):
         if snapshot_time is None:
             snapshot_time = self.time
         if v2i_user_count is None:
             v2i_user_count = self._estimate_v2i_users()
         cft_list = []
-        for v in self.vehicles:
+        vehicles = self.vehicles
+        if vehicle_ids is not None:
+            vehicles = [self._get_vehicle_by_id(vid) for vid in vehicle_ids]
+        for v in vehicles:
+            if v is None:
+                continue
             if v.task_dag.is_finished:
                 cft_list.append(snapshot_time)
                 continue
@@ -796,13 +801,20 @@ class VecOffloadingEnv(gym.Env):
         self._rsu_dist_cache.clear()
 
         cft_prev = None
+        cft_prev_abs = None
+        cft_prev_rem = None
         v2i_users_prev = None
+        ids_prev = None
         if Cfg.REWARD_MODE == "delta_cft":
+            ids_prev = [v.id for v in self.vehicles]
             v2i_users_prev = self._estimate_v2i_users()
-            cft_prev = self._compute_mean_cft_pi0(
+            cft_prev_abs = self._compute_mean_cft_pi0(
                 snapshot_time=snapshot_time,
-                v2i_user_count=v2i_users_prev
+                v2i_user_count=v2i_users_prev,
+                vehicle_ids=ids_prev
             )
+            cft_prev_rem = max(cft_prev_abs - snapshot_time, 0.0)
+            cft_prev = cft_prev_rem
 
         step_congestion_cost = 0.0
         active_agents_count = 0
@@ -1228,18 +1240,26 @@ class VecOffloadingEnv(gym.Env):
         delta_cft = 0.0
         if Cfg.REWARD_MODE == "delta_cft":
             v2i_users_curr = self._estimate_v2i_users()
-            cft_curr = self._compute_mean_cft_pi0(
+            cft_curr_abs = self._compute_mean_cft_pi0(
                 snapshot_time=self.time,
-                v2i_user_count=v2i_users_curr
+                v2i_user_count=v2i_users_curr,
+                vehicle_ids=ids_prev
             )
+            cft_curr_rem = max(cft_curr_abs - self.time, 0.0)
             if Cfg.DELTA_CFT_REF_MODE == "prev":
-                t_ref = max(cft_prev if cft_prev is not None else 0.0, Cfg.DELTA_CFT_REF_EPS)
+                t_ref = max(cft_prev_rem if cft_prev_rem is not None else 0.0, Cfg.DELTA_CFT_REF_EPS)
             else:
                 t_ref = max(Cfg.DELTA_CFT_REF_CONST, Cfg.DELTA_CFT_REF_EPS)
-            delta_cft = (cft_prev - cft_curr) / t_ref if cft_prev is not None else 0.0
+            delta_cft = (cft_prev_rem - cft_curr_rem) / t_ref if cft_prev_rem is not None else 0.0
+            # keep legacy keys while adding remaining-time metrics
             self._reward_stats.add_metric("delta_cft", delta_cft)
-            self._reward_stats.add_metric("cft_prev", cft_prev if cft_prev is not None else 0.0)
-            self._reward_stats.add_metric("cft_curr", cft_curr)
+            self._reward_stats.add_metric("cft_prev", cft_prev_rem if cft_prev_rem is not None else 0.0)
+            self._reward_stats.add_metric("cft_curr", cft_curr_rem)
+            self._reward_stats.add_metric("delta_cft_rem", delta_cft)
+            self._reward_stats.add_metric("cft_prev_abs", cft_prev_abs if cft_prev_abs is not None else 0.0)
+            self._reward_stats.add_metric("cft_curr_abs", cft_curr_abs)
+            self._reward_stats.add_metric("cft_prev_rem", cft_prev_rem if cft_prev_rem is not None else 0.0)
+            self._reward_stats.add_metric("cft_curr_rem", cft_curr_rem)
         
         # 计算奖励
         for i, v in enumerate(self.vehicles):

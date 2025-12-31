@@ -66,10 +66,14 @@ def main():
         for ep in range(args.episodes):
             env.reset(seed=args.seed + ep)
             for step_idx in range(args.steps):
-                cft_prev = env._compute_mean_cft_pi0(
-                    snapshot_time=env.time,
-                    v2i_user_count=env._estimate_v2i_users()
+                ids_prev = [v.id for v in env.vehicles]
+                t_prev = env.time
+                cft_prev_abs = env._compute_mean_cft_pi0(
+                    snapshot_time=t_prev,
+                    v2i_user_count=env._estimate_v2i_users(),
+                    vehicle_ids=ids_prev
                 )
+                cft_prev_rem = max(cft_prev_abs - t_prev, 0.0)
                 obs_list = env._get_obs()
                 actions, counts = _sample_actions(obs_list, rng)
                 # AUDIT_ASSERTS: propagate obs_stamp into actions
@@ -80,21 +84,26 @@ def main():
                     if isinstance(obs, dict) and 'obs_stamp' in obs and 'obs_stamp' not in act:
                         act['obs_stamp'] = int(obs['obs_stamp'])
                 _, rewards, terminated, truncated, _ = env.step(actions)
-                cft_curr = env._compute_mean_cft_pi0(
-                    snapshot_time=env.time,
-                    v2i_user_count=env._estimate_v2i_users()
+                t_curr = env.time
+                cft_curr_abs = env._compute_mean_cft_pi0(
+                    snapshot_time=t_curr,
+                    v2i_user_count=env._estimate_v2i_users(),
+                    vehicle_ids=ids_prev
                 )
+                cft_curr_rem = max(cft_curr_abs - t_curr, 0.0)
                 if Cfg.DELTA_CFT_REF_MODE == "prev":
-                    t_ref = max(cft_prev, Cfg.DELTA_CFT_REF_EPS)
+                    t_ref = max(cft_prev_rem, Cfg.DELTA_CFT_REF_EPS)
                 else:
                     t_ref = max(Cfg.DELTA_CFT_REF_CONST, Cfg.DELTA_CFT_REF_EPS)
-                delta_cft = (cft_prev - cft_curr) / t_ref
+                delta_cft = (cft_prev_rem - cft_curr_rem) / t_ref
                 rows.append({
                     "episode": ep,
                     "step": step_idx,
-                    "cft_prev": float(cft_prev),
-                    "cft_curr": float(cft_curr),
-                    "delta_cft": float(delta_cft),
+                    "cft_prev_abs": float(cft_prev_abs),
+                    "cft_curr_abs": float(cft_curr_abs),
+                    "cft_prev_rem": float(cft_prev_rem),
+                    "cft_curr_rem": float(cft_curr_rem),
+                    "delta_cft_rem": float(delta_cft),
                     "reward_mean": float(sum(rewards) / max(len(rewards), 1)),
                     "dec_local": counts["local"],
                     "dec_rsu": counts["rsu"],
@@ -110,13 +119,13 @@ def main():
 
         with open(md_path, "w", encoding="utf-8") as f:
             f.write("# Delta CFT Audit\n\n")
-            f.write("This audit logs cft_prev/cft_curr at each step using the same snapshot time as the env state.\n\n")
-            f.write("| episode | step | cft_prev | cft_curr | delta_cft | reward_mean | dec_local | dec_rsu | dec_v2v |\n")
+            f.write("This audit logs remaining CFT (CFT_abs - t) on a stable vehicle set per step.\n\n")
+            f.write("| episode | step | cft_prev_rem | cft_curr_rem | delta_cft_rem | reward_mean | dec_local | dec_rsu | dec_v2v |\n")
             f.write("|---|---|---|---|---|---|---|---|---|\n")
             for row in rows[:50]:
                 f.write(
-                    f"| {row['episode']} | {row['step']} | {row['cft_prev']:.4f} | {row['cft_curr']:.4f} | "
-                    f"{row['delta_cft']:.6f} | {row['reward_mean']:.6f} | {row['dec_local']} | "
+                    f"| {row['episode']} | {row['step']} | {row['cft_prev_rem']:.4f} | {row['cft_curr_rem']:.4f} | "
+                    f"{row['delta_cft_rem']:.6f} | {row['reward_mean']:.6f} | {row['dec_local']} | "
                     f"{row['dec_rsu']} | {row['dec_v2v']} |\\n"
                 )
             f.write("\\n")

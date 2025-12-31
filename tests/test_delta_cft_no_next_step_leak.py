@@ -21,9 +21,13 @@ def test_delta_cft_no_next_step_leak():
         t0 = env.time
 
         orig_compute = env._compute_mean_cft_pi0
-        def wrapped_compute(snapshot_time=None, v2i_user_count=None):
+        def wrapped_compute(snapshot_time=None, v2i_user_count=None, vehicle_ids=None):
             calls.append(("cft", snapshot_time, env.time))
-            return orig_compute(snapshot_time=snapshot_time, v2i_user_count=v2i_user_count)
+            return orig_compute(
+                snapshot_time=snapshot_time,
+                v2i_user_count=v2i_user_count,
+                vehicle_ids=vehicle_ids
+            )
         env._compute_mean_cft_pi0 = wrapped_compute
 
         orig_get_obs = env._get_obs
