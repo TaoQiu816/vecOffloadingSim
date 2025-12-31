@@ -181,7 +181,7 @@ def main():
 
         # (4) delta_cft audit (conditional)
         delta_cft_ok = True
-        if args.reward_mode == "delta_cft" or args.run_delta_cft_audit:
+        if effective_reward_mode == "delta_cft" or args.run_delta_cft_audit:
             delta_out = out_dir / "delta_cft_audit"
             _ensure_dir(delta_out)
             try:

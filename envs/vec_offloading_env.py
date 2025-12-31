@@ -1295,9 +1295,9 @@ class VecOffloadingEnv(gym.Env):
                     if components["hard_triggered"]:
                         r = Cfg.REWARD_MIN
                     else:
-                        r = delta_cft
+                        r = Cfg.DELTA_CFT_SCALE * delta_cft
                         if Cfg.ENERGY_IN_DELTA_CFT:
-                            r += -Cfg.ENERGY_WEIGHT * components["energy_norm"]
+                            r += -Cfg.DELTA_CFT_ENERGY_WEIGHT * components["energy_norm"]
                     r = self._clip_reward(r)
                 if hasattr(v, 'subtask_reward_buffer'):
                     v.subtask_reward_buffer = 0.0

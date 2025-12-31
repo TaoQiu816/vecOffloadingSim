@@ -274,7 +274,9 @@ class SystemConfig:
 
     # H. Reward 模式
     REWARD_MODE = "incremental_cost"  # {"incremental_cost","delta_cft"}
-    ENERGY_IN_DELTA_CFT = False  # delta_cft模式是否额外加入能耗项
+    ENERGY_IN_DELTA_CFT = True  # delta_cft模式是否额外加入能耗项
+    DELTA_CFT_SCALE = 5.0  # delta_cft主信号缩放
+    DELTA_CFT_ENERGY_WEIGHT = 0.05  # delta_cft下能耗正则系数
     DELTA_CFT_REF_MODE = "prev"  # {"prev","const"} 归一化参考
     DELTA_CFT_REF_CONST = 1.0  # DELTA_CFT_REF_MODE="const"时使用
     DELTA_CFT_REF_EPS = 1e-6  # 避免除零
