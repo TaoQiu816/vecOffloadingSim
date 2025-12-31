@@ -35,12 +35,12 @@ Desktop.ini
 *.iws
 *.ipr
 
-.tests/
+# .tests/
 .intro.txt
 
 # 测试脚本和生成的文档（不同步到仓库）
 # tests文件夹内的所有文件都会被忽略
-tests/
+# tests/
 
 
 data/
