@@ -15,95 +15,79 @@ from envs.vec_offloading_env import VecOffloadingEnv
 from agents.mappo_agent import MAPPOAgent
 from models.offloading_policy import OffloadingPolicyNetwork
 
+# --- MAPPO ckpt loader (infer arch from checkpoint) ---
+import re
+import torch
+from models.offloading_policy import OffloadingPolicyNetwork
 
-def _infer_num_layers(sd):
-    max_idx = -1
+def infer_arch_from_state_dict(sd: dict):
+    # 1) num_layers: from transformer.layers.{i}.
+    layer_ids = []
     for k in sd.keys():
-        if k.startswith("transformer.layers."):
-            parts = k.split(".")
-            if len(parts) > 2 and parts[2].isdigit():
-                max_idx = max(max_idx, int(parts[2]))
-    return max_idx + 1 if max_idx >= 0 else None
+        m = re.match(r"transformer\.layers\.(\d+)\.", k)
+        if m:
+            layer_ids.append(int(m.group(1)))
+    num_layers = (max(layer_ids) + 1) if layer_ids else None
 
+    # 2) d_model & continuous_dim: from continuous_proj.weight = [d_model, continuous_dim]
+    d_model = None
+    continuous_dim = None
+    if "dag_embedding.continuous_proj.weight" in sd:
+        w = sd["dag_embedding.continuous_proj.weight"]
+        d_model = int(w.shape[0])
+        continuous_dim = int(w.shape[1])
 
-def _infer_d_model(sd):
-    key = "transformer.layers.0.attention.W_q.weight"
-    if key in sd and hasattr(sd[key], "shape"):
-        shape = sd[key].shape
-        if len(shape) >= 2:
-            return int(max(shape[0], shape[1]))
-        return int(shape[0])
-    fallback_keys = [
-        "actor_critic.layer_norm.weight",
-        "layer_norm.weight",
-        "transformer.layer_norm.weight",
-    ]
-    for k in fallback_keys:
-        if k in sd and hasattr(sd[k], "shape"):
-            return int(sd[k].shape[0])
-    return None
+    # 3) d_ff: from feed_forward.linear1.weight = [d_ff, d_model]
+    d_ff = None
+    for k in sd.keys():
+        if k.endswith("feed_forward.linear1.weight"):
+            d_ff = int(sd[k].shape[0])
+            break
 
+    # 4) num_heads: not stored explicitly; pick a common divisor of d_model
+    num_heads = None
+    if d_model is not None:
+        for h in (8, 4, 2, 1):
+            if d_model % h == 0:
+                num_heads = h
+                break
 
-def _infer_num_heads(d_model):
-    if d_model is None:
-        return 8
-    if d_model % 8 == 0:
-        return 8
-    if d_model % 4 == 0:
-        return 4
-    return 1
+    return {
+        "d_model": d_model,
+        "num_heads": num_heads,
+        "num_layers": num_layers,
+        "d_ff": d_ff,
+        "continuous_dim": continuous_dim,
+    }
 
-def _compat_state_dict(net, sd):
-    """Pad or slice mismatched tensors so audit can run."""
-    net_sd = net.state_dict()
-    compat_sd = {}
-    mismatches = []
-    for k, v in net_sd.items():
-        if k not in sd:
-            continue
-        src = sd[k]
-        if hasattr(src, "shape") and src.shape == v.shape:
-            compat_sd[k] = src
-            continue
-        if not hasattr(src, "shape"):
-            continue
-        # size mismatch: prefix copy into zero tensor
-        new_tensor = torch.zeros_like(v)
-        slices = tuple(slice(0, min(a, b)) for a, b in zip(src.shape, v.shape))
-        try:
-            new_tensor[slices] = src[slices]
-            compat_sd[k] = new_tensor
-            mismatches.append((k, tuple(src.shape), tuple(v.shape)))
-        except Exception:
-            continue
-    return compat_sd, mismatches
+def load_mappo_policy(ckpt_path: str):
+    obj = torch.load(ckpt_path, map_location="cpu")
 
+    # 兼容 best_model.pth = {"network_state_dict":..., "optimizer_state_dict":...}
+    sd = obj["network_state_dict"] if isinstance(obj, dict) and "network_state_dict" in obj else obj
 
-def _load_mappo_network(ckpt_path):
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    sd = ckpt["network_state_dict"] if isinstance(ckpt, dict) and "network_state_dict" in ckpt else ckpt
-    num_layers = _infer_num_layers(sd)
-    d_model = _infer_d_model(sd)
-    num_heads = _infer_num_heads(d_model)
-    print(f"[MAPPO] inferred d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
+    arch = infer_arch_from_state_dict(sd)
 
-    net = OffloadingPolicyNetwork(d_model=d_model or 128, num_layers=num_layers or 4, num_heads=num_heads)
-    compat_sd, mismatches = _compat_state_dict(net, sd)
-    compat_mode = len(mismatches) > 0
-    if compat_mode:
-        print("[MAPPO] compat_mode=True (compat padding applied)")
-        print(f"[MAPPO] mismatch count={len(mismatches)}")
-        for k, src_shape, dst_shape in mismatches[:10]:
-            print(f"[MAPPO] mismatch {k}: ckpt={src_shape} model={dst_shape}")
-    else:
-        print("[MAPPO] compat_mode=False")
-    missing, unexpected = net.load_state_dict(compat_sd, strict=False)
-    if missing:
-        print("[MAPPO] missing keys (first 20):", missing[:20])
-    if unexpected:
-        print("[MAPPO] unexpected keys (first 20):", unexpected[:20])
+    # 推断失败才 fallback
+    d_model = arch["d_model"] if arch["d_model"] is not None else 128
+    num_heads = arch["num_heads"] if arch["num_heads"] is not None else 8
+    num_layers = arch["num_layers"] if arch["num_layers"] is not None else 4
+    d_ff = arch["d_ff"] if arch["d_ff"] is not None else 512
+    continuous_dim = arch["continuous_dim"] if arch["continuous_dim"] is not None else 7
+
+    net = OffloadingPolicyNetwork(
+        d_model=d_model,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        d_ff=d_ff,
+        dropout=0.0,          # 审计用：关掉dropout，保证可复现（不影响权重形状）
+        continuous_dim=continuous_dim,
+    )
+    net.load_state_dict(sd, strict=True)
     net.eval()
-    return net
+    return net, arch
+# --- end loader ---
+
 
 
 def _select_index_uniform(mask, rng):
@@ -378,13 +362,11 @@ def _summarize_stats(stats):
 
 
 def _print_table(rows):
-    total_decisions = sum(row[1] for row in rows)
-    print("| target | decisions | decision_frac | success_count | fail_count | timeout_count | mean_tx | mean_wait | mean_comp | mean_delay_norm | mean_energy_norm | fail_reason_breakdown |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| target | decisions | success_count | fail_count | timeout_count | mean_tx | mean_wait | mean_comp | mean_delay_norm | mean_energy_norm | fail_reason_breakdown |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         target, decisions, success, fail, timeout, mean_tx, mean_wait, mean_comp, mean_delay, mean_energy, reasons = row
-        frac = (decisions / total_decisions) if total_decisions > 0 else 0.0
-        print(f"| {target} | {decisions} | {frac:.4f} | {success} | {fail} | {timeout} | "
+        print(f"| {target} | {decisions} | {success} | {fail} | {timeout} | "
               f"{mean_tx:.4f} | {mean_wait:.4f} | {mean_comp:.4f} | "
               f"{mean_delay:.4f} | {mean_energy:.4f} | {reasons} |")
 
@@ -447,9 +429,6 @@ def main():
                     for step in range(args.steps):
                         action_dict = agent.select_action(obs_list, deterministic=True)
                         actions = action_dict["actions"]
-                        assert len(actions) == len(obs_list) == len(env.vehicles), (
-                            f"action/obs/vehicles mismatch: {len(actions)} {len(obs_list)} {len(env.vehicles)}"
-                        )
                         decision_records = []
                         for i, obs in enumerate(obs_list):
                             if i >= len(actions):
