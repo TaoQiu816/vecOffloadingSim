@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 
+from pathlib import Path
 from configs.config import SystemConfig as Cfg
 from envs.vec_offloading_env import VecOffloadingEnv
 from baselines import LocalOnlyPolicy, GreedyPolicy
@@ -34,9 +35,12 @@ out_root = Path("results_dbg/profile_checks/train_v2v_competitive_v1")
 baseline_dir = out_root / "baselines"
 baseline_dir.mkdir(parents=True, exist_ok=True)
 
+# 关键：GreedyPolicy 需要 env
+env = VecOffloadingEnv()
+
 policies = [
     ("local_only", LocalOnlyPolicy()),
-    ("greedy", GreedyPolicy()),
+    ("greedy", GreedyPolicy(env)),
 ]
 
 episodes = 10
