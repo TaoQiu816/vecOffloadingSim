@@ -15,6 +15,11 @@ from envs.vec_offloading_env import VecOffloadingEnv
 from agents.mappo_agent import MAPPOAgent
 from models.offloading_policy import OffloadingPolicyNetwork
 
+# --- MAPPO ckpt loader (infer arch from checkpoint) ---
+import re
+import torch
+from models.offloading_policy import OffloadingPolicyNetwork
+
 def _load_mappo_network(ckpt_path: str):
     """
     Audit-only loader:
