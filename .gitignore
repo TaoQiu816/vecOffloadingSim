@@ -43,3 +43,7 @@ Desktop.ini
 tests/
 
 
+data/
+logs/
+results_dbg/
+results_v2/
