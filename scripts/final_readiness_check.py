@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import sys
 import subprocess
@@ -37,7 +38,7 @@ def main():
     parser.add_argument("--out_dir", type=str, default="results_dbg/final_readiness")
     parser.add_argument("--episodes", type=int, default=2)
     parser.add_argument("--steps", type=int, default=50)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--audit", type=int, default=1)
     parser.add_argument("--reward_mode", type=str, default=None)
     parser.add_argument("--log_dir", type=str, default=None)
@@ -51,6 +52,17 @@ def main():
     _ensure_dir(out_dir)
     _ensure_dir(log_dir)
 
+    # resolve reward_mode/seed with CLI priority
+    env_reward = os.environ.get("REWARD_MODE")
+    env_seed = os.environ.get("SEED")
+    effective_reward_mode = args.reward_mode or env_reward or Cfg.REWARD_MODE
+    if args.seed is not None:
+        effective_seed = args.seed
+    elif env_seed is not None:
+        effective_seed = int(env_seed)
+    else:
+        effective_seed = int(Cfg.SEED)
+
     # env vars for audit + jsonl logging
     if args.audit:
         os.environ["AUDIT_ASSERTS"] = "1"
@@ -59,20 +71,24 @@ def main():
     os.environ["REWARD_JSONL_PATH"] = str(log_dir / "run.jsonl")
     os.environ["RUN_ID"] = "final_readiness"
     os.environ["MAX_EPISODES"] = str(args.episodes)
+    os.environ["REWARD_MODE"] = str(effective_reward_mode)
+    os.environ["SEED"] = str(effective_seed)
 
     orig_reward_mode = Cfg.REWARD_MODE
-    if args.reward_mode:
-        Cfg.REWARD_MODE = args.reward_mode
+    orig_seed = Cfg.SEED
+    if effective_reward_mode:
+        Cfg.REWARD_MODE = effective_reward_mode
+    Cfg.SEED = int(effective_seed)
 
     results = []
 
     try:
         # (1) minimal rollout
         env = VecOffloadingEnv()
-        policy = RandomPolicy(seed=args.seed)
+        policy = RandomPolicy(seed=effective_seed)
         rollout_ok = True
         for ep in range(args.episodes):
-            obs_list, _ = env.reset(seed=args.seed + ep)
+            obs_list, _ = env.reset(seed=effective_seed + ep)
             done = False
             for _ in range(args.steps):
                 actions = policy.select_action(obs_list)
@@ -94,6 +110,29 @@ def main():
             if not rollout_ok:
                 break
         results.append(("rollout", rollout_ok, str(log_dir / "run.jsonl")))
+
+        # JSONL self-check: reward_mode/seed must match this run
+        jsonl_ok = True
+        jsonl_path = log_dir / "run.jsonl"
+        last_payload = None
+        if jsonl_path.exists():
+            with jsonl_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_payload = line
+        if last_payload is None:
+            jsonl_ok = False
+        else:
+            try:
+                payload = json.loads(last_payload)
+                if payload.get("reward_mode") != effective_reward_mode:
+                    jsonl_ok = False
+                if int(payload.get("seed", -1)) != int(effective_seed):
+                    jsonl_ok = False
+            except Exception:
+                jsonl_ok = False
+        results.append(("jsonl_check", jsonl_ok, str(jsonl_path)))
 
         # (2) summarize
         summarize_ok = True
@@ -124,7 +163,7 @@ def main():
                 sys.executable, "scripts/decision_dominance_audit.py",
                 "--episodes", "20",
                 "--steps", "50",
-                "--seed", str(args.seed),
+                "--seed", str(effective_seed),
                 "--out_dir", str(dd_out),
                 "--policy_rollout", "type_balanced_random"
             ])
@@ -150,9 +189,9 @@ def main():
                     sys.executable, "scripts/delta_cft_audit.py",
                     "--episodes", "2",
                     "--steps", "10",
-                    "--seed", str(args.seed),
-                    "--out_dir", str(delta_out)
-                ])
+                "--seed", str(effective_seed),
+                "--out_dir", str(delta_out)
+            ])
             except Exception:
                 delta_cft_ok = False
             delta_md = delta_out / "delta_cft_audit.md"
@@ -163,6 +202,7 @@ def main():
 
     finally:
         Cfg.REWARD_MODE = orig_reward_mode
+        Cfg.SEED = orig_seed
 
     all_ok = True
     for name, ok, path in results:
