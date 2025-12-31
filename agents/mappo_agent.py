@@ -187,6 +187,11 @@ class MAPPOAgent:
             平均损失
         """
         total_loss = 0.0
+        total_entropy = 0.0
+        total_policy = 0.0
+        total_value = 0.0
+        total_kl = 0.0
+        total_clip = 0.0
         num_updates = 0
         
         for _ in range(TC.PPO_EPOCH):
@@ -211,7 +216,10 @@ class MAPPOAgent:
                 value_loss = nn.functional.mse_loss(values, returns)
                 
                 # Entropy Loss
-                entropy_loss = -entropy.mean()
+                entropy_mean = entropy.mean()
+                entropy_loss = -entropy_mean
+                approx_kl = (old_log_probs - log_probs).mean()
+                clip_frac = (torch.abs(ratio - 1.0) > TC.CLIP_PARAM).float().mean()
                 
                 # Total Loss
                 loss = policy_loss + TC.VF_COEF * value_loss + TC.ENTROPY_COEF * entropy_loss
@@ -237,8 +245,32 @@ class MAPPOAgent:
                 if not has_invalid_grad:
                     self.optimizer.step()
                     total_loss += loss.item()
+                    total_entropy += entropy_mean.item()
+                    total_policy += policy_loss.item()
+                    total_value += value_loss.item()
+                    total_kl += approx_kl.item()
+                    total_clip += clip_frac.item()
                     num_updates += 1
-        
+
+        if num_updates > 0:
+            self.last_update_stats = {
+                "loss": total_loss / num_updates,
+                "entropy": total_entropy / num_updates,
+                "policy_loss": total_policy / num_updates,
+                "value_loss": total_value / num_updates,
+                "approx_kl": total_kl / num_updates,
+                "clip_fraction": total_clip / num_updates,
+            }
+        else:
+            self.last_update_stats = {
+                "loss": 0.0,
+                "entropy": None,
+                "policy_loss": None,
+                "value_loss": None,
+                "approx_kl": None,
+                "clip_fraction": None,
+            }
+
         return total_loss / num_updates if num_updates > 0 else 0.0
     
     def decay_lr(self):

@@ -46,8 +46,15 @@ def _format_table_header(columns):
     parts = []
     for col in columns:
         label, width = col
-        parts.append(str(label).rjust(width))
-    return " ".join(parts)
+        parts.append(str(label).center(width))
+    return "| " + " | ".join(parts) + " |"
+
+
+def _format_table_divider(columns):
+    parts = []
+    for _, width in columns:
+        parts.append("-" * width)
+    return "+-" + "-+-".join(parts) + "-+"
 
 
 def _format_table_row(values, columns):
@@ -64,7 +71,7 @@ def _format_table_row(values, columns):
         else:
             cell = str(val)
         parts.append(cell.rjust(width))
-    return " ".join(parts)
+    return "| " + " | ".join(parts) + " |"
 
 
 def _collect_obs_stats(obs_list):
@@ -477,6 +484,10 @@ def main():
         ("steps", 6),
         ("r_mean", 8),
         ("r_p95", 8),
+        ("ent", 7),
+        ("p_loss", 7),
+        ("v_loss", 7),
+        ("kl", 6),
         ("succ", 6),
         ("sub", 6),
         ("miss", 6),
@@ -699,14 +710,20 @@ def main():
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
             if table_row_count % 20 == 0:
+                divider_line = _format_table_divider(table_columns)
                 header_line = _format_table_header(table_columns)
+                print(divider_line, flush=True)
                 print(header_line, flush=True)
-                print("-" * len(header_line), flush=True)
+                print(divider_line, flush=True)
             table_row = {
                 "ep": episode,
                 "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
                 "r_mean": reward_display,
                 "r_p95": reward_abs_p95,
+                "ent": None,
+                "p_loss": None,
+                "v_loss": None,
+                "kl": None,
                 "succ": success_rate_end,
                 "sub": subtask_success,
                 "miss": deadline_miss_rate,
@@ -721,19 +738,26 @@ def main():
                 "loss": update_loss,
                 "elapsed": duration,
             }
+            update_stats = getattr(agent, "last_update_stats", {}) or {}
+            table_row["ent"] = update_stats.get("entropy")
+            table_row["p_loss"] = update_stats.get("policy_loss")
+            table_row["v_loss"] = update_stats.get("value_loss")
+            table_row["kl"] = update_stats.get("approx_kl")
             print(_format_table_row(table_row, table_columns), flush=True)
             table_row_count += 1
 
+        update_stats = getattr(agent, "last_update_stats", {}) or {}
         metrics_row = {
             "episode": episode,
             "episode_steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
             "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
             "reward_mean": reward_display,
-            "entropy": None,
-            "clip_fraction": clip_hit_ratio,
-            "value_loss": None,
-            "policy_loss": None,
+            "entropy": update_stats.get("entropy"),
+            "clip_fraction": update_stats.get("clip_fraction", clip_hit_ratio),
+            "value_loss": update_stats.get("value_loss"),
+            "policy_loss": update_stats.get("policy_loss"),
+            "approx_kl": update_stats.get("approx_kl"),
             "mean_cft": mean_cft,
             "delta_cft_mean": delta_cft_mean,
             "success_rate_end": success_rate_end,
@@ -747,7 +771,7 @@ def main():
             "hard_trigger_rate": hard_trigger_rate,
             "reward_abs_p95": reward_abs_p95,
             "avg_step_reward": avg_step_reward,
-            "update_loss": update_loss,
+            "update_loss": update_stats.get("loss", update_loss),
             "elapsed_time": duration,
         }
         metrics_row.update(env_metrics)
