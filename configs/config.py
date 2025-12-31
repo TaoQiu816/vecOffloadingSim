@@ -289,6 +289,7 @@ class SystemConfig:
     # I. 动作/奖励调试开关
     DEBUG_ASSERT_ILLEGAL_ACTION = False  # True时illegal_action直接断言
     DEBUG_ASSERT_METRICS = False  # True时对成功率/决策分布做范围断言
+    EPISODE_JSONL_STDOUT = True  # 是否在stdout打印每个episode的JSONL
 
     # =========================================================================
     # 8. 动态归一化与统计
@@ -372,6 +373,7 @@ PROFILE_REGISTRY = {
         "BONUS_MODE": "none",
         "DELTA_CFT_SCALE": 8.0,
         "DELTA_CFT_ENERGY_WEIGHT": 0.03,
+        "EPISODE_JSONL_STDOUT": False,
     }
 }
 
@@ -405,3 +407,15 @@ def apply_profile(profile_name):
 
 
 apply_profile(os.environ.get("CFG_PROFILE"))
+
+
+def _env_flag(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+SystemConfig.EPISODE_JSONL_STDOUT = _env_flag(
+    "EPISODE_JSONL_STDOUT", SystemConfig.EPISODE_JSONL_STDOUT
+)

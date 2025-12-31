@@ -687,7 +687,8 @@ class VecOffloadingEnv(gym.Env):
             extra["mean_cft"] = float(self.time)
         self._assert_metric_bounds(extra)
         json_line = self._reward_stats.to_json_line(extra=extra)
-        print(json_line)
+        if Cfg.EPISODE_JSONL_STDOUT:
+            print(json_line)
         if self._jsonl_path:
             os.makedirs(os.path.dirname(self._jsonl_path), exist_ok=True)
             with open(self._jsonl_path, "a", encoding="utf-8") as f:

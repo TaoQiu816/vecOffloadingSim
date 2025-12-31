@@ -11,6 +11,7 @@ export DEVICE_NAME="${DEVICE_NAME:-cuda}"
 export SEED="${SEED:-7}"
 export RUN_ID="${RUN_ID:-train_ready_v1_seed7}"
 export RUN_DIR="${RUN_DIR:-runs/${RUN_ID}}"
+export EPISODE_JSONL_STDOUT="${EPISODE_JSONL_STDOUT:-0}"
 
 # Optional overrides
 export MAX_EPISODES="${MAX_EPISODES:-200}"

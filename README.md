@@ -79,6 +79,10 @@ Profile 会在 `configs/config.py` 启动时应用，并打印 `[Cfg] applied pr
 ```bash
 CFG_PROFILE=train_ready_v1 python train.py
 ```
+如需关闭每episode的JSONL控制台输出（仅保留紧凑表格行）：
+```bash
+EPISODE_JSONL_STDOUT=0 CFG_PROFILE=train_ready_v1 python train.py
+```
 
 ### 2.2 一键开训脚本
 ```bash

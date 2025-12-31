@@ -41,6 +41,31 @@ def _read_last_jsonl(path):
         return None
 
 
+def _format_table_header(columns):
+    parts = []
+    for col in columns:
+        label, width = col
+        parts.append(str(label).ljust(width))
+    return " ".join(parts)
+
+
+def _format_table_row(values, columns):
+    parts = []
+    for col in columns:
+        key, width = col
+        val = values.get(key)
+        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+            cell = "-"
+        elif isinstance(val, (int, np.integer)):
+            cell = str(val)
+        elif isinstance(val, float):
+            cell = f"{val:.3f}"
+        else:
+            cell = str(val)
+        parts.append(cell.rjust(width))
+    return " ".join(parts)
+
+
 def _inject_obs_stamp(obs_list, actions):
     for i, act in enumerate(actions):
         if act is None:
@@ -348,6 +373,8 @@ def main():
     print(f" Experiment: {exp_name}")
     print(f" Device:     {device}")
     print(f" Run Dir:    {run_dir}")
+    print(f" Reward:     {Cfg.REWARD_MODE}")
+    print(f" Seed:       {Cfg.SEED}")
     print(f" Max Eps:    {hyperparams['max_episodes']}")
     print(f" LR Actor:   {hyperparams['lr_actor']}")
     print(f"{'=' * 60}")
@@ -377,6 +404,24 @@ def main():
     metrics_jsonl_path = os.path.join(metrics_dir, "train_metrics.jsonl")
     metrics_header_written = os.path.exists(metrics_csv_path) and os.path.getsize(metrics_csv_path) > 0
     disable_auto_plot = os.environ.get("DISABLE_AUTO_PLOT", "").lower() in ("1", "true", "yes")
+    table_columns = [
+        ("ep", 6),
+        ("steps", 7),
+        ("reward", 10),
+        ("entropy", 8),
+        ("clip", 6),
+        ("v_loss", 8),
+        ("p_loss", 8),
+        ("succ", 6),
+        ("miss", 6),
+        ("L", 5),
+        ("R", 5),
+        ("V", 5),
+        ("mean_cft", 9),
+        ("delta_cft", 9),
+        ("elapsed", 8),
+    ]
+    table_row_count = 0
 
     print("\n[Info] Start Training...")
 
@@ -576,25 +621,44 @@ def main():
         frac_rsu = env_stats.get("decision_frac_rsu", frac_rsu) if env_stats else frac_rsu
         frac_v2v = env_stats.get("decision_frac_v2v", frac_v2v) if env_stats else frac_v2v
         clip_hit_ratio = env_stats.get("clip_hit_ratio") if env_stats else None
+        delta_cft_mean = env_metrics.get("delta_cft.mean")
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
-            print(
-                f"ep={episode} reward_mean={reward_display:.3f} "
-                f"success_end={success_rate_end:.3f} subtask_succ={subtask_success:.3f} "
-                f"deadline_miss={deadline_miss_rate:.3f} "
-                f"dec(L/R/V)={frac_local:.2f}/{frac_rsu:.2f}/{frac_v2v:.2f} "
-                f"clip={clip_hit_ratio if clip_hit_ratio is not None else 'NA'} "
-                f"mean_cft={mean_cft if mean_cft is not None else 'NA'} "
-                f"loss={update_loss:.3f} time={duration:.1f}s"
-            )
+            if table_row_count % 20 == 0:
+                print(_format_table_header(table_columns))
+            table_row = {
+                "ep": episode,
+                "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+                "reward": reward_display,
+                "entropy": None,
+                "clip": clip_hit_ratio,
+                "v_loss": None,
+                "p_loss": None,
+                "succ": success_rate_end,
+                "miss": deadline_miss_rate,
+                "L": frac_local,
+                "R": frac_rsu,
+                "V": frac_v2v,
+                "mean_cft": mean_cft,
+                "delta_cft": delta_cft_mean,
+                "elapsed": duration,
+            }
+            print(_format_table_row(table_row, table_columns))
+            table_row_count += 1
 
         metrics_row = {
             "episode": episode,
             "episode_steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
             "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
+            "reward_mean": reward_display,
+            "entropy": None,
+            "clip_fraction": clip_hit_ratio,
+            "value_loss": None,
+            "policy_loss": None,
             "mean_cft": mean_cft,
+            "delta_cft_mean": delta_cft_mean,
             "success_rate_end": success_rate_end,
             "deadline_miss_rate": deadline_miss_rate,
             "subtask_success_rate": subtask_success,
@@ -604,6 +668,7 @@ def main():
             "clip_hit_ratio": clip_hit_ratio,
             "avg_step_reward": avg_step_reward,
             "update_loss": update_loss,
+            "elapsed_time": duration,
         }
         metrics_row.update(env_metrics)
 
