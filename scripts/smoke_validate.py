@@ -39,11 +39,11 @@ def main():
     files.append(run_one(log_dir, "incremental_cost", "none", seed=0, run_id=run_id))
     files.append(run_one(log_dir, "delta_cft", "none", seed=0, run_id=run_id))
 
-    runs, excluded, missing = sa.load_runs(log_dir, run_id=run_id)
+    runs, excluded, missing, legacy = sa.load_runs(log_dir, run_id=run_id)
     runs = sa._dedup_latest(runs)
     summary = sa.summarize_groups(runs)
     sa.write_csv(summary, os.path.join(out_dir, "ablation_summary.csv"))
-    sa.write_md(summary, os.path.join(out_dir, "ablation_summary.md"), excluded, missing)
+    sa.write_md(summary, os.path.join(out_dir, "ablation_summary.md"), excluded, missing, legacy)
 
     print("[Smoke] JSONL files:")
     for path in files:

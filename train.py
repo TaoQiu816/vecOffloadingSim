@@ -349,11 +349,15 @@ def main():
                 else:
                     stats['neighbor_cnt'] += 1
                     stats['v2v_count'] += 1
-                    neighbor_idx = tgt - 2
-                    candidate_vehs = [v for v in env.vehicles if v.id != env.vehicles[i].id]
-                    if 0 <= neighbor_idx < len(candidate_vehs):
-                        target_veh = candidate_vehs[neighbor_idx]
-                        stats['assigned_cpu_sum'] += target_veh.cpu_freq
+                    resource_ids = obs_list[i].get('resource_ids') if i < len(obs_list) else None
+                    if resource_ids is not None and 0 <= tgt < len(resource_ids):
+                        token = int(resource_ids[tgt])
+                        if token >= 3:
+                            neighbor_id = token - 3
+                            target_veh = next((v for v in env.vehicles if v.id == neighbor_id), None)
+                            stats['assigned_cpu_sum'] += target_veh.cpu_freq if target_veh else env.vehicles[i].cpu_freq
+                        else:
+                            stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
                     else:
                         stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
 
