@@ -29,7 +29,10 @@ def _infer_num_layers(sd):
 def _infer_d_model(sd):
     key = "transformer.layers.0.attention.W_q.weight"
     if key in sd and hasattr(sd[key], "shape"):
-        return int(sd[key].shape[0])
+        shape = sd[key].shape
+        if len(shape) >= 2:
+            return int(max(shape[0], shape[1]))
+        return int(shape[0])
     fallback_keys = [
         "actor_critic.layer_norm.weight",
         "layer_norm.weight",
@@ -43,12 +46,37 @@ def _infer_d_model(sd):
 
 def _infer_num_heads(d_model):
     if d_model is None:
-        return 1
+        return 8
     if d_model % 8 == 0:
         return 8
     if d_model % 4 == 0:
         return 4
     return 1
+
+def _compat_state_dict(net, sd):
+    """Pad or slice mismatched tensors so audit can run."""
+    net_sd = net.state_dict()
+    compat_sd = {}
+    mismatches = []
+    for k, v in net_sd.items():
+        if k not in sd:
+            continue
+        src = sd[k]
+        if hasattr(src, "shape") and src.shape == v.shape:
+            compat_sd[k] = src
+            continue
+        if not hasattr(src, "shape"):
+            continue
+        # size mismatch: prefix copy into zero tensor
+        new_tensor = torch.zeros_like(v)
+        slices = tuple(slice(0, min(a, b)) for a, b in zip(src.shape, v.shape))
+        try:
+            new_tensor[slices] = src[slices]
+            compat_sd[k] = new_tensor
+            mismatches.append((k, tuple(src.shape), tuple(v.shape)))
+        except Exception:
+            continue
+    return compat_sd, mismatches
 
 
 def _load_mappo_network(ckpt_path):
@@ -60,13 +88,19 @@ def _load_mappo_network(ckpt_path):
     print(f"[MAPPO] inferred d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
 
     net = OffloadingPolicyNetwork(d_model=d_model or 128, num_layers=num_layers or 4, num_heads=num_heads)
-    try:
-        net.load_state_dict(sd, strict=True)
-    except Exception as exc:
-        print("[MAPPO] strict=True load_state_dict failed:", str(exc))
-        print("[MAPPO] retry with strict=False (audit-only)")
-        missing, unexpected = net.load_state_dict(sd, strict=False)
+    compat_sd, mismatches = _compat_state_dict(net, sd)
+    compat_mode = len(mismatches) > 0
+    if compat_mode:
+        print("[MAPPO] compat_mode=True (compat padding applied)")
+        print(f"[MAPPO] mismatch count={len(mismatches)}")
+        for k, src_shape, dst_shape in mismatches[:10]:
+            print(f"[MAPPO] mismatch {k}: ckpt={src_shape} model={dst_shape}")
+    else:
+        print("[MAPPO] compat_mode=False")
+    missing, unexpected = net.load_state_dict(compat_sd, strict=False)
+    if missing:
         print("[MAPPO] missing keys (first 20):", missing[:20])
+    if unexpected:
         print("[MAPPO] unexpected keys (first 20):", unexpected[:20])
     net.eval()
     return net
