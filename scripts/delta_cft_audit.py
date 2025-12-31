@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+import os, sys
+from pathlib import Path as _Path
+_ROOT = _Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+os.chdir(str(_ROOT))
+
 import argparse
 import csv
 import os
@@ -65,6 +72,13 @@ def main():
                 )
                 obs_list = env._get_obs()
                 actions, counts = _sample_actions(obs_list, rng)
+                # AUDIT_ASSERTS: propagate obs_stamp into actions
+                for i, act in enumerate(actions):
+                    if not act:
+                        continue
+                    obs = obs_list[i] if i < len(obs_list) else None
+                    if isinstance(obs, dict) and 'obs_stamp' in obs and 'obs_stamp' not in act:
+                        act['obs_stamp'] = int(obs['obs_stamp'])
                 _, rewards, terminated, truncated, _ = env.step(actions)
                 cft_curr = env._compute_mean_cft_pi0(
                     snapshot_time=env.time,
@@ -101,14 +115,14 @@ def main():
             f.write("|---|---|---|---|---|---|---|---|---|\n")
             for row in rows[:50]:
                 f.write(
-                    f\"| {row['episode']} | {row['step']} | {row['cft_prev']:.4f} | {row['cft_curr']:.4f} | "
-                    f\"{row['delta_cft']:.6f} | {row['reward_mean']:.6f} | {row['dec_local']} | "
-                    f\"{row['dec_rsu']} | {row['dec_v2v']} |\\n\"
+                    f"| {row['episode']} | {row['step']} | {row['cft_prev']:.4f} | {row['cft_curr']:.4f} | "
+                    f"{row['delta_cft']:.6f} | {row['reward_mean']:.6f} | {row['dec_local']} | "
+                    f"{row['dec_rsu']} | {row['dec_v2v']} |\\n"
                 )
             f.write("\\n")
 
-        print(f\"[delta_cft_audit] wrote {csv_path}\")
-        print(f\"[delta_cft_audit] wrote {md_path}\")
+        print(f"[delta_cft_audit] wrote {csv_path}")
+        print(f"[delta_cft_audit] wrote {md_path}")
     finally:
         Cfg.REWARD_MODE = orig_reward_mode
 
