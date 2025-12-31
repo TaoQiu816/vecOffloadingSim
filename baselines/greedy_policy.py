@@ -48,7 +48,10 @@ class GreedyPolicy:
             
             if len(valid_targets) == 0:
                 # 如果没有合法目标，默认选择本地执行
-                actions.append({'target': 0, 'power': 1.0})
+                act = {'target': 0, 'power': 1.0}
+                if "obs_stamp" in obs:
+                    act["obs_stamp"] = int(obs["obs_stamp"])
+                actions.append(act)
                 continue
             
             # 计算每个合法目标的计算能力
@@ -83,10 +86,13 @@ class GreedyPolicy:
             best_target = valid_targets[best_idx]
             
             # 使用最大功率
-            actions.append({
+            act = {
                 'target': int(best_target),
                 'power': 1.0
-            })
+            }
+            if "obs_stamp" in obs:
+                act["obs_stamp"] = int(obs["obs_stamp"])
+            actions.append(act)
         
         return actions
     

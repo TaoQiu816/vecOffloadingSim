@@ -32,14 +32,16 @@ class LocalOnlyPolicy:
         
         for obs in obs_list:
             # 始终选择本地执行 (target=0)
-            actions.append({
+            act = {
                 'target': 0,
                 'power': 1.0  # 本地执行不需要传输，功率设为最大值
-            })
+            }
+            if "obs_stamp" in obs:
+                act["obs_stamp"] = int(obs["obs_stamp"])
+            actions.append(act)
         
         return actions
     
     def reset(self):
         """重置策略状态（本地策略无状态）"""
         pass
-

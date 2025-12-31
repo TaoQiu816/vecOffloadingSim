@@ -80,10 +80,12 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
                     target_actions = target_actions.numpy()
                     power_actions = power_actions.numpy()
                 
-                actions = [
-                    {'target': int(target_actions[i]), 'power': float(power_actions[i])}
-                    for i in range(len(obs_list))
-                ]
+                actions = []
+                for i in range(len(obs_list)):
+                    act = {'target': int(target_actions[i]), 'power': float(power_actions[i])}
+                    if "obs_stamp" in obs_list[i]:
+                        act["obs_stamp"] = int(obs_list[i]["obs_stamp"])
+                    actions.append(act)
             else:
                 actions = policy.select_action(obs_list)
             

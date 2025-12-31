@@ -450,7 +450,10 @@ def run_audit(episodes=20, steps=50, seed=0, out_dir="results_dbg/decision_domin
                         idx = _select_type_balanced(mask, rng)
                     if idx is None:
                         idx = 0
-                    actions.append({"target": int(idx), "power": 1.0})
+                    act = {"target": int(idx), "power": 1.0}
+                    if "obs_stamp" in obs:
+                        act["obs_stamp"] = int(obs["obs_stamp"])
+                    actions.append(act)
 
             obs_list, _, terminated, truncated, _ = env.step(actions)
             if terminated or truncated:

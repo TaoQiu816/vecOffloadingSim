@@ -49,14 +49,16 @@ class RandomPolicy:
             # 避免过低功率导致传输时间过长
             power = self.rng.uniform(0.2, 1.0)
             
-            actions.append({
+            act = {
                 'target': int(target),
                 'power': float(power)
-            })
+            }
+            if "obs_stamp" in obs:
+                act["obs_stamp"] = int(obs["obs_stamp"])
+            actions.append(act)
         
         return actions
     
     def reset(self):
         """重置策略状态（随机策略无状态）"""
         pass
-

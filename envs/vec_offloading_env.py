@@ -95,9 +95,212 @@ class VecOffloadingEnv(gym.Env):
         self._last_rsu_choice = {}
         # 动态车辆统计：记录整个episode出现过的车辆ID
         self._vehicles_seen = set()
+        self._last_obs_stamp = None
 
     def _audit_enabled(self):
         return os.environ.get("AUDIT_ASSERTS", "").lower() in ("1", "true", "yes")
+
+    def _simulate_enqueue_capacity(self, queue_like, task_cycles):
+        if task_cycles is None:
+            return False
+        if getattr(queue_like, "max_load_cycles", None) is not None:
+            current_load = queue_like.get_total_load()
+            return (current_load + task_cycles) <= queue_like.max_load_cycles
+        current_len = queue_like.get_queue_length()
+        return current_len < queue_like.max_buffer_size
+
+    def _plan_actions_snapshot(self, actions):
+        plans = []
+        for i, v in enumerate(self.vehicles):
+            act = actions[i]
+            plan = {
+                "vehicle": v,
+                "vehicle_id": v.id,
+                "index": i,
+                "subtask_idx": None,
+                "task_comp": None,
+                "task_data": None,
+                "desired_target": None,
+                "desired_kind": "none",
+                "planned_target": None,
+                "planned_kind": "none",
+                "target_idx": None,
+                "illegal_reason": None,
+                "power_ratio": None,
+                "power_dbm": None,
+            }
+            if not act:
+                plans.append(plan)
+                continue
+
+            target_idx = int(act.get("target", 0))
+            plan["target_idx"] = target_idx
+
+            subtask_idx = v.task_dag.get_top_priority_task()
+            if subtask_idx is None:
+                plans.append(plan)
+                continue
+
+            task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else Cfg.MEAN_COMP_LOAD
+            task_data = v.task_dag.total_data[subtask_idx] if subtask_idx < len(v.task_dag.total_data) else 0.0
+            plan["subtask_idx"] = subtask_idx
+            plan["task_comp"] = task_comp
+            plan["task_data"] = task_data
+
+            p_norm = np.clip(act.get("power", 1.0), 0.0, 1.0)
+            raw_power = Cfg.TX_POWER_MIN_DBM + p_norm * (Cfg.TX_POWER_MAX_DBM - Cfg.TX_POWER_MIN_DBM)
+            plan["power_ratio"] = p_norm
+            plan["power_dbm"] = np.clip(raw_power, Cfg.TX_POWER_MIN_DBM, Cfg.TX_POWER_MAX_DBM)
+
+            desired_target = 'Local'
+            desired_kind = "local"
+
+            if target_idx >= Cfg.MAX_TARGETS:
+                plan["illegal_reason"] = "idx_out_of_range"
+            elif target_idx == 0:
+                desired_target = 'Local'
+                desired_kind = "local"
+            elif target_idx == 1:
+                rsu_id = self._last_rsu_choice.get(v.id)
+                if rsu_id is None:
+                    plan["illegal_reason"] = "rsu_unavailable"
+                    desired_target = 'Local'
+                    desired_kind = "local"
+                else:
+                    rsu = self.rsus[rsu_id] if 0 <= rsu_id < len(self.rsus) else None
+                    if rsu is None:
+                        plan["illegal_reason"] = "rsu_unavailable"
+                        desired_target = 'Local'
+                        desired_kind = "local"
+                    elif not rsu.is_in_coverage(v.pos):
+                        plan["illegal_reason"] = "rsu_out_of_coverage"
+                        desired_target = 'Local'
+                        desired_kind = "local"
+                    else:
+                        desired_target = ('RSU', rsu_id)
+                        desired_kind = "rsu"
+            else:
+                candidate_ids = self._last_candidates.get(v.id)
+                if candidate_ids is None:
+                    plan["illegal_reason"] = "no_candidate_cache"
+                    desired_target = 'Local'
+                    desired_kind = "local"
+                else:
+                    neighbor_list_idx = target_idx - 2
+                    if 0 <= neighbor_list_idx < len(candidate_ids):
+                        neighbor_id = candidate_ids[neighbor_list_idx]
+                        if neighbor_id is None or neighbor_id < 0:
+                            plan["illegal_reason"] = "id_mapping_fail"
+                            desired_target = 'Local'
+                            desired_kind = "local"
+                        else:
+                            target_veh = self._get_vehicle_by_id(neighbor_id)
+                            if target_veh is None:
+                                plan["illegal_reason"] = "id_mapping_fail"
+                                desired_target = 'Local'
+                                desired_kind = "local"
+                            else:
+                                desired_target = int(neighbor_id)
+                                desired_kind = "v2v"
+                    else:
+                        plan["illegal_reason"] = "idx_out_of_range"
+                        desired_target = 'Local'
+                        desired_kind = "local"
+
+            plan["desired_target"] = desired_target
+            plan["desired_kind"] = desired_kind
+            plan["planned_target"] = desired_target
+            plan["planned_kind"] = desired_kind
+            plans.append(plan)
+
+        # RSU conflict resolution (deterministic by vehicle_id)
+        rsu_requests = {}
+        for plan in plans:
+            if plan["subtask_idx"] is None:
+                continue
+            if plan["illegal_reason"] is not None:
+                continue
+            if plan["desired_kind"] == "rsu":
+                rsu_id = plan["desired_target"][1]
+                rsu_requests.setdefault(rsu_id, []).append(plan)
+
+        for rsu_id, reqs in rsu_requests.items():
+            if not (0 <= rsu_id < len(self.rsus)):
+                for plan in reqs:
+                    plan["planned_target"] = 'Local'
+                    plan["planned_kind"] = "local"
+                    plan["illegal_reason"] = "rsu_unavailable"
+                continue
+            rsu = self.rsus[rsu_id]
+            proc_queues = rsu.queue_manager.processor_queues
+            proc_loads = [q.get_total_load() for q in proc_queues]
+            proc_limits = [q.max_load_cycles for q in proc_queues]
+            proc_sizes = [q.get_queue_length() for q in proc_queues]
+            proc_caps = [q.max_buffer_size for q in proc_queues]
+
+            for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
+                chosen_pid = None
+                for pid, load in enumerate(proc_loads):
+                    if proc_limits[pid] is not None:
+                        can_accept = (load + plan["task_comp"]) <= proc_limits[pid]
+                    else:
+                        can_accept = (proc_sizes[pid] + 1) <= proc_caps[pid]
+                    if not can_accept:
+                        continue
+                    if chosen_pid is None:
+                        chosen_pid = pid
+                    else:
+                        if load < proc_loads[chosen_pid]:
+                            chosen_pid = pid
+                        elif load == proc_loads[chosen_pid] and pid < chosen_pid:
+                            chosen_pid = pid
+                if chosen_pid is None:
+                    plan["planned_target"] = 'Local'
+                    plan["planned_kind"] = "local"
+                    plan["illegal_reason"] = "queue_full_conflict"
+                else:
+                    proc_loads[chosen_pid] += plan["task_comp"]
+                    proc_sizes[chosen_pid] += 1
+
+        # V2V conflict resolution (deterministic by vehicle_id)
+        v2v_requests = {}
+        for plan in plans:
+            if plan["subtask_idx"] is None:
+                continue
+            if plan["illegal_reason"] is not None:
+                continue
+            if plan["desired_kind"] == "v2v":
+                tgt_id = plan["desired_target"]
+                v2v_requests.setdefault(tgt_id, []).append(plan)
+
+        for tgt_id, reqs in v2v_requests.items():
+            t_veh = self._get_vehicle_by_id(tgt_id)
+            if t_veh is None:
+                for plan in reqs:
+                    plan["planned_target"] = 'Local'
+                    plan["planned_kind"] = "local"
+                    plan["illegal_reason"] = "id_mapping_fail"
+                continue
+            queue = t_veh.task_queue
+            sim_load = queue.get_total_load()
+            sim_len = queue.get_queue_length()
+            limit_cycles = queue.max_load_cycles
+            limit_size = queue.max_buffer_size
+
+            for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
+                if limit_cycles is not None:
+                    can_accept = (sim_load + plan["task_comp"]) <= limit_cycles
+                else:
+                    can_accept = (sim_len + 1) <= limit_size
+                if not can_accept:
+                    plan["planned_target"] = 'Local'
+                    plan["planned_kind"] = "local"
+                    plan["illegal_reason"] = "queue_full_conflict"
+                else:
+                    sim_load += plan["task_comp"]
+                    sim_len += 1
+
+        return plans
 
     def _assert_vehicle_integrity(self):
         ids = [v.id for v in self.vehicles]
@@ -565,6 +768,21 @@ class VecOffloadingEnv(gym.Env):
         if self._audit_enabled():
             assert len(actions) == len(self.vehicles), "actions/vehicles length mismatch"
             self._assert_vehicle_integrity()
+            if actions:
+                obs_stamp = None
+                for act in actions:
+                    if act is None:
+                        continue
+                    if "obs_stamp" not in act:
+                        raise AssertionError("obs_stamp missing in action under AUDIT_ASSERTS")
+                    if obs_stamp is None:
+                        obs_stamp = act["obs_stamp"]
+                    else:
+                        assert act["obs_stamp"] == obs_stamp, "obs_stamp mismatch across actions"
+                if obs_stamp is not None:
+                    assert obs_stamp == self._last_obs_stamp, (
+                        f"stale obs_stamp: action={obs_stamp} last_obs={self._last_obs_stamp}"
+                    )
 
         snapshot_time = self.time
 
@@ -589,171 +807,94 @@ class VecOffloadingEnv(gym.Env):
         step_congestion_cost = 0.0
         active_agents_count = 0
 
-        for i, v in enumerate(self.vehicles):
-            act = actions[i]
+        for v in self.vehicles:
             v.illegal_action = False
             v.illegal_reason = None
-            if not act:
-                continue
 
-            target_idx = int(act['target'])
-            # [新设计] 环境自动选择子任务，不再从action中读取subtask
-            # subtask_idx = int(act['subtask'])  # 已废弃
-            # 使用优先级算法自动选择最高优先级的就绪任务
-            subtask_idx = v.task_dag.get_top_priority_task()
-            if subtask_idx is None:
-                # 没有可调度的任务，跳过
-                continue
+        # Phase-1: snapshot planning (no queue mutations), then deterministic commit.
+        plans = self._plan_actions_snapshot(actions)
+        commit_plans = [p for p in plans if p["subtask_idx"] is not None]
+        commit_plans.sort(key=lambda p: p["vehicle_id"])
 
+        for plan in commit_plans:
+            v = plan["vehicle"]
             v.illegal_action = False
-            if target_idx >= Cfg.MAX_TARGETS:
+            v.illegal_reason = None
+
+            if plan["power_dbm"] is not None:
+                v.tx_power_dbm = plan["power_dbm"]
+                self._reward_stats.add_metric("power_ratio", plan["power_ratio"])
+                self._reward_stats.add_metric("tx_power_dbm", v.tx_power_dbm)
+
+            subtask_idx = plan["subtask_idx"]
+            if subtask_idx is None or subtask_idx < 0:
+                continue
+
+            if plan["illegal_reason"] is not None:
                 v.illegal_action = True
-                v.illegal_reason = "idx_out_of_range"
-                target = 'Local'
-            elif target_idx == 0:
-                target = 'Local'
-            elif target_idx == 1:
-                rsu_id = self._last_rsu_choice.get(v.id)
-                if rsu_id is None:
-                    v.illegal_action = True
-                    v.illegal_reason = "rsu_unavailable"
-                    target = 'Local'
+                v.illegal_reason = plan["illegal_reason"]
+
+            active_agents_count += 1
+            actual_target = plan["planned_target"] if plan["planned_target"] is not None else 'Local'
+
+            # 计算等待时间（使用FIFO队列的精确计算）
+            wait_time = 0.0
+            if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                rsu_id = actual_target[1]
+                if 0 <= rsu_id < len(self.rsus):
+                    wait_time = self.rsus[rsu_id].get_estimated_wait_time()
+            elif actual_target == 'Local':
+                wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+            elif isinstance(actual_target, int):
+                t_veh = self._get_vehicle_by_id(actual_target)
+                if t_veh is not None:
+                    wait_time = t_veh.task_queue.get_estimated_wait_time(t_veh.cpu_freq)
+
+            step_congestion_cost += wait_time
+
+            v.curr_target = actual_target
+            v.curr_subtask = subtask_idx
+            assign_success = v.task_dag.assign_task(subtask_idx, actual_target)
+            if assign_success:
+                if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                    self._reward_stats.add_counter("decision_rsu")
+                elif isinstance(actual_target, int):
+                    self._reward_stats.add_counter("decision_v2v")
                 else:
-                    target = ('RSU', rsu_id)
+                    self._reward_stats.add_counter("decision_local")
+                self._reward_stats.add_counter("decision_total")
+                v.last_scheduled_subtask = subtask_idx
+                if hasattr(v, 'exec_locations') and 0 <= subtask_idx < len(v.exec_locations):
+                    v.exec_locations[subtask_idx] = actual_target
             else:
-                candidate_ids = self._last_candidates.get(v.id)
-                if candidate_ids is None:
+                continue
+
+            task_comp = v.task_dag.total_comp[subtask_idx]
+
+            if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
+                rsu_id = actual_target[1]
+                if 0 <= rsu_id < len(self.rsus):
+                    rsu = self.rsus[rsu_id]
+                    processor_id = rsu.enqueue_task(task_comp)
+                    if processor_id is None:
+                        v.illegal_action = True
+                        v.illegal_reason = "internal_invariant_violation"
+                        actual_target = 'Local'
+                        v.curr_target = 'Local'
+                        if not v.is_queue_full(new_task_cycles=task_comp):
+                            v.task_queue.enqueue(task_comp)
+            elif isinstance(actual_target, int):
+                t_veh = self._get_vehicle_by_id(actual_target)
+                if t_veh is not None:
+                    t_veh.task_queue.enqueue(task_comp)
+                else:
                     v.illegal_action = True
-                    v.illegal_reason = "no_candidate_cache"
-                    target = 'Local'
-                else:
-                    assert len(candidate_ids) == Cfg.MAX_NEIGHBORS, (
-                        f"candidate_ids length mismatch: {len(candidate_ids)} != {Cfg.MAX_NEIGHBORS}"
-                    )
-                    neighbor_list_idx = target_idx - 2
-                    if 0 <= neighbor_list_idx < len(candidate_ids):
-                        neighbor_id = candidate_ids[neighbor_list_idx]
-                        if neighbor_id is None or neighbor_id < 0:
-                            v.illegal_action = True
-                            v.illegal_reason = "id_mapping_fail"
-                            target = 'Local'
-                        else:
-                            target = neighbor_id
-                    else:
-                        v.illegal_action = True
-                        v.illegal_reason = "idx_out_of_range"
-                        target = 'Local'
+                    v.illegal_reason = "internal_invariant_violation"
+            elif actual_target == 'Local':
+                v.task_queue.enqueue(task_comp)
 
-            p_norm = np.clip(act.get('power', 1.0), 0.0, 1.0)
-            raw_power = Cfg.TX_POWER_MIN_DBM + p_norm * (Cfg.TX_POWER_MAX_DBM - Cfg.TX_POWER_MIN_DBM)
-            v.tx_power_dbm = np.clip(raw_power, Cfg.TX_POWER_MIN_DBM, Cfg.TX_POWER_MAX_DBM)
-            self._reward_stats.add_metric("power_ratio", p_norm)
-            self._reward_stats.add_metric("tx_power_dbm", v.tx_power_dbm)
-
-            # [新设计] 不再需要检查last_scheduled_subtask，因为环境自动选择任务
-            # 如果subtask_idx有效，则进行调度
-            if subtask_idx is not None and subtask_idx >= 0:
-                active_agents_count += 1
-                actual_target = target
-
-                # 使用FIFO队列进行溢出检查
-                if self._is_rsu_location(target):
-                    rsu_id = self._get_rsu_id_from_location(target)
-                    if rsu_id is None or not (0 <= rsu_id < len(self.rsus)):
-                        v.illegal_action = True
-                        v.illegal_reason = "rsu_unavailable"
-                        actual_target = 'Local'
-                    else:
-                        rsu = self.rsus[rsu_id]
-                        if not rsu.is_in_coverage(v.pos):
-                            v.illegal_action = True
-                            v.illegal_reason = "rsu_out_of_coverage"
-                            actual_target = 'Local'
-                        else:
-                            task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else Cfg.MEAN_COMP_LOAD
-                            if rsu.is_queue_full(new_task_cycles=task_comp):
-                                v.illegal_action = True
-                                v.illegal_reason = "queue_full"
-                                actual_target = 'Local'
-                            else:
-                                actual_target = ('RSU', rsu_id)
-                elif isinstance(target, int):
-                    t_veh = self._get_vehicle_by_id(target)
-                    if t_veh is None:
-                        v.illegal_action = True
-                        v.illegal_reason = "id_mapping_fail"
-                        actual_target = 'Local'
-                        t_veh = None
-                    # 获取当前任务的计算量（如果可用）
-                    task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else Cfg.MEAN_COMP_LOAD
-                    if t_veh is not None and t_veh.is_queue_full(new_task_cycles=task_comp):
-                        v.illegal_action = True
-                        v.illegal_reason = "queue_full"
-                        actual_target = 'Local'
-
-                # 计算等待时间（使用FIFO队列的精确计算）
-                wait_time = 0.0
-                if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
-                    # 多RSU场景：使用选定RSU的等待时间
-                    rsu_id = actual_target[1]
-                    if 0 <= rsu_id < len(self.rsus):
-                        wait_time = self.rsus[rsu_id].get_estimated_wait_time()
-                elif actual_target == 'Local':
-                    wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
-                elif isinstance(actual_target, int):
-                    t_veh = self._get_vehicle_by_id(actual_target)
-                    if t_veh is not None:
-                        wait_time = t_veh.task_queue.get_estimated_wait_time(t_veh.cpu_freq)
-
-                step_congestion_cost += wait_time
-
-                v.curr_target = actual_target
-                v.curr_subtask = subtask_idx
-                # assign_task现在返回bool表示是否成功分配（防止重复调度）
-                assign_success = v.task_dag.assign_task(subtask_idx, actual_target)
-                if assign_success:
-                    if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
-                        self._reward_stats.add_counter("decision_rsu")
-                    elif isinstance(actual_target, int):
-                        self._reward_stats.add_counter("decision_v2v")
-                    else:
-                        self._reward_stats.add_counter("decision_local")
-                    self._reward_stats.add_counter("decision_total")
-                    v.last_scheduled_subtask = subtask_idx
-                    # 更新exec_locations记录任务执行位置（用于CFT计算）
-                    # actual_target已经是正确的格式（'Local'、('RSU', rsu_id)或int vehicle_id）
-                    if hasattr(v, 'exec_locations') and 0 <= subtask_idx < len(v.exec_locations):
-                        v.exec_locations[subtask_idx] = actual_target
-                else:
-                    # 如果分配失败（任务已分配过或状态不允许），跳过队列更新
-                    continue
-
-                # 获取任务计算量并加入FIFO队列
-                task_comp = v.task_dag.total_comp[subtask_idx]
-                
-                if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
-                    # 多RSU场景：将任务加入选定RSU的队列
-                    rsu_id = actual_target[1]
-                    if 0 <= rsu_id < len(self.rsus):
-                        rsu = self.rsus[rsu_id]
-                        processor_id = rsu.enqueue_task(task_comp)
-                        if processor_id is None:
-                            # RSU队列满，回退到Local
-                            actual_target = 'Local'
-                            v.curr_target = 'Local'
-                            if not v.is_queue_full(new_task_cycles=task_comp):
-                                v.task_queue.enqueue(task_comp)
-                elif isinstance(actual_target, int):
-                    t_veh = self._get_vehicle_by_id(actual_target)
-                    if t_veh is not None:
-                        # 目标车辆队列
-                        t_veh.task_queue.enqueue(task_comp)
-                elif actual_target == 'Local':
-                    # 本地队列
-                    v.task_queue.enqueue(task_comp)
-
-                v.last_action_step = self.steps
-                v.last_action_target = v.curr_target
+            v.last_action_step = self.steps
+            v.last_action_target = v.curr_target
                 
         # 队列长度同步（由FIFO队列管理，在所有任务分配完成后统一同步）
         for v_check in self.vehicles:
@@ -1088,7 +1229,7 @@ class VecOffloadingEnv(gym.Env):
         if Cfg.REWARD_MODE == "delta_cft":
             v2i_users_curr = self._estimate_v2i_users()
             cft_curr = self._compute_mean_cft_pi0(
-                snapshot_time=snapshot_time,
+                snapshot_time=self.time,
                 v2i_user_count=v2i_users_curr
             )
             if Cfg.DELTA_CFT_REF_MODE == "prev":
@@ -1714,9 +1855,11 @@ class VecOffloadingEnv(gym.Env):
                 'data_matrix': padded_data_matrix,
                 'Delta': padded_Delta,
                 'status': padded_status,
-                'location': padded_location
+                'location': padded_location,
+                'obs_stamp': int(self._episode_steps)
             })
 
+        self._last_obs_stamp = int(self._episode_steps)
         if self._audit_enabled():
             assert len(obs_list) == len(self.vehicles), "obs/vehicles length mismatch"
             self._assert_vehicle_integrity()
