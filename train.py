@@ -1,9 +1,12 @@
 import time
+import json
+import csv
 import numpy as np
 import torch
 import os
 import sys
 import random
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -15,6 +18,47 @@ from agents.mappo_agent import MAPPOAgent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
+
+
+def _ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+
+
+def _read_last_jsonl(path):
+    last = None
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                last = line
+    if last is None:
+        return None
+    try:
+        return json.loads(last)
+    except Exception:
+        return None
+
+
+def _inject_obs_stamp(obs_list, actions):
+    for i, act in enumerate(actions):
+        if act is None:
+            continue
+        if i < len(obs_list) and "obs_stamp" in obs_list[i] and "obs_stamp" not in act:
+            act["obs_stamp"] = int(obs_list[i]["obs_stamp"])
+
+
+def _json_default(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if torch.is_tensor(obj):
+        return obj.item() if obj.numel() == 1 else obj.tolist()
+    return str(obj)
 
 
 def evaluate_baselines(env, num_episodes=10):
@@ -29,6 +73,7 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = random_policy.select_action(obs_list)
+            _inject_obs_stamp(obs_list, actions)
             obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
             if done or truncated:
@@ -44,6 +89,7 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = local_policy.select_action(obs_list)
+            _inject_obs_stamp(obs_list, actions)
             obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
             if done or truncated:
@@ -59,6 +105,7 @@ def evaluate_baselines(env, num_episodes=10):
         ep_reward = 0
         for step in range(TC.MAX_STEPS):
             actions = greedy_policy.select_action(obs_list)
+            _inject_obs_stamp(obs_list, actions)
             obs_list, rewards, done, truncated, _ = env.step(actions)
             ep_reward += sum(rewards) / len(rewards)
             if done or truncated:
@@ -97,6 +144,7 @@ def evaluate_single_baseline_episode(env, policy_name):
     
     for step in range(TC.MAX_STEPS):
         actions = policy.select_action(obs_list)
+        _inject_obs_stamp(obs_list, actions)
         obs_list, rewards, done, truncated, _ = env.step(actions)
         ep_reward += sum(rewards) / len(rewards)
         total_steps += 1
@@ -217,9 +265,32 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
+    run_id = os.environ.get("RUN_ID") or time.strftime("run_%Y%m%d_%H%M%S")
+    run_dir = os.environ.get("RUN_DIR") or os.path.join("runs", run_id)
+    run_dir = os.path.abspath(run_dir)
+    logs_dir = os.path.join(run_dir, "logs")
+    metrics_dir = os.path.join(run_dir, "metrics")
+    plots_dir = os.path.join(run_dir, "plots")
+    models_dir = os.path.join(run_dir, "models")
+    _ensure_dir(run_dir)
+    _ensure_dir(logs_dir)
+    _ensure_dir(metrics_dir)
+    _ensure_dir(plots_dir)
+    _ensure_dir(models_dir)
+    os.environ["RUN_ID"] = run_id
+    os.environ["RUN_DIR"] = run_dir
+    os.environ["MAX_EPISODES"] = str(TC.MAX_EPISODES)
+    os.environ["REWARD_MODE"] = str(Cfg.REWARD_MODE)
+    os.environ["SEED"] = str(Cfg.SEED)
+
+    reward_jsonl_path = os.environ.get("REWARD_JSONL_PATH")
+    if not reward_jsonl_path:
+        reward_jsonl_path = os.path.join(logs_dir, "env_reward.jsonl")
+        os.environ["REWARD_JSONL_PATH"] = reward_jsonl_path
+
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
-    recorder = DataRecorder(experiment_name=exp_name)
+    recorder = DataRecorder(experiment_name=exp_name, base_dir=run_dir)
 
     # 构建配置字典
     config_dict = {}
@@ -248,10 +319,35 @@ def main():
     config_dict.update(hyperparams)
     recorder.save_config(config_dict)
 
+    train_config_dict = {}
+    for k, v in TC.__dict__.items():
+        if k.startswith('__') or isinstance(v, (staticmethod, classmethod)) or callable(v):
+            continue
+        train_config_dict[k] = v
+
+    env_snapshot = {
+        "CFG_PROFILE": os.environ.get("CFG_PROFILE"),
+        "REWARD_MODE": os.environ.get("REWARD_MODE"),
+        "BONUS_MODE": os.environ.get("BONUS_MODE"),
+        "SEED": os.environ.get("SEED"),
+        "RUN_ID": run_id,
+        "RUN_DIR": run_dir,
+        "REWARD_JSONL_PATH": reward_jsonl_path,
+        "DEVICE_NAME": device,
+    }
+    snapshot = {
+        "system_config": config_dict,
+        "train_config": train_config_dict,
+        "env": env_snapshot,
+    }
+    with open(os.path.join(run_dir, "config_snapshot.json"), "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=True, indent=2, default=_json_default)
+
     # 打印实验信息
     print(f"{'=' * 60}")
     print(f" Experiment: {exp_name}")
     print(f" Device:     {device}")
+    print(f" Run Dir:    {run_dir}")
     print(f" Max Eps:    {hyperparams['max_episodes']}")
     print(f" LR Actor:   {hyperparams['lr_actor']}")
     print(f"{'=' * 60}")
@@ -277,6 +373,10 @@ def main():
     
     # 存储baseline的episode级指标（用于绘图）
     baseline_history = {policy: [] for policy in baseline_policies}
+    metrics_csv_path = os.path.join(metrics_dir, "train_metrics.csv")
+    metrics_jsonl_path = os.path.join(metrics_dir, "train_metrics.jsonl")
+    metrics_header_written = os.path.exists(metrics_csv_path) and os.path.getsize(metrics_csv_path) > 0
+    disable_auto_plot = os.environ.get("DISABLE_AUTO_PLOT", "").lower() in ("1", "true", "yes")
 
     print("\n[Info] Start Training...")
 
@@ -307,6 +407,8 @@ def main():
             "agent_rewards_count": 0,
             "v2v_count": 0
         }
+        terminated = False
+        truncated = False
 
         # Rollout循环
         for step in range(hyperparams['max_steps_per_ep']):
@@ -317,6 +419,7 @@ def main():
             values = action_dict['values']
 
             # 环境步进
+            _inject_obs_stamp(obs_list, actions)
             next_obs_list, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
 
@@ -376,6 +479,9 @@ def main():
             obs_list = next_obs_list
             if done:
                 break
+
+        if not (terminated or truncated):
+            env._log_episode_stats(False, True)
 
         # Episode结束后的分析与更新
         total_steps = step + 1
@@ -452,24 +558,64 @@ def main():
             assert abs((frac_local + frac_rsu + frac_v2v) - 1.0) <= 1e-3 or total_decisions == 0, \
                 f"decision fractions not summing to 1: {frac_local + frac_rsu + frac_v2v}"
 
-        # 控制台输出
-        if episode == 1 or episode % 10 == 0:
-            header = (
-                f"{'Ep':<5} | {'Reward':<9} {'AvgR':<7} | {'Veh%':<5} {'Sub%':<5} {'V2VS%':<6} | {'MA_F':<4} {'CPU':<4} | "
-                f"{'Loc%':<5} {'RSU%':<5} {'V2V%':<5} | {'AvgQ':<6} {'Pwr':<5} | {'Loss':<8} | {'Time':<4}"
-            )
-            print("-" * len(header))
-            print(header)
-            print("-" * len(header))
+        env_stats = _read_last_jsonl(reward_jsonl_path)
+        env_metrics = {}
+        if env_stats and isinstance(env_stats.get("metrics"), dict):
+            for key, stat in env_stats["metrics"].items():
+                if isinstance(stat, dict):
+                    env_metrics[f"{key}.mean"] = stat.get("mean")
+                    env_metrics[f"{key}.p95"] = stat.get("p95")
 
-        print(f"{episode:<5d} | "
-              f"{ep_reward:<9.2f} {avg_step_reward:<7.3f} | "
-              f"{veh_success_rate*100:<5.1f} {subtask_success_rate*100:<5.1f} {v2v_subtask_success_rate*100:<6.1f} | "
-              f"{fairness_index:<4.2f} {avg_assigned_cpu/1e9:<4.2f} | "
-              f"{frac_local*100:<5.1f} {frac_rsu*100:<5.1f} {frac_v2v*100:<5.1f} | "
-              f"{avg_veh_queue:<6.2f} {avg_power:<5.2f} | "
-              f"{update_loss:<8.3f} | "
-              f"{duration:<4.1f}")
+        reward_abs_mean = env_metrics.get("reward_abs.mean")
+        reward_display = reward_abs_mean if reward_abs_mean is not None else avg_step_reward
+        success_rate_end = env_stats.get("success_rate_end") if env_stats else veh_success_rate
+        subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
+        deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
+        mean_cft = env_stats.get("mean_cft") if env_stats else None
+        frac_local = env_stats.get("decision_frac_local", frac_local) if env_stats else frac_local
+        frac_rsu = env_stats.get("decision_frac_rsu", frac_rsu) if env_stats else frac_rsu
+        frac_v2v = env_stats.get("decision_frac_v2v", frac_v2v) if env_stats else frac_v2v
+        clip_hit_ratio = env_stats.get("clip_hit_ratio") if env_stats else None
+
+        # 控制台输出（每 LOG_INTERVAL 一行）
+        if episode == 1 or episode % TC.LOG_INTERVAL == 0:
+            print(
+                f"ep={episode} reward_mean={reward_display:.3f} "
+                f"success_end={success_rate_end:.3f} subtask_succ={subtask_success:.3f} "
+                f"deadline_miss={deadline_miss_rate:.3f} "
+                f"dec(L/R/V)={frac_local:.2f}/{frac_rsu:.2f}/{frac_v2v:.2f} "
+                f"clip={clip_hit_ratio if clip_hit_ratio is not None else 'NA'} "
+                f"mean_cft={mean_cft if mean_cft is not None else 'NA'} "
+                f"loss={update_loss:.3f} time={duration:.1f}s"
+            )
+
+        metrics_row = {
+            "episode": episode,
+            "episode_steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+            "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
+            "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
+            "mean_cft": mean_cft,
+            "success_rate_end": success_rate_end,
+            "deadline_miss_rate": deadline_miss_rate,
+            "subtask_success_rate": subtask_success,
+            "decision_frac_local": frac_local,
+            "decision_frac_rsu": frac_rsu,
+            "decision_frac_v2v": frac_v2v,
+            "clip_hit_ratio": clip_hit_ratio,
+            "avg_step_reward": avg_step_reward,
+            "update_loss": update_loss,
+        }
+        metrics_row.update(env_metrics)
+
+        with open(metrics_jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(metrics_row, ensure_ascii=True, default=_json_default) + "\n")
+
+        with open(metrics_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(metrics_row.keys()))
+            if not metrics_header_written:
+                writer.writeheader()
+                metrics_header_written = True
+            writer.writerow(metrics_row)
 
         # 记录到Tensorboard/CSV
         recorder.log_step(step_logs_buffer)
@@ -559,9 +705,12 @@ def main():
 
     # 训练结束与绘图
     print("\n[Info] Training Finished.")
-    print("[Info] Generating plots...")
-    recorder.auto_plot(baseline_history=baseline_history)
-    print(f"[Info] Plots saved to {recorder.plot_dir}")
+    if not disable_auto_plot:
+        print("[Info] Generating plots...")
+        recorder.auto_plot(baseline_history=baseline_history)
+        print(f"[Info] Plots saved to {recorder.plot_dir}")
+    else:
+        print("[Info] Auto-plot disabled.")
 
 
 if __name__ == "__main__":

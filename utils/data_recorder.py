@@ -45,19 +45,24 @@ class DataRecorder:
     - 自动处理 Matplotlib 绘图风格和字体兼容性。
     """
 
-    def __init__(self, experiment_name="Default_Exp"):
+    def __init__(self, experiment_name="Default_Exp", base_dir=None):
         """
         初始化文件结构
         """
-        # 1. 创建 data 根目录
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
+        if base_dir:
+            self.exp_dir = os.path.abspath(base_dir)
+            os.makedirs(self.exp_dir, exist_ok=True)
+            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+        else:
+            # 1. 创建 data 根目录
+            if not os.path.exists("./data"):
+                os.makedirs("./data")
 
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-        self.exp_dir = os.path.join("./data", f"{experiment_name}_{timestamp}")
+            timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+            self.exp_dir = os.path.join("./data", f"{experiment_name}_{timestamp}")
 
-        if not os.path.exists(self.exp_dir):
-            os.makedirs(self.exp_dir)
+            if not os.path.exists(self.exp_dir):
+                os.makedirs(self.exp_dir)
 
         self.model_dir = os.path.join(self.exp_dir, "models")
         self.plot_dir = os.path.join(self.exp_dir, "plots")
@@ -75,7 +80,10 @@ class DataRecorder:
         # log_dir 使用相对路径（兼容本地和AutoDL环境）
         if TENSORBOARD_AVAILABLE:
             # 优先使用 /root/tf-logs（AutoDL环境），否则使用项目目录下的 logs 文件夹
-            if os.path.exists('/root') and os.access('/root', os.W_OK):
+            if base_dir:
+                tb_log_dir = os.path.join(self.exp_dir, "logs", "tb")
+                os.makedirs(tb_log_dir, exist_ok=True)
+            elif os.path.exists('/root') and os.access('/root', os.W_OK):
                 tb_log_dir = f"/root/tf-logs/{experiment_name}_{timestamp}"
             else:
                 # 本地环境使用项目目录

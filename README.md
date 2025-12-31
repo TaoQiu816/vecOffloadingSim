@@ -65,7 +65,7 @@ python train.py
 ```
 训练过程会：
 - 自动评估基准策略
-- 保存训练数据到 `data/` 目录
+- 保存训练数据到 `runs/<RUN_ID>/` 目录
 - 生成TensorBoard日志（如果已安装tensorboard）
 - 定期保存模型检查点
 
@@ -75,6 +75,15 @@ python train.py
 CFG_PROFILE=train_v2v_competitive_v1 python train.py
 ```
 Profile 会在 `configs/config.py` 启动时应用，并打印 `[Cfg] applied profile=...`。
+推荐的开训配置：
+```bash
+CFG_PROFILE=train_ready_v1 python train.py
+```
+
+### 2.2 一键开训脚本
+```bash
+bash scripts/run_train_ready.sh
+```
 
 ### 3. 评估基准策略
 ```bash
@@ -152,4 +161,3 @@ python utils/plot_baseline_comparison.py
 2. TensorBoard为可选依赖，未安装不影响训练
 3. 训练过程中会定期保存模型，可随时中断恢复
 4. 基准策略评估在训练开始时自动执行
-

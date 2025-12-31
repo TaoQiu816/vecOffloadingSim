@@ -344,6 +344,34 @@ PROFILE_REGISTRY = {
         "BONUS_MODE": "none",
         "DELTA_CFT_SCALE": 8.0,
         "DELTA_CFT_ENERGY_WEIGHT": 0.03,
+    },
+    # train_ready_v1: keep V2V competitiveness, relax completion budget modestly.
+    # Typical Tcmp≈E[C]/E[f], E[C]=(MIN_COMP+MAX_COMP)/2; Ttx≈E[D]/E[R], E[D]=(MIN_DATA+MAX_DATA)/2.
+    # Ensure MAX_STEPS*DT covers several (Ttx+Wait+Tcmp) to avoid zero success at startup.
+    "train_ready_v1": {
+        "F_RSU": 6.0e9,
+        "RSU_NUM_PROCESSORS": 2,
+        "RSU_QUEUE_CYCLES_LIMIT": 8.0e9,
+        "BW_V2I": 15.0e6,
+        "BW_V2V": 40.0e6,
+        "V2V_INTERFERENCE_DBM": -110.0,
+        "V2V_RANGE": 350.0,
+        "VEHICLE_QUEUE_CYCLES_LIMIT": 6.0e9,
+        "MAX_STEPS": 400,
+        "VEHICLE_ARRIVAL_RATE": 0.05,
+        "MIN_COMP": 0.4e8,
+        "MAX_COMP": 1.6e8,
+        "MIN_DATA": 0.8e6,
+        "MAX_DATA": 2.4e6,
+        "MIN_EDGE_DATA": 0.16e6,
+        "MAX_EDGE_DATA": 0.48e6,
+        "DEADLINE_TIGHTENING_FACTOR": 1.05,
+        "DEADLINE_TIGHTENING_MIN": 8.0,
+        "DEADLINE_TIGHTENING_MAX": 12.0,
+        "REWARD_MODE": "delta_cft",
+        "BONUS_MODE": "none",
+        "DELTA_CFT_SCALE": 8.0,
+        "DELTA_CFT_ENERGY_WEIGHT": 0.03,
     }
 }
 

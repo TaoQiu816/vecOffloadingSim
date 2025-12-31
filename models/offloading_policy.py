@@ -33,16 +33,16 @@ class OffloadingPolicyNetwork(nn.Module):
     
     def __init__(self,
                  d_model: int = 128,
-                 num_heads: int = 8,
-                 num_layers: int = 4,
+                 num_heads: int = 4,
+                 num_layers: int = 3,
                  d_ff: int = 512,
                  dropout: float = 0.1,
                  continuous_dim: int = 7):
         """
         Args:
-            d_model: 模型维度
-            num_heads: 注意力头数
-            num_layers: Transformer层数
+            d_model: 模型维度（默认与 TrainConfig.EMBED_DIM 对齐）
+            num_heads: 注意力头数（默认与 TrainConfig.NUM_HEADS 对齐）
+            num_layers: Transformer层数（默认与 TrainConfig.NUM_LAYERS 对齐）
             d_ff: 前馈层维度
             dropout: Dropout率
             continuous_dim: 连续特征维度
