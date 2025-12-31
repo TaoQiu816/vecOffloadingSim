@@ -16,6 +16,62 @@ from agents.mappo_agent import MAPPOAgent
 from models.offloading_policy import OffloadingPolicyNetwork
 
 
+def _infer_num_layers(sd):
+    max_idx = -1
+    for k in sd.keys():
+        if k.startswith("transformer.layers."):
+            parts = k.split(".")
+            if len(parts) > 2 and parts[2].isdigit():
+                max_idx = max(max_idx, int(parts[2]))
+    return max_idx + 1 if max_idx >= 0 else None
+
+
+def _infer_d_model(sd):
+    key = "transformer.layers.0.attention.W_q.weight"
+    if key in sd and hasattr(sd[key], "shape"):
+        return int(sd[key].shape[0])
+    fallback_keys = [
+        "actor_critic.layer_norm.weight",
+        "layer_norm.weight",
+        "transformer.layer_norm.weight",
+    ]
+    for k in fallback_keys:
+        if k in sd and hasattr(sd[k], "shape"):
+            return int(sd[k].shape[0])
+    return None
+
+
+def _infer_num_heads(d_model):
+    if d_model is None:
+        return 1
+    if d_model % 8 == 0:
+        return 8
+    if d_model % 4 == 0:
+        return 4
+    return 1
+
+
+def _load_mappo_network(ckpt_path):
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    sd = ckpt["network_state_dict"] if isinstance(ckpt, dict) and "network_state_dict" in ckpt else ckpt
+    num_layers = _infer_num_layers(sd)
+    d_model = _infer_d_model(sd)
+    num_heads = _infer_num_heads(d_model)
+    print(f"[MAPPO] inferred d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
+
+    net = OffloadingPolicyNetwork(d_model=d_model or 128, num_layers=num_layers or 4, num_heads=num_heads)
+    try:
+        net.load_state_dict(sd, strict=True)
+    except Exception as exc:
+        print("[MAPPO] strict=True load_state_dict failed:", str(exc))
+        print("[MAPPO] retry with strict=False (audit-only)")
+        missing, unexpected = net.load_state_dict(sd, strict=False)
+        print("[MAPPO] missing keys (first 20):", missing[:20])
+        print("[MAPPO] unexpected keys (first 20):", unexpected[:20])
+    net.eval()
+    return net
+
+
 def _select_index_uniform(mask, rng):
     valid = np.where(mask)[0]
     if len(valid) == 0:
@@ -288,11 +344,13 @@ def _summarize_stats(stats):
 
 
 def _print_table(rows):
-    print("| target | decisions | success_count | fail_count | timeout_count | mean_tx | mean_wait | mean_comp | mean_delay_norm | mean_energy_norm | fail_reason_breakdown |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    total_decisions = sum(row[1] for row in rows)
+    print("| target | decisions | decision_frac | success_count | fail_count | timeout_count | mean_tx | mean_wait | mean_comp | mean_delay_norm | mean_energy_norm | fail_reason_breakdown |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         target, decisions, success, fail, timeout, mean_tx, mean_wait, mean_comp, mean_delay, mean_energy, reasons = row
-        print(f"| {target} | {decisions} | {success} | {fail} | {timeout} | "
+        frac = (decisions / total_decisions) if total_decisions > 0 else 0.0
+        print(f"| {target} | {decisions} | {frac:.4f} | {success} | {fail} | {timeout} | "
               f"{mean_tx:.4f} | {mean_wait:.4f} | {mean_comp:.4f} | "
               f"{mean_delay:.4f} | {mean_energy:.4f} | {reasons} |")
 
@@ -329,15 +387,11 @@ def main():
     for name, selector in policies:
         env = VecOffloadingEnv()
         if name == "mappo":
-            net = OffloadingPolicyNetwork()
-            state = torch.load(args.mappo_ckpt, map_location="cpu")
-            net.load_state_dict(state)
+            if not args.mappo_ckpt:
+                print("[MAPPO] ckpt not provided; skipping")
+                continue
+            net = _load_mappo_network(args.mappo_ckpt)
             agent = MAPPOAgent(net, device="cpu")
-            def select_with_mappo(mask, rng, obs=None, idx=None):
-                return None
-            # use agent to select action list
-            def policy_fn(mask, rng):
-                return None
             def run_mappo():
                 obs_list, _ = env.reset(seed=args.seed)
                 stats = {
@@ -359,6 +413,9 @@ def main():
                     for step in range(args.steps):
                         action_dict = agent.select_action(obs_list, deterministic=True)
                         actions = action_dict["actions"]
+                        assert len(actions) == len(obs_list) == len(env.vehicles), (
+                            f"action/obs/vehicles mismatch: {len(actions)} {len(obs_list)} {len(env.vehicles)}"
+                        )
                         decision_records = []
                         for i, obs in enumerate(obs_list):
                             if i >= len(actions):
