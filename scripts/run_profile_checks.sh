@@ -26,7 +26,6 @@ import json
 import os
 from pathlib import Path
 
-from pathlib import Path
 from configs.config import SystemConfig as Cfg
 from envs.vec_offloading_env import VecOffloadingEnv
 from baselines import LocalOnlyPolicy, GreedyPolicy
@@ -35,30 +34,26 @@ out_root = Path("results_dbg/profile_checks/train_v2v_competitive_v1")
 baseline_dir = out_root / "baselines"
 baseline_dir.mkdir(parents=True, exist_ok=True)
 
-# 关键：GreedyPolicy 需要 env
-env = VecOffloadingEnv()
-
-policies = [
-    ("local_only", LocalOnlyPolicy()),
-    ("greedy", GreedyPolicy(env)),
-]
-
 episodes = 10
 steps = min(200, Cfg.MAX_STEPS)
 
 summary_rows = []
 
-for name, policy in policies:
+def _rollout_policy(name, policy, env):
     jsonl_path = baseline_dir / f"{name}.jsonl"
     os.environ["REWARD_JSONL_PATH"] = str(jsonl_path)
     os.environ["MAX_EPISODES"] = str(episodes)
+    if hasattr(env, "_jsonl_path"):
+        env._jsonl_path = str(jsonl_path)
 
-    env = VecOffloadingEnv()
     for ep in range(episodes):
         obs_list, _ = env.reset(seed=ep)
         policy.reset()
         for _ in range(steps):
             actions = policy.select_action(obs_list)
+            for i, obs in enumerate(obs_list):
+                if "obs_stamp" in obs and "obs_stamp" not in actions[i]:
+                    actions[i]["obs_stamp"] = int(obs["obs_stamp"])
             obs_list, _, terminated, truncated, _ = env.step(actions)
             if terminated or truncated:
                 break
@@ -76,6 +71,14 @@ for name, policy in policies:
         "terminated": data.get("terminated"),
         "truncated": data.get("truncated"),
     })
+
+env_local = VecOffloadingEnv()
+policy_local = LocalOnlyPolicy()
+_rollout_policy("local_only", policy_local, env_local)
+
+env_greedy = VecOffloadingEnv()
+policy_greedy = GreedyPolicy(env_greedy)
+_rollout_policy("greedy", policy_greedy, env_greedy)
 
 summary_md = out_root / "baseline_summary.md"
 lines = [
