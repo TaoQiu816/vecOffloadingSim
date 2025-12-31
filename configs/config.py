@@ -357,7 +357,7 @@ PROFILE_REGISTRY = {
         "V2V_INTERFERENCE_DBM": -110.0,
         "V2V_RANGE": 350.0,
         "VEHICLE_QUEUE_CYCLES_LIMIT": 6.0e9,
-        "MAX_STEPS": 400,
+        "MAX_STEPS": 300,
         "VEHICLE_ARRIVAL_RATE": 0.05,
         "MIN_COMP": 0.4e8,
         "MAX_COMP": 1.6e8,
