@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 
 class SystemConfig:
@@ -327,3 +328,52 @@ class SystemConfig:
 
     # 更新归一化常量引用
     NORM_MAX_WAIT_TIME = DYNAMIC_MAX_WAIT_TIME  # 保持向后兼容性
+
+
+PROFILE_REGISTRY = {
+    "train_v2v_competitive_v1": {
+        "F_RSU": 6.0e9,
+        "RSU_NUM_PROCESSORS": 2,
+        "RSU_QUEUE_CYCLES_LIMIT": 8.0e9,
+        "BW_V2I": 15.0e6,
+        "BW_V2V": 40.0e6,
+        "V2V_INTERFERENCE_DBM": -110.0,
+        "V2V_RANGE": 350.0,
+        "VEHICLE_QUEUE_CYCLES_LIMIT": 6.0e9,
+        "REWARD_MODE": "delta_cft",
+        "BONUS_MODE": "none",
+        "DELTA_CFT_SCALE": 8.0,
+        "DELTA_CFT_ENERGY_WEIGHT": 0.03,
+    }
+}
+
+
+def _recompute_derived(cls):
+    cls.MAX_NEIGHBORS = max(0, min(cls.NUM_VEHICLES - 1, cls.V2V_TOP_K))
+    cls.MAX_TARGETS = 2 + cls.MAX_NEIGHBORS
+    cls.MAX_VELOCITY = cls.VEL_MAX
+
+    cls.MEAN_COMP_LOAD = (cls.MIN_COMP + cls.MAX_COMP) / 2
+    cls.AVG_COMP = (cls.MIN_COMP + cls.MAX_COMP) / 2
+
+    cls._RSU_MAX_WAIT = cls.RSU_QUEUE_LIMIT * cls.MEAN_COMP_LOAD / cls.F_RSU
+    cls._VEHICLE_MAX_WAIT = cls.VEHICLE_QUEUE_LIMIT * cls.MEAN_COMP_LOAD / cls.MIN_VEHICLE_CPU_FREQ
+    cls.DYNAMIC_MAX_WAIT_TIME = max(cls._RSU_MAX_WAIT, cls._VEHICLE_MAX_WAIT) * 1.2
+    cls.NORM_MAX_WAIT_TIME = cls.DYNAMIC_MAX_WAIT_TIME
+
+
+def apply_profile(profile_name):
+    if not profile_name:
+        return False
+    profile = PROFILE_REGISTRY.get(profile_name)
+    if profile is None:
+        print(f"[Cfg] profile not found: {profile_name}")
+        return False
+    for key, value in profile.items():
+        setattr(SystemConfig, key, value)
+    _recompute_derived(SystemConfig)
+    print(f"[Cfg] applied profile={profile_name} overrides={len(profile)}")
+    return True
+
+
+apply_profile(os.environ.get("CFG_PROFILE"))

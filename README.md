@@ -69,6 +69,13 @@ python train.py
 - 生成TensorBoard日志（如果已安装tensorboard）
 - 定期保存模型检查点
 
+### 2.1 训练参数 Profile（可选）
+使用环境变量启用参数配置覆盖（不改接口）：
+```bash
+CFG_PROFILE=train_v2v_competitive_v1 python train.py
+```
+Profile 会在 `configs/config.py` 启动时应用，并打印 `[Cfg] applied profile=...`。
+
 ### 3. 评估基准策略
 ```bash
 python eval_baselines.py
@@ -145,5 +152,4 @@ python utils/plot_baseline_comparison.py
 2. TensorBoard为可选依赖，未安装不影响训练
 3. 训练过程中会定期保存模型，可随时中断恢复
 4. 基准策略评估在训练开始时自动执行
-
 
