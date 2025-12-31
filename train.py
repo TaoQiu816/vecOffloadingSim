@@ -46,7 +46,7 @@ def _format_table_header(columns):
     parts = []
     for col in columns:
         label, width = col
-        parts.append(str(label).ljust(width))
+        parts.append(str(label).rjust(width))
     return " ".join(parts)
 
 
@@ -303,6 +303,13 @@ def main():
         TC.MAX_EPISODES = int(env_max_episodes)
     if env_max_steps:
         TC.MAX_STEPS = int(env_max_steps)
+    else:
+        # Respect SystemConfig overrides (e.g., CFG_PROFILE) if MAX_STEPS not explicitly set.
+        try:
+            if int(TC.MAX_STEPS) != int(Cfg.MAX_STEPS):
+                TC.MAX_STEPS = int(Cfg.MAX_STEPS)
+        except Exception:
+            pass
     if env_log_interval:
         TC.LOG_INTERVAL = int(env_log_interval)
     if env_eval_interval:
@@ -466,21 +473,23 @@ def main():
     metrics_header_written = os.path.exists(metrics_csv_path) and os.path.getsize(metrics_csv_path) > 0
     disable_auto_plot = os.environ.get("DISABLE_AUTO_PLOT", "").lower() in ("1", "true", "yes")
     table_columns = [
-        ("ep", 6),
-        ("steps", 7),
-        ("reward", 10),
-        ("entropy", 8),
-        ("clip", 6),
-        ("v_loss", 8),
-        ("p_loss", 8),
+        ("ep", 4),
+        ("steps", 6),
+        ("r_mean", 8),
+        ("r_p95", 8),
         ("succ", 6),
+        ("sub", 6),
         ("miss", 6),
+        ("clip", 6),
+        ("ill", 6),
+        ("hard", 6),
         ("L", 5),
         ("R", 5),
         ("V", 5),
-        ("mean_cft", 9),
-        ("delta_cft", 9),
-        ("elapsed", 8),
+        ("mean_cft", 8),
+        ("dCFT", 8),
+        ("loss", 7),
+        ("elapsed", 7),
     ]
     table_row_count = 0
 
@@ -673,10 +682,13 @@ def main():
                     env_metrics[f"{key}.p95"] = stat.get("p95")
 
         reward_abs_mean = env_metrics.get("reward_abs.mean")
+        reward_abs_p95 = env_metrics.get("reward_abs.p95")
         reward_display = reward_abs_mean if reward_abs_mean is not None else avg_step_reward
         success_rate_end = env_stats.get("success_rate_end") if env_stats else veh_success_rate
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
         deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
+        illegal_action_rate = env_stats.get("illegal_action_rate") if env_stats else None
+        hard_trigger_rate = env_stats.get("hard_trigger_rate") if env_stats else None
         mean_cft = env_stats.get("mean_cft") if env_stats else None
         frac_local = env_stats.get("decision_frac_local", frac_local) if env_stats else frac_local
         frac_rsu = env_stats.get("decision_frac_rsu", frac_rsu) if env_stats else frac_rsu
@@ -687,22 +699,26 @@ def main():
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
             if table_row_count % 20 == 0:
-                print(_format_table_header(table_columns), flush=True)
+                header_line = _format_table_header(table_columns)
+                print(header_line, flush=True)
+                print("-" * len(header_line), flush=True)
             table_row = {
                 "ep": episode,
                 "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
-                "reward": reward_display,
-                "entropy": None,
-                "clip": clip_hit_ratio,
-                "v_loss": None,
-                "p_loss": None,
+                "r_mean": reward_display,
+                "r_p95": reward_abs_p95,
                 "succ": success_rate_end,
+                "sub": subtask_success,
                 "miss": deadline_miss_rate,
+                "clip": clip_hit_ratio,
+                "ill": illegal_action_rate,
+                "hard": hard_trigger_rate,
                 "L": frac_local,
                 "R": frac_rsu,
                 "V": frac_v2v,
                 "mean_cft": mean_cft,
-                "delta_cft": delta_cft_mean,
+                "dCFT": delta_cft_mean,
+                "loss": update_loss,
                 "elapsed": duration,
             }
             print(_format_table_row(table_row, table_columns), flush=True)
@@ -727,6 +743,9 @@ def main():
             "decision_frac_rsu": frac_rsu,
             "decision_frac_v2v": frac_v2v,
             "clip_hit_ratio": clip_hit_ratio,
+            "illegal_action_rate": illegal_action_rate,
+            "hard_trigger_rate": hard_trigger_rate,
+            "reward_abs_p95": reward_abs_p95,
             "avg_step_reward": avg_step_reward,
             "update_loss": update_loss,
             "elapsed_time": duration,
