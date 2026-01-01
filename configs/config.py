@@ -397,12 +397,14 @@ def apply_profile(profile_name):
         return False
     profile = PROFILE_REGISTRY.get(profile_name)
     if profile is None:
-        print(f"[Cfg] profile not found: {profile_name}")
+        if os.environ.get("CFG_PROFILE_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+            print(f"[Cfg] profile not found: {profile_name}")
         return False
     for key, value in profile.items():
         setattr(SystemConfig, key, value)
     _recompute_derived(SystemConfig)
-    print(f"[Cfg] applied profile={profile_name} overrides={len(profile)}")
+    if os.environ.get("CFG_PROFILE_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+        print(f"[Cfg] applied profile={profile_name} overrides={len(profile)}")
     return True
 
 

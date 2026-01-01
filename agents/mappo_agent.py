@@ -192,6 +192,7 @@ class MAPPOAgent:
         total_value = 0.0
         total_kl = 0.0
         total_clip = 0.0
+        total_grad_norm = 0.0
         num_updates = 0
         
         for _ in range(TC.PPO_EPOCH):
@@ -233,7 +234,7 @@ class MAPPOAgent:
                 loss.backward()
 
                 # 梯度裁剪
-                nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
+                grad_norm = nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
                 
                 # 检查梯度是否有效
                 has_invalid_grad = False
@@ -250,6 +251,7 @@ class MAPPOAgent:
                     total_value += value_loss.item()
                     total_kl += approx_kl.item()
                     total_clip += clip_frac.item()
+                    total_grad_norm += float(grad_norm) if grad_norm is not None else 0.0
                     num_updates += 1
 
         if num_updates > 0:
@@ -260,6 +262,7 @@ class MAPPOAgent:
                 "value_loss": total_value / num_updates,
                 "approx_kl": total_kl / num_updates,
                 "clip_fraction": total_clip / num_updates,
+                "grad_norm": total_grad_norm / num_updates,
             }
         else:
             self.last_update_stats = {
@@ -269,6 +272,7 @@ class MAPPOAgent:
                 "value_loss": None,
                 "approx_kl": None,
                 "clip_fraction": None,
+                "grad_norm": None,
             }
 
         return total_loss / num_updates if num_updates > 0 else 0.0

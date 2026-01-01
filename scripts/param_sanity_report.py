@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Purpose: emit a sanity report of config/train parameters for audit.
+Inputs: CLI args; uses env vars like CFG_PROFILE when set.
+Outputs: Markdown/CSV under results_dbg/param_sanity_report by default.
+Example: python scripts/param_sanity_report.py --out_dir results_dbg/param_report
+"""
 import argparse
 import os
 import sys

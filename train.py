@@ -7,11 +7,12 @@ import os
 import sys
 import random
 import re
+import argparse
 from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from configs.config import SystemConfig as Cfg
+from configs.config import SystemConfig as Cfg, apply_profile
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from models.offloading_policy import OffloadingPolicyNetwork
@@ -74,6 +75,50 @@ def _format_table_row(values, columns):
     return "| " + " | ".join(parts) + " |"
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Train MAPPO offloading policy.")
+    parser.add_argument("--max-episodes", type=int, default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--log-interval", type=int, default=None)
+    parser.add_argument("--eval-interval", type=int, default=None)
+    parser.add_argument("--save-interval", type=int, default=None)
+    parser.add_argument("--reward-mode", type=str, default=None)
+    parser.add_argument("--bonus-mode", type=str, default=None)
+    parser.add_argument("--cfg-profile", type=str, default=None)
+    parser.add_argument("--run-id", type=str, default=None)
+    parser.add_argument("--run-dir", type=str, default=None)
+    parser.add_argument("--step-metrics", action="store_true", default=False)
+    parser.add_argument("--no-step-metrics", action="store_true", default=False)
+    return parser.parse_args()
+
+
+def _env_int(name):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _env_str(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    return raw if raw else None
+
+
+def _bool_env(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _collect_obs_stats(obs_list):
     if not obs_list:
         return {}
@@ -107,6 +152,29 @@ def _collect_obs_stats(obs_list):
     if target_mask is not None:
         stats["obs/target_mask_true_frac"] = float(np.mean(target_mask))
     return stats
+
+
+def _snapshot_reward_stats(env):
+    snapshot = {}
+    if not hasattr(env, "_reward_stats"):
+        return snapshot
+    for name, bucket in env._reward_stats.metrics.items():
+        snapshot[name] = (bucket.sum, bucket.count)
+    return snapshot
+
+
+def _delta_mean(snapshot, env, key):
+    if not hasattr(env, "_reward_stats"):
+        return None
+    bucket = env._reward_stats.metrics.get(key)
+    if bucket is None:
+        return None
+    prev_sum, prev_count = snapshot.get(key, (0.0, 0))
+    delta_sum = bucket.sum - prev_sum
+    delta_count = bucket.count - prev_count
+    if delta_count <= 0:
+        return None
+    return delta_sum / delta_count
 
 
 def _inject_obs_stamp(obs_list, actions):
@@ -289,26 +357,46 @@ def evaluate_single_baseline_episode(env, policy_name):
 
 
 def main():
+    args = _parse_args()
     disable_baseline_eval = False
-    env_reward_mode = os.environ.get("REWARD_MODE")
-    env_bonus_mode = os.environ.get("BONUS_MODE")
-    env_seed = os.environ.get("SEED")
-    env_max_episodes = os.environ.get("MAX_EPISODES")
-    env_max_steps = os.environ.get("MAX_STEPS")
-    env_log_interval = os.environ.get("LOG_INTERVAL")
-    env_eval_interval = os.environ.get("EVAL_INTERVAL")
-    env_save_interval = os.environ.get("SAVE_INTERVAL")
-    env_disable_baseline = os.environ.get("DISABLE_BASELINE_EVAL")
-    env_use_lr_decay = os.environ.get("USE_LR_DECAY")
-    env_device = os.environ.get("DEVICE_NAME")
+    if args.cfg_profile:
+        os.environ["CFG_PROFILE"] = args.cfg_profile
+        apply_profile(args.cfg_profile)
 
-    if env_reward_mode:
-        Cfg.REWARD_MODE = env_reward_mode
-    if env_bonus_mode:
-        Cfg.BONUS_MODE = env_bonus_mode
-    if env_max_episodes:
+    if os.environ.get("EPISODE_JSONL_STDOUT") is None:
+        Cfg.EPISODE_JSONL_STDOUT = False
+
+    env_reward_mode = _env_str("REWARD_MODE")
+    env_bonus_mode = _env_str("BONUS_MODE")
+    env_seed = _env_int("SEED")
+    env_max_episodes = _env_int("MAX_EPISODES")
+    env_max_steps = _env_int("MAX_STEPS")
+    env_log_interval = _env_int("LOG_INTERVAL")
+    env_eval_interval = _env_int("EVAL_INTERVAL")
+    env_save_interval = _env_int("SAVE_INTERVAL")
+    env_disable_baseline = _env_str("DISABLE_BASELINE_EVAL")
+    env_use_lr_decay = _env_str("USE_LR_DECAY")
+    env_device = _env_str("DEVICE_NAME")
+
+    reward_mode = args.reward_mode or env_reward_mode or Cfg.REWARD_MODE
+    bonus_mode = args.bonus_mode or env_bonus_mode or Cfg.BONUS_MODE
+    if reward_mode:
+        Cfg.REWARD_MODE = reward_mode
+    if bonus_mode:
+        Cfg.BONUS_MODE = bonus_mode
+
+    if args.max_episodes is not None:
+        TC.MAX_EPISODES = int(args.max_episodes)
+    elif env_max_episodes is not None:
         TC.MAX_EPISODES = int(env_max_episodes)
-    if env_max_steps:
+    else:
+        profile_max = getattr(Cfg, "MAX_EPISODES", None)
+        if profile_max is not None:
+            TC.MAX_EPISODES = int(profile_max)
+
+    if args.max_steps is not None:
+        TC.MAX_STEPS = int(args.max_steps)
+    elif env_max_steps is not None:
         TC.MAX_STEPS = int(env_max_steps)
     else:
         # Respect SystemConfig overrides (e.g., CFG_PROFILE) if MAX_STEPS not explicitly set.
@@ -317,27 +405,46 @@ def main():
                 TC.MAX_STEPS = int(Cfg.MAX_STEPS)
         except Exception:
             pass
-    if env_log_interval:
+
+    if args.log_interval is not None:
+        TC.LOG_INTERVAL = int(args.log_interval)
+    elif env_log_interval is not None:
         TC.LOG_INTERVAL = int(env_log_interval)
-    if env_eval_interval:
+
+    if args.eval_interval is not None:
+        TC.EVAL_INTERVAL = int(args.eval_interval)
+    elif env_eval_interval is not None:
         TC.EVAL_INTERVAL = int(env_eval_interval)
-    if env_save_interval:
+
+    if args.save_interval is not None:
+        TC.SAVE_INTERVAL = int(args.save_interval)
+    elif env_save_interval is not None:
         TC.SAVE_INTERVAL = int(env_save_interval)
+
     if env_use_lr_decay is not None:
         TC.USE_LR_DECAY = env_use_lr_decay.lower() in ("1", "true", "yes")
-    if env_device:
+    if args.device:
+        TC.DEVICE_NAME = args.device
+    elif env_device:
         TC.DEVICE_NAME = env_device
+
     if env_disable_baseline:
         disable_baseline_eval = env_disable_baseline.lower() in ("1", "true", "yes")
 
-    if env_seed is not None:
-        seed = int(env_seed)
-        Cfg.SEED = seed
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
+    seed = args.seed if args.seed is not None else env_seed
+    if seed is not None:
+        Cfg.SEED = int(seed)
+        np.random.seed(int(seed))
+        random.seed(int(seed))
+        torch.manual_seed(int(seed))
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+            torch.cuda.manual_seed_all(int(seed))
+
+    log_step_metrics = _bool_env("LOG_STEP_METRICS", False)
+    if args.step_metrics:
+        log_step_metrics = True
+    if args.no_step_metrics:
+        log_step_metrics = False
 
     # 开启 CuDNN 加速
     if torch.cuda.is_available():
@@ -346,8 +453,8 @@ def main():
     start_ts = time.strftime("%Y%m%d_%H%M%S")
     def _has_ts(name):
         return bool(re.search(r"\d{8}_\d{6}$", name))
-    run_dir_env = os.environ.get("RUN_DIR")
-    run_id_env = os.environ.get("RUN_ID")
+    run_dir_env = args.run_dir or os.environ.get("RUN_DIR")
+    run_id_env = args.run_id or os.environ.get("RUN_ID")
     if run_dir_env:
         run_dir = run_dir_env
         base = os.path.basename(run_dir.rstrip(os.sep))
@@ -369,7 +476,6 @@ def main():
     models_dir = os.path.join(run_dir, "models")
     _ensure_dir(run_dir)
     _ensure_dir(logs_dir)
-    _ensure_dir(metrics_dir)
     _ensure_dir(plots_dir)
     _ensure_dir(models_dir)
     os.environ["RUN_ID"] = run_id
@@ -390,7 +496,7 @@ def main():
 
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
-    recorder = DataRecorder(experiment_name=exp_name, base_dir=run_dir)
+    recorder = DataRecorder(experiment_name=exp_name, base_dir=run_dir, quiet=True)
 
     # 构建配置字典
     config_dict = {}
@@ -440,19 +546,39 @@ def main():
         "train_config": train_config_dict,
         "env": env_snapshot,
     }
-    with open(os.path.join(run_dir, "config_snapshot.json"), "w", encoding="utf-8") as f:
+    config_snapshot_path = os.path.join(logs_dir, "config_snapshot.json")
+    with open(config_snapshot_path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=True, indent=2, default=_json_default)
 
-    # 打印实验信息
-    print(f"{'=' * 60}")
-    print(f" Experiment: {exp_name}")
-    print(f" Device:     {device}")
-    print(f" Run Dir:    {run_dir}")
-    print(f" Reward:     {Cfg.REWARD_MODE}")
-    print(f" Seed:       {Cfg.SEED}")
-    print(f" Max Eps:    {hyperparams['max_episodes']}")
-    print(f" LR Actor:   {hyperparams['lr_actor']}")
-    print(f"{'=' * 60}")
+    # 打印生效配置表（stdout仅保留这一张表 + 训练表格行）
+    info_rows = [
+        ("REWARD_MODE", Cfg.REWARD_MODE),
+        ("SEED", Cfg.SEED),
+        ("DT", Cfg.DT),
+        ("MAX_STEPS", TC.MAX_STEPS),
+        ("MAX_EPISODES", TC.MAX_EPISODES),
+        ("CFG_PROFILE", os.environ.get("CFG_PROFILE")),
+        ("BW_V2I", Cfg.BW_V2I),
+        ("BW_V2V", Cfg.BW_V2V),
+        ("V2V_RANGE", Cfg.V2V_RANGE),
+        ("RSU_RANGE", Cfg.RSU_RANGE),
+        ("MIN_CPU", Cfg.MIN_VEHICLE_CPU_FREQ),
+        ("MAX_CPU", Cfg.MAX_VEHICLE_CPU_FREQ),
+        ("F_RSU", Cfg.F_RSU),
+        ("MIN_NODES", Cfg.MIN_NODES),
+        ("MAX_NODES", Cfg.MAX_NODES),
+        ("MIN_COMP", Cfg.MIN_COMP),
+        ("MAX_COMP", Cfg.MAX_COMP),
+        ("MIN_DATA", Cfg.MIN_DATA),
+        ("MAX_DATA", Cfg.MAX_DATA),
+    ]
+    info_cols = [("key", 18), ("value", 32)]
+    print(_format_table_divider(info_cols), flush=True)
+    print(_format_table_header(info_cols), flush=True)
+    print(_format_table_divider(info_cols), flush=True)
+    for key, val in info_rows:
+        print(_format_table_row({"key": key, "value": val}, info_cols), flush=True)
+    print(_format_table_divider(info_cols), flush=True)
 
     # 初始化环境
     env = VecOffloadingEnv()
@@ -475,43 +601,103 @@ def main():
     
     # 存储baseline的episode级指标（用于绘图）
     baseline_history = {policy: [] for policy in baseline_policies}
-    metrics_csv_path = os.path.join(metrics_dir, "train_metrics.csv")
-    metrics_jsonl_path = os.path.join(metrics_dir, "train_metrics.jsonl")
+    metrics_csv_path = os.path.join(logs_dir, "metrics.csv")
+    metrics_jsonl_path = os.path.join(logs_dir, "metrics.jsonl")
+    legacy_metrics_csv_path = os.path.join(metrics_dir, "metrics.csv")
+    legacy_metrics_jsonl_path = os.path.join(metrics_dir, "metrics.jsonl")
+    legacy_train_csv_path = os.path.join(metrics_dir, "train_metrics.csv")
+    legacy_train_jsonl_path = os.path.join(metrics_dir, "train_metrics.jsonl")
+    _ensure_dir(metrics_dir)
     metrics_header_written = os.path.exists(metrics_csv_path) and os.path.getsize(metrics_csv_path) > 0
+    legacy_metrics_header_written = os.path.exists(legacy_metrics_csv_path) and os.path.getsize(legacy_metrics_csv_path) > 0
+    legacy_train_header_written = os.path.exists(legacy_train_csv_path) and os.path.getsize(legacy_train_csv_path) > 0
     disable_auto_plot = os.environ.get("DISABLE_AUTO_PLOT", "").lower() in ("1", "true", "yes")
+    step_metrics_csv_path = os.path.join(logs_dir, "step_metrics.csv")
+    step_metrics_header_written = os.path.exists(step_metrics_csv_path) and os.path.getsize(step_metrics_csv_path) > 0
+    metrics_fields = [
+        "episode",
+        "steps",
+        "elapsed_sec",
+        "reward_mode",
+        "seed",
+        # reward: signed per-step mean/p95; abs_mean optional
+        "reward_mean",
+        "reward_p50",
+        "reward_p95",
+        "reward_min",
+        "reward_max",
+        "reward_abs_mean",
+        # CFT metrics: mean_cft is absolute mean; delta_cft_rem is remaining-time delta
+        "mean_cft",
+        "delta_cft_rem_mean",
+        "delta_cft_rem_p95",
+        "mean_cft_rem",
+        # success/safety
+        "success_rate_end",
+        "task_success_rate",
+        "subtask_success_rate",
+        "deadline_miss_rate",
+        "illegal_action_rate",
+        "hard_trigger_rate",
+        # decisions
+        "decision_frac_local",
+        "decision_frac_rsu",
+        "decision_frac_v2v",
+        # action power ratio
+        "power_ratio_mean",
+        "power_ratio_p95",
+        # PPO diagnostics
+        "entropy",
+        "approx_kl",
+        "clip_frac",
+        "policy_loss",
+        "value_loss",
+        "total_loss",
+        "grad_norm",
+    ]
+    step_metrics_fields = [
+        "episode",
+        "step",
+        "reward_mean",
+        "delta_cft_mean",
+        "cft_prev_rem_mean",
+        "cft_curr_rem_mean",
+        "cft_rem_ratio",
+        "energy_norm_mean",
+        "delay_norm_mean",
+    ]
     table_columns = [
         ("ep", 4),
         ("steps", 6),
         ("r_mean", 8),
         ("r_p95", 8),
         ("ent", 7),
-        ("p_loss", 7),
-        ("v_loss", 7),
-        ("kl", 6),
+        ("kl", 8),
+        ("clip_frac", 9),
+        ("p_loss", 8),
+        ("v_loss", 8),
+        ("total_loss", 10),
         ("succ", 6),
+        ("task", 6),
         ("sub", 6),
         ("miss", 6),
-        ("clip", 6),
         ("ill", 6),
         ("hard", 6),
         ("L", 5),
         ("R", 5),
         ("V", 5),
-        ("mean_cft", 8),
-        ("dCFT", 8),
-        ("loss", 7),
+        ("mean_cft", 9),
+        ("dCFT", 9),
+        ("power", 7),
         ("elapsed", 7),
     ]
     table_row_count = 0
-
-    print("\n[Info] Start Training...")
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
         # 学习率衰减
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
             agent.decay_lr()
-            print(f"[Info] LR Decayed at Episode {episode}")
 
         # 重置环境
         obs_list, _ = env.reset()
@@ -519,6 +705,8 @@ def main():
         ep_reward = 0
         ep_start_time = time.time()
         step_logs_buffer = []
+        ep_step_rewards = []
+        step_metrics_rows = []
 
         # 统计容器
         stats = {
@@ -546,6 +734,7 @@ def main():
 
             # 环境步进
             _inject_obs_stamp(obs_list, actions)
+            reward_snapshot = _snapshot_reward_stats(env) if log_step_metrics else {}
             next_obs_list, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
 
@@ -560,6 +749,28 @@ def main():
             num_agents = len(rewards) if len(rewards) > 0 else 1
             step_r = sum(rewards) / num_agents
             ep_reward += step_r
+            ep_step_rewards.append(step_r)
+
+            if log_step_metrics:
+                delta_cft_step = _delta_mean(reward_snapshot, env, "delta_cft")
+                cft_prev_rem_step = _delta_mean(reward_snapshot, env, "cft_prev_rem")
+                cft_curr_rem_step = _delta_mean(reward_snapshot, env, "cft_curr_rem")
+                energy_step = _delta_mean(reward_snapshot, env, "energy_norm")
+                delay_step = _delta_mean(reward_snapshot, env, "delay_norm")
+                cft_ratio = None
+                if cft_curr_rem_step is not None and cft_curr_rem_step > 0:
+                    cft_ratio = (cft_prev_rem_step or 0.0) / cft_curr_rem_step
+                step_metrics_rows.append({
+                    "episode": episode,
+                    "step": step,
+                    "reward_mean": step_r,
+                    "delta_cft_mean": delta_cft_step,
+                    "cft_prev_rem_mean": cft_prev_rem_step,
+                    "cft_curr_rem_mean": cft_curr_rem_step,
+                    "cft_rem_ratio": cft_ratio,
+                    "energy_norm_mean": energy_step,
+                    "delay_norm_mean": delay_step,
+                })
 
             num_vehs = len(env.vehicles)
             for i, act in enumerate(actions):
@@ -692,10 +903,18 @@ def main():
                     env_metrics[f"{key}.mean"] = stat.get("mean")
                     env_metrics[f"{key}.p95"] = stat.get("p95")
 
+        step_rewards = np.array(ep_step_rewards, dtype=np.float32) if ep_step_rewards else np.array([0.0], dtype=np.float32)
+        reward_mean = float(np.mean(step_rewards))
+        reward_p50 = float(np.percentile(step_rewards, 50))
+        reward_p95 = float(np.percentile(step_rewards, 95))
+        reward_min = float(np.min(step_rewards))
+        reward_max = float(np.max(step_rewards))
+
         reward_abs_mean = env_metrics.get("reward_abs.mean")
-        reward_abs_p95 = env_metrics.get("reward_abs.p95")
-        reward_display = reward_abs_mean if reward_abs_mean is not None else avg_step_reward
+        if reward_abs_mean is None:
+            reward_abs_mean = float(np.mean(np.abs(step_rewards)))
         success_rate_end = env_stats.get("success_rate_end") if env_stats else veh_success_rate
+        task_success_rate = env_stats.get("task_success_rate", task_success_rate) if env_stats else task_success_rate
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
         deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
         illegal_action_rate = env_stats.get("illegal_action_rate") if env_stats else None
@@ -705,7 +924,20 @@ def main():
         frac_rsu = env_stats.get("decision_frac_rsu", frac_rsu) if env_stats else frac_rsu
         frac_v2v = env_stats.get("decision_frac_v2v", frac_v2v) if env_stats else frac_v2v
         clip_hit_ratio = env_stats.get("clip_hit_ratio") if env_stats else None
-        delta_cft_mean = env_metrics.get("delta_cft.mean")
+        delta_cft_rem_mean = env_metrics.get("delta_cft_rem.mean")
+        delta_cft_rem_p95 = env_metrics.get("delta_cft_rem.p95")
+        if delta_cft_rem_mean is None:
+            delta_cft_rem_mean = env_metrics.get("delta_cft.mean")
+        if delta_cft_rem_p95 is None:
+            delta_cft_rem_p95 = env_metrics.get("delta_cft.p95")
+        mean_cft = env_stats.get("mean_cft") if env_stats else None
+        if mean_cft is None:
+            mean_cft = env_metrics.get("cft_curr_abs.mean")
+        mean_cft_rem = env_metrics.get("cft_curr_rem.mean")
+        if mean_cft_rem is None and mean_cft is not None:
+            mean_cft_rem = max(mean_cft - env.time, 0.0)
+        power_ratio_mean = env_metrics.get("power_ratio.mean")
+        power_ratio_p95 = env_metrics.get("power_ratio.p95")
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
@@ -718,24 +950,26 @@ def main():
             table_row = {
                 "ep": episode,
                 "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
-                "r_mean": reward_display,
-                "r_p95": reward_abs_p95,
+                "r_mean": reward_mean,
+                "r_p95": reward_p95,
                 "ent": None,
+                "kl": None,
+                "clip_frac": clip_hit_ratio,
                 "p_loss": None,
                 "v_loss": None,
-                "kl": None,
+                "total_loss": update_loss,
                 "succ": success_rate_end,
+                "task": task_success_rate,
                 "sub": subtask_success,
                 "miss": deadline_miss_rate,
-                "clip": clip_hit_ratio,
                 "ill": illegal_action_rate,
                 "hard": hard_trigger_rate,
                 "L": frac_local,
                 "R": frac_rsu,
                 "V": frac_v2v,
                 "mean_cft": mean_cft,
-                "dCFT": delta_cft_mean,
-                "loss": update_loss,
+                "dCFT": delta_cft_rem_mean,
+                "power": power_ratio_mean,
                 "elapsed": duration,
             }
             update_stats = getattr(agent, "last_update_stats", {}) or {}
@@ -743,48 +977,131 @@ def main():
             table_row["p_loss"] = update_stats.get("policy_loss")
             table_row["v_loss"] = update_stats.get("value_loss")
             table_row["kl"] = update_stats.get("approx_kl")
+            table_row["clip_frac"] = update_stats.get("clip_fraction", clip_hit_ratio)
+            table_row["total_loss"] = update_stats.get("loss", update_loss)
             print(_format_table_row(table_row, table_columns), flush=True)
             table_row_count += 1
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         metrics_row = {
+            # episode metadata
             "episode": episode,
-            "episode_steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+            "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+            "elapsed_sec": duration,
             "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
-            "reward_mean": reward_display,
-            "entropy": update_stats.get("entropy"),
-            "clip_fraction": update_stats.get("clip_fraction", clip_hit_ratio),
-            "value_loss": update_stats.get("value_loss"),
-            "policy_loss": update_stats.get("policy_loss"),
-            "approx_kl": update_stats.get("approx_kl"),
+            # reward: signed per-step mean/p95 (avoid reward_abs for policy quality)
+            "reward_mean": reward_mean,
+            "reward_p50": reward_p50,
+            "reward_p95": reward_p95,
+            "reward_min": reward_min,
+            "reward_max": reward_max,
+            "reward_abs_mean": reward_abs_mean,
+            # CFT: absolute mean and remaining-time delta (delta_cft_rem)
             "mean_cft": mean_cft,
-            "delta_cft_mean": delta_cft_mean,
+            "delta_cft_rem_mean": delta_cft_rem_mean,
+            "delta_cft_rem_p95": delta_cft_rem_p95,
+            "mean_cft_rem": mean_cft_rem,
+            # success/safety
             "success_rate_end": success_rate_end,
-            "deadline_miss_rate": deadline_miss_rate,
+            "task_success_rate": task_success_rate,
             "subtask_success_rate": subtask_success,
+            "deadline_miss_rate": deadline_miss_rate,
+            "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
+            # decisions
             "decision_frac_local": frac_local,
             "decision_frac_rsu": frac_rsu,
             "decision_frac_v2v": frac_v2v,
-            "clip_hit_ratio": clip_hit_ratio,
-            "illegal_action_rate": illegal_action_rate,
-            "hard_trigger_rate": hard_trigger_rate,
-            "reward_abs_p95": reward_abs_p95,
-            "avg_step_reward": avg_step_reward,
-            "update_loss": update_stats.get("loss", update_loss),
-            "elapsed_time": duration,
+            # action power: normalized power ratio stats
+            "power_ratio_mean": power_ratio_mean,
+            "power_ratio_p95": power_ratio_p95,
+            # PPO diagnostics
+            "entropy": update_stats.get("entropy"),
+            "approx_kl": update_stats.get("approx_kl"),
+            "clip_frac": update_stats.get("clip_fraction", clip_hit_ratio),
+            "policy_loss": update_stats.get("policy_loss"),
+            "value_loss": update_stats.get("value_loss"),
+            "total_loss": update_stats.get("loss", update_loss),
+            "grad_norm": update_stats.get("grad_norm"),
         }
-        metrics_row.update(env_metrics)
+        metrics_row_full = dict(metrics_row)
+        metrics_row_full.update(env_metrics)
 
         with open(metrics_jsonl_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(metrics_row, ensure_ascii=True, default=_json_default) + "\n")
+            f.write(json.dumps(metrics_row_full, ensure_ascii=True, default=_json_default) + "\n")
+        with open(legacy_metrics_jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(metrics_row_full, ensure_ascii=True, default=_json_default) + "\n")
+        with open(legacy_train_jsonl_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(metrics_row_full, ensure_ascii=True, default=_json_default) + "\n")
 
         with open(metrics_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(metrics_row.keys()))
+            writer = csv.DictWriter(f, fieldnames=metrics_fields, extrasaction="ignore")
             if not metrics_header_written:
                 writer.writeheader()
                 metrics_header_written = True
             writer.writerow(metrics_row)
+        with open(legacy_metrics_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=metrics_fields, extrasaction="ignore")
+            if not legacy_metrics_header_written:
+                writer.writeheader()
+                legacy_metrics_header_written = True
+            writer.writerow(metrics_row)
+        with open(legacy_train_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=metrics_fields, extrasaction="ignore")
+            if not legacy_train_header_written:
+                writer.writeheader()
+                legacy_train_header_written = True
+            writer.writerow(metrics_row)
+
+        if recorder.writer is not None:
+            tb = recorder.writer
+            # reward
+            tb.add_scalar("reward/mean", reward_mean, episode)
+            tb.add_scalar("reward/p95", reward_p95, episode)
+            if reward_abs_mean is not None:
+                tb.add_scalar("reward/abs_mean", reward_abs_mean, episode)
+            # CFT
+            if mean_cft is not None:
+                tb.add_scalar("cft/mean_cft", mean_cft, episode)
+            if delta_cft_rem_mean is not None:
+                tb.add_scalar("cft/delta_cft_rem_mean", delta_cft_rem_mean, episode)
+            # success
+            tb.add_scalar("success/success_rate_end", success_rate_end, episode)
+            tb.add_scalar("success/task_success_rate", task_success_rate, episode)
+            tb.add_scalar("success/subtask_success_rate", subtask_success, episode)
+            tb.add_scalar("success/deadline_miss_rate", deadline_miss_rate, episode)
+            # safety
+            tb.add_scalar("safety/illegal_action_rate", illegal_action_rate or 0.0, episode)
+            tb.add_scalar("safety/hard_trigger_rate", hard_trigger_rate or 0.0, episode)
+            # decision
+            tb.add_scalar("decision/frac_local", frac_local, episode)
+            tb.add_scalar("decision/frac_rsu", frac_rsu, episode)
+            tb.add_scalar("decision/frac_v2v", frac_v2v, episode)
+            # PPO
+            if update_stats.get("entropy") is not None:
+                tb.add_scalar("ppo/entropy", update_stats.get("entropy"), episode)
+            if update_stats.get("approx_kl") is not None:
+                tb.add_scalar("ppo/approx_kl", update_stats.get("approx_kl"), episode)
+            if update_stats.get("clip_fraction") is not None:
+                tb.add_scalar("ppo/clip_frac", update_stats.get("clip_fraction"), episode)
+            if update_stats.get("policy_loss") is not None:
+                tb.add_scalar("ppo/p_loss", update_stats.get("policy_loss"), episode)
+            if update_stats.get("value_loss") is not None:
+                tb.add_scalar("ppo/v_loss", update_stats.get("value_loss"), episode)
+            if update_stats.get("loss") is not None:
+                tb.add_scalar("ppo/total_loss", update_stats.get("loss"), episode)
+            # action power
+            if power_ratio_mean is not None:
+                tb.add_scalar("action/power_ratio_mean", power_ratio_mean, episode)
+
+        if log_step_metrics and step_metrics_rows:
+            with open(step_metrics_csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=step_metrics_fields, extrasaction="ignore")
+                if not step_metrics_header_written:
+                    writer.writeheader()
+                    step_metrics_header_written = True
+                writer.writerows(step_metrics_rows)
 
         # 记录到Tensorboard/CSV
         recorder.log_step(step_logs_buffer)
@@ -878,13 +1195,8 @@ def main():
             agent.save(os.path.join(recorder.model_dir, f"model_ep{episode}.pth"))
 
     # 训练结束与绘图
-    print("\n[Info] Training Finished.")
     if not disable_auto_plot:
-        print("[Info] Generating plots...")
         recorder.auto_plot(baseline_history=baseline_history)
-        print(f"[Info] Plots saved to {recorder.plot_dir}")
-    else:
-        print("[Info] Auto-plot disabled.")
 
 
 if __name__ == "__main__":

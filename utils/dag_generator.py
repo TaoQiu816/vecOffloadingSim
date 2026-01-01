@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import networkx as nx
 from configs.config import SystemConfig as Cfg
 
@@ -7,7 +8,8 @@ try:
     import daggen
 except ImportError:
     daggen = None
-    print("[Warning] 'daggen' library not found. Using simple fallback generator.")
+    if os.environ.get("DAGGEN_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+        print("[Warning] 'daggen' library not found. Using simple fallback generator.")
 
 
 class DAGGenerator:

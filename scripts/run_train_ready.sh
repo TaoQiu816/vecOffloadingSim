@@ -1,8 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Train-ready starter with reproducible outputs.
-# Usage: RUN_ID=myrun MAX_EPISODES=200 bash scripts/run_train_ready.sh
+# Purpose: launch train.py with reproducible run dirs and long-run defaults.
+# Inputs: env vars (MAX_EPISODES/MAX_STEPS/CFG_PROFILE/SEED/DEVICE_NAME) + optional flags.
+# Outputs: runs/<RUN_ID> with logs/metrics/plots/models.
+# Example: MAX_EPISODES=5000 MAX_STEPS=300 CFG_PROFILE=train_ready_v1 SEED=7 bash scripts/run_train_ready.sh
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --seed)
+      export SEED="$2"
+      shift 2
+      ;;
+    --device)
+      export DEVICE_NAME="$2"
+      shift 2
+      ;;
+    --episodes)
+      export MAX_EPISODES="$2"
+      shift 2
+      ;;
+    --steps)
+      export MAX_STEPS="$2"
+      shift 2
+      ;;
+    --run-id)
+      export RUN_ID="$2"
+      shift 2
+      ;;
+    --run-dir)
+      export RUN_DIR="$2"
+      shift 2
+      ;;
+    --log-interval)
+      export LOG_INTERVAL="$2"
+      shift 2
+      ;;
+    --eval-interval)
+      export EVAL_INTERVAL="$2"
+      shift 2
+      ;;
+    --save-interval)
+      export SAVE_INTERVAL="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 export CFG_PROFILE="${CFG_PROFILE:-train_ready_v1}"
 export REWARD_MODE="${REWARD_MODE:-delta_cft}"
@@ -20,12 +67,12 @@ if [[ ! "$(basename "${RUN_DIR}")" =~ [0-9]{8}_[0-9]{6}$ ]]; then
   RUN_ID="$(basename "${RUN_DIR}")"
 fi
 export EPISODE_JSONL_STDOUT="${EPISODE_JSONL_STDOUT:-0}"
-export LOG_INTERVAL="${LOG_INTERVAL:-1}"
+export LOG_INTERVAL="${LOG_INTERVAL:-10}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export TB_LOG_OBS="${TB_LOG_OBS:-1}"
 
-# Optional overrides
-export MAX_EPISODES="${MAX_EPISODES:-200}"
+export MAX_EPISODES="${MAX_EPISODES:-5000}"
+export MAX_STEPS="${MAX_STEPS:-300}"
 export EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 export SAVE_INTERVAL="${SAVE_INTERVAL:-50}"
 
@@ -35,12 +82,5 @@ export DISABLE_AUTO_PLOT="${DISABLE_AUTO_PLOT:-1}"
 
 mkdir -p "${RUN_DIR}/logs"
 
-echo "[INFO] CFG_PROFILE=${CFG_PROFILE}"
-echo "[INFO] REWARD_MODE=${REWARD_MODE}"
-echo "[INFO] RUN_DIR=${RUN_DIR}"
-
-echo "[INFO] start training..."
 python -u train.py | tee "${RUN_DIR}/logs/train.log"
-
-echo "[INFO] plotting metrics..."
 python scripts/plot_training_metrics.py --run_dir "${RUN_DIR}"

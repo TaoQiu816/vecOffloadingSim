@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Purpose: extract full config/train parameters into machine-readable files.
+Inputs: CLI args; respects CFG_PROFILE/REWARD_MODE env vars if set.
+Outputs: JSON/CSV under results_dbg/extract_all_params by default.
+Example: python scripts/extract_all_params.py --out_dir results_dbg/params
+"""
 import argparse
 import os
 import sys

@@ -74,7 +74,6 @@ python train.py
 ```bash
 CFG_PROFILE=train_v2v_competitive_v1 python train.py
 ```
-Profile 会在 `configs/config.py` 启动时应用，并打印 `[Cfg] applied profile=...`。
 推荐的开训配置：
 ```bash
 CFG_PROFILE=train_ready_v1 python train.py
@@ -86,7 +85,7 @@ EPISODE_JSONL_STDOUT=0 CFG_PROFILE=train_ready_v1 python train.py
 
 ### 2.2 一键开训脚本
 ```bash
-bash scripts/run_train_ready.sh
+MAX_EPISODES=5000 MAX_STEPS=300 CFG_PROFILE=train_ready_v1 SEED=7 bash scripts/run_train_ready.sh
 ```
 
 ### 3. 评估基准策略
@@ -130,13 +129,15 @@ python utils/plot_baseline_comparison.py
 ## 输出文件
 
 ### 训练输出
-- `data/MAPPO_DAG_*/`
-  - `config.json`: 配置参数
-  - `episode_log.csv`: 每回合详细数据
-  - `step_log.csv`: 每步详细数据
+- `runs/<RUN_ID>/`
+  - `logs/train.log`: 训练日志（stdout精简表格）
+  - `logs/config_snapshot.json`: 配置快照（含生效参数）
+  - `logs/metrics.csv`: 训练主指标（逐回合）
+  - `logs/metrics.jsonl`: 训练全量指标（逐回合）
+  - `logs/step_metrics.csv`: 步级debug指标（可选）
   - `models/`: 模型检查点
-  - `plots/`: 训练曲线（含基准策略对比）
-  - `tb_logs/`: TensorBoard日志
+  - `plots/`: 训练曲线（png）
+  - `logs/tb/`: TensorBoard日志
 
 ### 评估输出
 - `eval_results/`
@@ -150,6 +151,22 @@ python utils/plot_baseline_comparison.py
 3. **Beta分布**: 连续功率控制使用Beta分布，确保可学习性
 4. **基准对比**: 训练收敛图中自动绘制基准策略水平线
 5. **TensorBoard**: 可选的实时监控支持
+
+（废弃脚本已统一移至 `scripts/_deprecated/`）
+
+## Training Metrics Semantics
+- 训练轮次默认 200 的原因：`scripts/run_train_ready.sh` 早期硬编码了 `MAX_EPISODES=200`，覆盖了 `TrainConfig.MAX_EPISODES` 默认值；现已改为环境变量优先且默认 5000。
+- `reward_abs` 与 `reward_mean` 区别：`reward_abs` 是每步奖励的绝对值均值，仅用于稳定性参考，不能替代带符号的 `reward_mean`。之前 `metrics.csv` 缺少 `reward_mean`，绘图脚本回退到 `reward_abs` 或错误列（如累计 total_reward）时会出现数值异常（可达 1e8）；当前已统一以 `reward_mean` 作为主曲线并固定列名。
+
+## 验收命令
+```bash
+# 快速冒烟
+CFG_PROFILE=train_ready_v1 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
+python scripts/plot_training_metrics.py --run_dir <run_dir>
+
+# 正式训练（GPU）
+CFG_PROFILE=train_ready_v1 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
+```
 
 ## 系统要求
 

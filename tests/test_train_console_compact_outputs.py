@@ -37,7 +37,7 @@ def test_train_console_compact_outputs(tmp_path):
     assert result.returncode == 0, result.stderr
 
     resolved_dir = _resolve_run_dir(run_dir)
-    csv_path = resolved_dir / "metrics" / "train_metrics.csv"
+    csv_path = resolved_dir / "logs" / "metrics.csv"
     jsonl_candidates = [
         resolved_dir / "logs" / "run.jsonl",
         resolved_dir / "logs" / "env_reward.jsonl",

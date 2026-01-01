@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Purpose: run profile-specific audits and summaries for sanity checks.
+# Inputs: PROFILE_NAME env var or edit below; uses Python scripts under scripts/.
+# Outputs: results_dbg/profile_checks/<profile> with audit artifacts.
+# Example: PROFILE_NAME=train_ready_v1 bash scripts/run_profile_checks.sh
+
 PROFILE_NAME="train_v2v_competitive_v1"
 OUT_ROOT="results_dbg/profile_checks/${PROFILE_NAME}"
 

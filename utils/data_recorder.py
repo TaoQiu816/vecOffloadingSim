@@ -12,7 +12,8 @@ try:
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
-    print("[Warning] TensorBoard not available. Install with: pip install tensorboard")
+    if os.environ.get("TB_VERBOSE", "").strip().lower() in ("1", "true", "yes"):
+        print("[Warning] TensorBoard not available. Install with: pip install tensorboard")
 
 
 # --- 自定义编码器，用于解决 TypeError: Object of type ndarray is not JSON serializable ---
@@ -45,10 +46,11 @@ class DataRecorder:
     - 自动处理 Matplotlib 绘图风格和字体兼容性。
     """
 
-    def __init__(self, experiment_name="Default_Exp", base_dir=None):
+    def __init__(self, experiment_name="Default_Exp", base_dir=None, quiet=False):
         """
         初始化文件结构
         """
+        self.quiet = bool(quiet)
         if base_dir:
             self.exp_dir = os.path.abspath(base_dir)
             os.makedirs(self.exp_dir, exist_ok=True)
@@ -90,7 +92,8 @@ class DataRecorder:
                 tb_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", f"{experiment_name}_{timestamp}")
             os.makedirs(tb_log_dir, exist_ok=True)
             self.writer = SummaryWriter(log_dir=tb_log_dir)
-            print(f"[TensorBoard] Log dir: {tb_log_dir}")
+            if not self.quiet:
+                print(f"[TensorBoard] Log dir: {tb_log_dir}")
         else:
             self.writer = None
 

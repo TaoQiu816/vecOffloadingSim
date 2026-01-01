@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Purpose: run a minimal readiness smoke check for training pipelines.
+Inputs: CLI args for episodes/steps/seed/reward_mode; uses env vars if set.
+Outputs: results_dbg/final_readiness/* plus stdout status lines.
+Example: python scripts/final_readiness_check.py --episodes 2 --steps 50
+"""
 import argparse
 import json
 import os

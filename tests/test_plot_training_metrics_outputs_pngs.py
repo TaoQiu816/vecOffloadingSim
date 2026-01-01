@@ -3,12 +3,12 @@ import sys
 from pathlib import Path
 
 
-def test_plot_training_metrics_smoke(tmp_path):
+def test_plot_training_metrics_outputs_pngs(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
-    run_dir = tmp_path / "run"
-    metrics_dir = run_dir / "logs"
-    metrics_dir.mkdir(parents=True)
-    csv_path = metrics_dir / "metrics.csv"
+    run_dir = tmp_path / "run_plots"
+    logs_dir = run_dir / "logs"
+    logs_dir.mkdir(parents=True)
+    csv_path = logs_dir / "metrics.csv"
     csv_path.write_text(
         "episode,reward_mean,reward_p95,delta_cft_rem_mean,mean_cft,success_rate_end,task_success_rate,subtask_success_rate,"
         "deadline_miss_rate,illegal_action_rate,hard_trigger_rate,decision_frac_local,decision_frac_rsu,decision_frac_v2v,"
