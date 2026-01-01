@@ -168,6 +168,18 @@ python scripts/plot_training_metrics.py --run_dir <run_dir>
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
 ```
 
+## TensorBoard（AutoDL）
+最短步骤：
+```bash
+bash scripts/tensorboard_ctl.sh start
+bash scripts/tensorboard_ctl.sh start --run_dir runs/<name>
+```
+访问方式：
+1) AutoDL 控制台端口映射：映射脚本输出的端口（默认 6006），浏览器打开 `http://<ip>:<port>`。
+2) SSH 端口转发：`ssh -L 6006:127.0.0.1:6006 root@<ip> -p <port>`，浏览器打开 `http://127.0.0.1:6006`。
+
+若端口冲突，脚本会自动递增端口（最多尝试 20 次），以脚本输出为准。
+
 ## 系统要求
 
 - Python 3.8+

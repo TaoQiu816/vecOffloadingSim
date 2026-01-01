@@ -82,5 +82,10 @@ export DISABLE_AUTO_PLOT="${DISABLE_AUTO_PLOT:-1}"
 
 mkdir -p "${RUN_DIR}/logs"
 
+echo "[Run] MAX_EPISODES=${MAX_EPISODES} MAX_STEPS=${MAX_STEPS} REWARD_MODE=${REWARD_MODE} SEED=${SEED} DEVICE=${DEVICE_NAME}"
+echo "[Hint] Start TensorBoard: bash scripts/tensorboard_ctl.sh start --run_dir \"${RUN_DIR}\" --port 6006"
+
 python -u train.py | tee "${RUN_DIR}/logs/train.log"
 python scripts/plot_training_metrics.py --run_dir "${RUN_DIR}"
+
+echo "[Hint] TensorBoard status: bash scripts/tensorboard_ctl.sh status --run_dir \"${RUN_DIR}\""
