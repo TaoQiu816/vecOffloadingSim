@@ -165,12 +165,14 @@ python utils/plot_baseline_comparison.py
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 CFG_PROFILE=train_ready_v2 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 CFG_PROFILE=train_ready_v3 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
+CFG_PROFILE=train_ready_v4 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 python scripts/plot_training_metrics.py --run_dir <run_dir>
 
 # 正式训练（GPU）
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
 CFG_PROFILE=train_ready_v2 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
 CFG_PROFILE=train_ready_v3 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
+CFG_PROFILE=train_ready_v4 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
 ```
 
 ### train_ready_v3（更重负载，压制秒通关）
@@ -180,6 +182,17 @@ CFG_PROFILE=train_ready_v3 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cu
 - 快速验收示例：
   ```bash
   CFG_PROFILE=train_ready_v3 MAX_EPISODES=100 MAX_STEPS=300 DEVICE_NAME=cpu SEED=7 DISABLE_BASELINE_EVAL=1 DISABLE_AUTO_PLOT=1 RUN_ID=smoke_ready_v3 python train.py
+  python scripts/analyze_episode_bimodality.py --run_dir runs/<smoke_run_dir>
+  ```
+
+### train_ready_v4（文献量级、关键路径deadline）
+- DT=0.05，节点数 10~25；子任务 20~60 Mega-cycles；输入 500KB~1500KB；边 100KB~500KB
+- 车辆 CPU 0.5~2 GHz；RSU 5~10 GHz（F_RSU=8GHz，4 核，队列 12e9 cycles）；V2I 100 MHz，RSU 半径 200 m，噪声 -100 dBm，功率 0.1 W (20 dBm)
+- Deadline 基于关键路径：T=γ*(critical_path/f_local)+0.3，γ∈[2,4]
+- 奖励 delta_cft，BONUS_MODE=none，scale=15
+- 验收示例：
+  ```bash
+  CFG_PROFILE=train_ready_v4 MAX_EPISODES=200 MAX_STEPS=300 DEVICE_NAME=cpu SEED=7 DISABLE_BASELINE_EVAL=1 DISABLE_AUTO_PLOT=1 RUN_ID=smoke_ready_v4 python train.py
   python scripts/analyze_episode_bimodality.py --run_dir runs/<smoke_run_dir>
   ```
 

@@ -7,6 +7,7 @@ Outputs: one-page stats with short_episode_ratio and key p50/p90 by group.
 import argparse
 import csv
 import json
+import numpy as np
 from pathlib import Path
 from statistics import median
 
@@ -64,10 +65,21 @@ def _summarize(rows):
         (rows_short if st < 0.5 * max_steps else rows_norm).append(r)
     def metric(group, key):
         return _pstats([_to_float(r.get(key)) for r in group])
+    total_eps = len(rows_short) + len(rows_norm)
+    term_flags = [bool(r.get("terminated") == "True") if isinstance(r.get("terminated"), str) else bool(r.get("terminated")) for r in rows]
+    trunc_flags = [bool(r.get("truncated") == "True") if isinstance(r.get("truncated"), str) else bool(r.get("truncated")) for r in rows]
+    term_ratio = (sum(term_flags) / len(term_flags)) if term_flags else 0.0
+    trunc_ratio = (sum(trunc_flags) / len(trunc_flags)) if trunc_flags else 0.0
+    tl_rates = [_to_float(r.get("time_limit_rate")) for r in rows]
+    tl_rates = [v for v in tl_rates if v is not None]
+    time_limit_rate = float(np.mean(tl_rates)) if tl_rates else 0.0
     result = {
-        "total_episodes": len(rows_short) + len(rows_norm),
+        "total_episodes": total_eps,
         "max_steps": max_steps,
-        "short_episode_ratio": (len(rows_short) / (len(rows_short) + len(rows_norm))) if (len(rows_short)+len(rows_norm))>0 else 0.0,
+        "short_episode_ratio": (len(rows_short) / total_eps) if total_eps > 0 else 0.0,
+        "terminated_ratio": term_ratio,
+        "truncated_ratio": trunc_ratio,
+        "time_limit_rate": time_limit_rate,
         "short": {
             "reward_mean": metric(rows_short, "reward_mean"),
             "task_success_rate": metric(rows_short, "task_success_rate"),
@@ -104,6 +116,7 @@ def main():
 
     print(f"[Bimodality] max_steps={summary['max_steps']:.0f} episodes={summary['total_episodes']}")
     print(f"[Bimodality] short_episode_ratio={summary['short_episode_ratio']:.3f}")
+    print(f"[Bimodality] terminated_ratio={summary['terminated_ratio']:.3f} truncated_ratio={summary['truncated_ratio']:.3f} time_limit_rate={summary['time_limit_rate']:.3f}")
     for label in ("short", "normal"):
         stats = summary[label]
         def fmt(name, val):

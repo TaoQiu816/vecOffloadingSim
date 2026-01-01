@@ -38,6 +38,11 @@ class DAGTask:
         self.adj = np.array(adj)
         self.data_matrix = data_matrix
         self.deadline = deadline
+        # 额外的deadline诊断信息（可选）
+        self.deadline_gamma = None
+        self.critical_path_cycles = None
+        self.deadline_base_time = None
+        self.deadline_slack = None
         self.num_subtasks = len(profiles)
         self.start_time = 0.0  # 由环境在reset时设置
 

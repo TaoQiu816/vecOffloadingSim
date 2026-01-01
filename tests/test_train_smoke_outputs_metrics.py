@@ -64,5 +64,8 @@ def test_train_smoke_outputs_metrics(tmp_path):
         "decision_frac_v2v",
         "entropy",
         "approx_kl",
+        "deadline_seconds",
+        "critical_path_cycles",
+        "time_limit_rate",
     }
     assert required.issubset(set(header))

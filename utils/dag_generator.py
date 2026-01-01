@@ -137,21 +137,30 @@ class DAGGenerator:
             })
 
         # 计算相对截止时间
-        deadline = self._calc_deadline(num_nodes, adj_matrix, profiles, veh_f)
+        deadline, gamma, critical_path_cycles, base_time = self._calc_deadline(num_nodes, adj_matrix, profiles, veh_f)
 
-        return adj_matrix, profiles, data_matrix, deadline
+        extras = {
+            "deadline_gamma": gamma,
+            "critical_path_cycles": critical_path_cycles,
+            "deadline_base_time": base_time,
+            "deadline_seconds": deadline,
+            "deadline_slack": getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0),
+        }
+
+        return adj_matrix, profiles, data_matrix, deadline, extras
 
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
-        计算相对截止时间
+        计算相对截止时间（关键路径版本）
         
-        公式: T_deadline = γ × (W_total / f_local)
-        - W_total: 所有子任务计算量之和 (Cycles)
+        公式: T_deadline = γ × (critical_path_cycles / f_local) + slack_seconds
+        - critical_path_cycles: DAG关键路径计算量 (Cycles)
         - f_local: 本地CPU频率 (Hz)
         - γ: 截止时间因子（松紧因子），范围 [gamma_min, gamma_max]
+        - slack_seconds: 固定松弛时间
         
         设计原则:
-        - 基于理想本地执行时间（不考虑排队）
+        - 基于关键路径执行时间（不考虑排队）
         - γ < 1.0 强制卸载，γ > 1.0 放宽Deadline
         
         Args:
@@ -161,21 +170,22 @@ class DAGGenerator:
             f_base: 本地CPU频率(Hz)，None则使用配置最小值
         
         Returns:
-            float: Deadline时间(秒)，保证 >= 0.1，不会是NaN或负数
+            tuple: (deadline_seconds, gamma, critical_path_cycles, base_time)
         """
         # 获取本地算力
         if f_base is None or f_base <= 0:
             f_base = Cfg.MIN_VEHICLE_CPU_FREQ
+
+        # 计算关键路径计算量
+        comp_arr = np.array([p['comp'] for p in profiles], dtype=float)
+        critical_path = self._critical_path_cycles(adj, comp_arr)
+        if critical_path <= 0 or not np.isfinite(critical_path):
+            critical_path = max(Cfg.MIN_COMP, np.sum(comp_arr))
         
-        # 计算总计算量
-        total_comp = sum(p['comp'] for p in profiles)
-        if total_comp <= 0 or not np.isfinite(total_comp):
-            total_comp = Cfg.MIN_COMP
-        
-        # 计算理想本地执行时间（不考虑排队）
-        t_local_ideal = total_comp / f_base
-        if not np.isfinite(t_local_ideal) or t_local_ideal <= 0:
-            t_local_ideal = Cfg.MIN_COMP / Cfg.MIN_VEHICLE_CPU_FREQ
+        # 基准时间 = 关键路径 / 本地CPU
+        base_time = critical_path / f_base
+        if not np.isfinite(base_time) or base_time <= 0:
+            base_time = Cfg.MIN_COMP / max(f_base, Cfg.MIN_VEHICLE_CPU_FREQ)
 
         # 获取截止时间因子范围
         gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 0.70)
@@ -184,14 +194,41 @@ class DAGGenerator:
         gamma_min = max(0.1, gamma_min)
         gamma_max = max(gamma_min, gamma_max)
         gamma = np.random.uniform(gamma_min, gamma_max)
+        slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
 
         # 计算截止时间
-        deadline = gamma * t_local_ideal
+        deadline = gamma * base_time + slack
         
         # 安全检查：确保deadline是有效的正数
         if not np.isfinite(deadline) or deadline <= 0:
-            deadline = 0.1
+            deadline = 0.1 + slack
         else:
             deadline = max(deadline, 0.1)
 
-        return float(deadline)
+        return float(deadline), float(gamma), float(critical_path), float(base_time)
+
+    @staticmethod
+    def _critical_path_cycles(adj, comp_arr):
+        n = len(comp_arr)
+        if n == 0:
+            return 0.0
+        indeg = np.sum(adj, axis=0)
+        order = []
+        queue = [i for i in range(n) if indeg[i] == 0]
+        while queue:
+            u = queue.pop(0)
+            order.append(u)
+            for v in np.where(adj[u] == 1)[0]:
+                indeg[v] -= 1
+                if indeg[v] == 0:
+                    queue.append(int(v))
+        if len(order) != n:
+            return float(np.sum(comp_arr))
+        dp = np.zeros(n, dtype=float)
+        for u in order:
+            preds = np.where(adj[:, u] == 1)[0]
+            if len(preds) == 0:
+                dp[u] = comp_arr[u]
+            else:
+                dp[u] = comp_arr[u] + np.max(dp[preds])
+        return float(np.max(dp))

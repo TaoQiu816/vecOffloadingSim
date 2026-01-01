@@ -633,6 +633,7 @@ class VecOffloadingEnv(gym.Env):
             "episode_steps": self._episode_steps,
             "terminated": bool(terminated),
             "truncated": bool(truncated),
+            "time_limit_rate": 1.0 if (truncated and not terminated) else 0.0,
             "reward_mode": Cfg.REWARD_MODE,
             "bonus_mode": Cfg.BONUS_MODE,
             "norm_rate_mode": Cfg.NORM_RATE_MODE,
@@ -675,12 +676,27 @@ class VecOffloadingEnv(gym.Env):
 
             total_subtasks = 0
             completed_subtasks = 0
+            gammas = []
+            deadlines = []
+            critical_paths = []
             for v in self.vehicles:
                 total_subtasks += int(v.task_dag.num_subtasks)
                 completed_subtasks += int(np.sum(v.task_dag.status == 3))
+                if getattr(v.task_dag, "deadline_gamma", None) is not None:
+                    gammas.append(float(v.task_dag.deadline_gamma))
+                if getattr(v.task_dag, "deadline", None) is not None:
+                    deadlines.append(float(v.task_dag.deadline))
+                if getattr(v.task_dag, "critical_path_cycles", None) is not None:
+                    critical_paths.append(float(v.task_dag.critical_path_cycles))
             extra["total_subtasks"] = int(total_subtasks)
             extra["completed_subtasks"] = int(completed_subtasks)
             extra["subtask_success_rate"] = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
+            if gammas:
+                extra["deadline_gamma_mean"] = float(np.mean(gammas))
+            if deadlines:
+                extra["deadline_seconds_mean"] = float(np.mean(deadlines))
+            if critical_paths:
+                extra["critical_path_cycles_mean"] = float(np.mean(critical_paths))
         if hasattr(self, "vehicle_cfts") and self.vehicle_cfts:
             extra["mean_cft"] = float(np.mean(self.vehicle_cfts))
         else:
@@ -733,8 +749,12 @@ class VecOffloadingEnv(gym.Env):
             v.tx_power_dbm = Cfg.TX_POWER_DEFAULT_DBM if hasattr(Cfg, 'TX_POWER_DEFAULT_DBM') else Cfg.TX_POWER_MIN_DBM
 
             n_node = np.random.randint(Cfg.MIN_NODES, Cfg.MAX_NODES + 1)
-            adj, prof, data, ddl = self.dag_gen.generate(n_node, veh_f=v.cpu_freq)
+            adj, prof, data, ddl, extra = self.dag_gen.generate(n_node, veh_f=v.cpu_freq)
             v.task_dag = DAGTask(0, adj, prof, data, ddl)
+            v.task_dag.deadline_gamma = extra.get("deadline_gamma")
+            v.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
+            v.task_dag.deadline_base_time = extra.get("deadline_base_time")
+            v.task_dag.deadline_slack = extra.get("deadline_slack")
             v.task_dag.start_time = 0.0
             v.task_queue.clear()  # 清空队列
             v.task_queue_len = 0  # 同步队列长度
@@ -1178,8 +1198,12 @@ class VecOffloadingEnv(gym.Env):
                 
                 # 生成DAG任务
                 n_node = np.random.randint(Cfg.MIN_NODES, Cfg.MAX_NODES + 1)
-                adj, prof, data, ddl = self.dag_gen.generate(n_node, veh_f=new_vehicle.cpu_freq)
+                adj, prof, data, ddl, extra = self.dag_gen.generate(n_node, veh_f=new_vehicle.cpu_freq)
                 new_vehicle.task_dag = DAGTask(0, adj, prof, data, ddl)
+                new_vehicle.task_dag.deadline_gamma = extra.get("deadline_gamma")
+                new_vehicle.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
+                new_vehicle.task_dag.deadline_base_time = extra.get("deadline_base_time")
+                new_vehicle.task_dag.deadline_slack = extra.get("deadline_slack")
                 new_vehicle.task_dag.start_time = self.time
                 new_vehicle.task_queue.clear()
                 new_vehicle.task_queue_len = 0

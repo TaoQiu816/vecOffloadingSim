@@ -623,6 +623,10 @@ def main():
         "terminated",
         "truncated",
         "termination_reason",
+        "time_limit_rate",
+        "deadline_gamma",
+        "deadline_seconds",
+        "critical_path_cycles",
         "episode_vehicle_count",
         "episode_task_count",
         "total_subtasks",
@@ -829,6 +833,14 @@ def main():
         if not (terminated or truncated):
             env._log_episode_stats(False, True)
 
+        # 末尾截断惩罚（time_limit且未完成）
+        if truncated and not terminated and buffer.rewards_buffer:
+            penalty = getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0)
+            buffer.rewards_buffer[-1] = buffer.rewards_buffer[-1] + penalty
+            if ep_step_rewards:
+                ep_step_rewards[-1] += penalty
+            ep_reward += penalty
+
         # Episode结束后的分析与更新
         total_steps = step + 1
         total_decisions = stats["agent_rewards_count"] if stats["agent_rewards_count"] > 0 else 1
@@ -937,6 +949,7 @@ def main():
         deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
         illegal_action_rate = env_stats.get("illegal_action_rate") if env_stats else None
         hard_trigger_rate = env_stats.get("hard_trigger_rate") if env_stats else None
+        time_limit_rate = env_stats.get("time_limit_rate") if env_stats else (1.0 if (truncated and not terminated) else 0.0)
         mean_cft = env_stats.get("mean_cft") if env_stats else None
         frac_local = env_stats.get("decision_frac_local", frac_local) if env_stats else frac_local
         frac_rsu = env_stats.get("decision_frac_rsu", frac_rsu) if env_stats else frac_rsu
@@ -956,6 +969,9 @@ def main():
             mean_cft_rem = max(mean_cft - env.time, 0.0)
         power_ratio_mean = env_metrics.get("power_ratio.mean")
         power_ratio_p95 = env_metrics.get("power_ratio.p95")
+        deadline_gamma = env_stats.get("deadline_gamma_mean") if env_stats else None
+        deadline_seconds = env_stats.get("deadline_seconds_mean") if env_stats else None
+        critical_path_cycles = env_stats.get("critical_path_cycles_mean") if env_stats else None
         episode_vehicle_count = env_stats.get("episode_vehicle_count", episode_vehicle_count) if env_stats else episode_vehicle_count
         episode_task_count = env_stats.get("episode_task_count", episode_task_count) if env_stats else episode_task_count
         total_subtasks_metric = env_stats.get("total_subtasks", total_subtasks) if env_stats else total_subtasks
@@ -1014,6 +1030,10 @@ def main():
             "terminated": terminated_flag,
             "truncated": truncated_flag,
             "termination_reason": termination_reason,
+            "time_limit_rate": time_limit_rate,
+            "deadline_gamma": deadline_gamma,
+            "deadline_seconds": deadline_seconds,
+            "critical_path_cycles": critical_path_cycles,
             "episode_vehicle_count": episode_vehicle_count,
             "episode_task_count": episode_task_count,
             "total_subtasks": total_subtasks_metric,

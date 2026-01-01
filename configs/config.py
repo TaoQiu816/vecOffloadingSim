@@ -223,6 +223,7 @@ class SystemConfig:
     DEADLINE_TIGHTENING_FACTOR = 0.85  # γ: 紧缩因子 (强迫卸载)
     DEADLINE_TIGHTENING_MIN = 5.0  # γ最小值（大幅放宽以确保V2V+排队+依赖链有充足时间）
     DEADLINE_TIGHTENING_MAX = 8.0  # γ最大值（暴力打通物理层，必须看到Veh% > 0）
+    DEADLINE_SLACK_SECONDS = 0.0  # 额外松弛时间（秒），在关键路径基础上附加
 
     # 说明: γ<1时，本地计算更难满足Deadline；γ>1时Deadline更宽松
 
@@ -263,6 +264,7 @@ class SystemConfig:
     PENALTY_LINK_BREAK = -10.0   # 链路断开/超出范围（触发后直接返回）
     PENALTY_OVERFLOW = -10.0     # 队列溢出（触发后直接返回）
     PENALTY_FAILURE = -10.0      # 任务失败惩罚（超时）
+    TIME_LIMIT_PENALTY = -1.0    # episode 因时间截断的额外终端惩罚
 
     # F. 成功奖励参数 (Success Bonus) - 稀疏奖励强化
     SUCCESS_BONUS = 20.0  # 任务成功完成时的固定奖励（增大以提高V2V探索动力）
@@ -430,6 +432,51 @@ PROFILE_REGISTRY = {
         "DEADLINE_TIGHTENING_MIN": 18.0,
         "DEADLINE_TIGHTENING_MAX": 24.0,
         # Reward scale for delta_cft
+        "REWARD_MODE": "delta_cft",
+        "BONUS_MODE": "none",
+        "DELTA_CFT_SCALE": 15.0,
+        "DELTA_CFT_ENERGY_WEIGHT": 0.03,
+    }
+    ,
+    # train_ready_v4: literature-scale tasks, critical-path deadlines in seconds-scale.
+    "train_ready_v4": {
+        "MAX_STEPS": 300,
+        "DT": 0.05,
+        # DAG size
+        "MIN_NODES": 8,
+        "MAX_NODES": 15,
+        # Task loads (cycles)
+        "MIN_COMP": 2.0e7,
+        "MAX_COMP": 6.0e7,
+        # Node input data (bits) ~ 500KB-1500KB
+        "MIN_DATA": 4.096e6,
+        "MAX_DATA": 12.288e6,
+        # Edge data (bits) ~ 100KB-500KB
+        "MIN_EDGE_DATA": 0.8192e6,
+        "MAX_EDGE_DATA": 2.4576e6,
+        # Vehicle CPU range (Hz)
+        "MIN_VEHICLE_CPU_FREQ": 0.5e9,
+        "MAX_VEHICLE_CPU_FREQ": 2.0e9,
+        # RSU CPU (Hz)
+        "F_RSU": 8.0e9,
+        "RSU_NUM_PROCESSORS": 4,
+        "RSU_QUEUE_CYCLES_LIMIT": 12.0e9,
+        "VEHICLE_QUEUE_CYCLES_LIMIT": 2.0e9,
+        # Wireless
+        "BW_V2I": 100.0e6,
+        "BW_V2V": 40.0e6,
+        "RSU_RANGE": 250.0,
+        "V2V_RANGE": 350.0,
+        "NOISE_POWER_DBM": -100.0,
+        "TX_POWER_UP_DBM": 20.0,
+        "TX_POWER_V2V_DBM": 20.0,
+        "TX_POWER_MIN_DBM": 20.0,
+        "TX_POWER_MAX_DBM": 20.0,
+        # Deadlines (critical-path based)
+        "DEADLINE_TIGHTENING_MIN": 2.0,
+        "DEADLINE_TIGHTENING_MAX": 4.0,
+        "DEADLINE_SLACK_SECONDS": 0.3,
+        # Reward
         "REWARD_MODE": "delta_cft",
         "BONUS_MODE": "none",
         "DELTA_CFT_SCALE": 15.0,

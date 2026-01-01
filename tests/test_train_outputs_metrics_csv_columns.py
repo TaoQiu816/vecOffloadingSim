@@ -57,5 +57,8 @@ def test_train_outputs_metrics_csv_columns(tmp_path):
         "decision_frac_local",
         "decision_frac_rsu",
         "decision_frac_v2v",
+        "deadline_seconds",
+        "critical_path_cycles",
+        "time_limit_rate",
     }
     assert required.issubset(set(header))
