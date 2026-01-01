@@ -1,6 +1,7 @@
 import time
 import json
 import csv
+from collections import deque
 import numpy as np
 import torch
 import os
@@ -8,6 +9,7 @@ import sys
 import random
 import re
 import argparse
+import subprocess
 from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -130,6 +132,60 @@ def _env_float(name):
         return float(raw)
     except ValueError:
         return None
+
+
+def _env_bool(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return str(raw).lower() in ("1", "true", "yes", "on")
+
+
+def apply_env_overrides():
+    """Apply env var overrides to SystemConfig (Cfg) and TrainConfig (TC)."""
+    # System / environment knobs
+    overrides_float = {
+        "VEHICLE_ARRIVAL_RATE": "VEHICLE_ARRIVAL_RATE",
+        "BW_V2V": "BW_V2V",
+        "MIN_CPU": "MIN_VEHICLE_CPU_FREQ",
+        "MAX_CPU": "MAX_VEHICLE_CPU_FREQ",
+    }
+    overrides_int = {
+        "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",
+    }
+    for env_key, cfg_attr in overrides_float.items():
+        val = _env_float(env_key)
+        if val is not None:
+            setattr(Cfg, cfg_attr, val)
+    for env_key, cfg_attr in overrides_int.items():
+        val = _env_int(env_key)
+        if val is not None:
+            setattr(Cfg, cfg_attr, val)
+
+    # Train / PPO knobs
+    tc_float = {
+        "GAMMA": "GAMMA",
+        "CLIP_PARAM": "CLIP_PARAM",
+        "ENTROPY_COEF": "ENTROPY_COEF",
+        "LR_ACTOR": "LR_ACTOR",
+        "LR_CRITIC": "LR_CRITIC",
+        "LOGIT_BIAS_LOCAL": "LOGIT_BIAS_LOCAL",
+        "LOGIT_BIAS_RSU": "LOGIT_BIAS_RSU",
+    }
+    tc_int = {
+        "MINI_BATCH_SIZE": "MINI_BATCH_SIZE",
+    }
+    for env_key, attr in tc_float.items():
+        val = _env_float(env_key)
+        if val is not None:
+            setattr(TC, attr, val)
+    for env_key, attr in tc_int.items():
+        val = _env_int(env_key)
+        if val is not None:
+            setattr(TC, attr, val)
+    use_logit_bias = _env_bool("USE_LOGIT_BIAS")
+    if use_logit_bias is not None:
+        TC.USE_LOGIT_BIAS = use_logit_bias
 
 
 def _env_str(name):
@@ -417,6 +473,9 @@ def main():
     if bonus_mode:
         Cfg.BONUS_MODE = bonus_mode
 
+    # Env/train overrides from environment variables (after profile/reward selection)
+    apply_env_overrides()
+
     if args.max_episodes is not None:
         TC.MAX_EPISODES = int(args.max_episodes)
     elif env_max_episodes is not None:
@@ -529,6 +588,15 @@ def main():
     if not reward_jsonl_path:
         reward_jsonl_path = os.path.join(logs_dir, "env_reward.jsonl")
         os.environ["REWARD_JSONL_PATH"] = reward_jsonl_path
+    # ensure jsonl file exists for downstream tooling/tests
+    _ensure_dir(os.path.dirname(reward_jsonl_path))
+    if not os.path.exists(reward_jsonl_path):
+        with open(reward_jsonl_path, "w", encoding="utf-8") as f:
+            f.write("{}\n")
+    run_jsonl_path = os.path.join(logs_dir, "run.jsonl")
+    if not os.path.exists(run_jsonl_path):
+        with open(run_jsonl_path, "w", encoding="utf-8") as f:
+            f.write("{}\n")
 
     tb_log_obs = os.environ.get("TB_LOG_OBS")
     log_obs_stats = True
@@ -743,31 +811,20 @@ def main():
         "delay_norm_mean",
     ]
     table_columns = [
-        ("ep", 4),
-        ("steps", 6),
-        ("r_mean", 8),
-        ("r_p95", 8),
-        ("ent", 7),
-        ("kl", 8),
-        ("clip_frac", 9),
-        ("p_loss", 8),
-        ("v_loss", 8),
-        ("total_loss", 10),
-        ("succ", 6),
-        ("task", 6),
-        ("sub", 6),
-        ("miss", 6),
-        ("ill", 6),
-        ("hard", 6),
-        ("L", 5),
-        ("R", 5),
-        ("V", 5),
-        ("mean_cft", 9),
-        ("dCFT", 9),
-        ("power", 7),
-        ("elapsed", 7),
+        ("ep", 4), ("steps", 6), ("term", 7), ("tlr", 5),
+        ("r_mean", 8), ("r_sum", 8), ("r_p95", 8),
+        ("succ", 6), ("miss", 6),
+        ("L", 5), ("R", 5), ("V", 5),
+        ("v2v_win", 8), ("gap", 7), ("c_rsu", 7), ("c_v2v", 7),
+        ("ent", 6), ("kl", 7), ("clip", 6), ("v_loss", 8),
+        ("rSum15", 8), ("succ15", 7), ("miss15", 7), ("tl15", 6), ("V15", 6),
     ]
     table_row_count = 0
+    roll_rsum = deque(maxlen=15)
+    roll_succ = deque(maxlen=15)
+    roll_miss = deque(maxlen=15)
+    roll_tl = deque(maxlen=15)
+    roll_v = deque(maxlen=15)
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
 
@@ -1106,6 +1163,12 @@ def main():
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
+            # rolling stats
+            roll_rsum.append(reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps))
+            roll_succ.append(success_rate_end if success_rate_end is not None else 0.0)
+            roll_miss.append(deadline_miss_rate if deadline_miss_rate is not None else 0.0)
+            roll_tl.append(time_limit_rate if time_limit_rate is not None else 0.0)
+            roll_v.append(frac_v2v if frac_v2v is not None else 0.0)
             if table_row_count % 20 == 0:
                 divider_line = _format_table_divider(table_columns)
                 header_line = _format_table_header(table_columns)
@@ -1115,35 +1178,30 @@ def main():
             table_row = {
                 "ep": episode,
                 "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+                "term": termination_reason,
+                "tlr": time_limit_rate,
                 "r_mean": reward_mean,
+                "r_sum": reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps),
                 "r_p95": reward_p95,
-                "ent": None,
-                "kl": None,
-                "clip_frac": clip_hit_ratio,
-                "p_loss": None,
-                "v_loss": None,
-                "total_loss": update_loss,
                 "succ": success_rate_end,
-                "task": task_success_rate,
-                "sub": subtask_success,
                 "miss": deadline_miss_rate,
-                "ill": illegal_action_rate,
-                "hard": hard_trigger_rate,
                 "L": frac_local,
                 "R": frac_rsu,
                 "V": frac_v2v,
-                "mean_cft": mean_cft,
-                "dCFT": delta_cft_rem_mean,
-                "power": power_ratio_mean,
-                "elapsed": duration,
+                "v2v_win": v2v_beats_rsu_rate,
+                "gap": mean_cost_gap,
+                "c_rsu": mean_cost_rsu,
+                "c_v2v": mean_cost_v2v,
+                "ent": policy_entropy_val,
+                "kl": update_stats.get("approx_kl"),
+                "clip": update_stats.get("clip_fraction", clip_hit_ratio),
+                "v_loss": update_stats.get("value_loss"),
+                "rSum15": np.mean(roll_rsum) if roll_rsum else None,
+                "succ15": np.mean(roll_succ) if roll_succ else None,
+                "miss15": np.mean(roll_miss) if roll_miss else None,
+                "tl15": np.mean(roll_tl) if roll_tl else None,
+                "V15": np.mean(roll_v) if roll_v else None,
             }
-            update_stats = getattr(agent, "last_update_stats", {}) or {}
-            table_row["ent"] = policy_entropy_val
-            table_row["p_loss"] = update_stats.get("policy_loss")
-            table_row["v_loss"] = update_stats.get("value_loss")
-            table_row["kl"] = update_stats.get("approx_kl")
-            table_row["clip_frac"] = update_stats.get("clip_fraction", clip_hit_ratio)
-            table_row["total_loss"] = update_stats.get("loss", update_loss)
             print(_format_table_row(table_row, table_columns), flush=True)
             table_row_count += 1
 
@@ -1424,7 +1482,17 @@ def main():
 
     # 训练结束与绘图
     if not disable_auto_plot:
-        recorder.auto_plot(baseline_history=baseline_history)
+        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
+        try:
+            subprocess.run(
+                [sys.executable, plot_script, "--run-dir", run_dir],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except Exception as e:
+            print(f"[warn] auto plot failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

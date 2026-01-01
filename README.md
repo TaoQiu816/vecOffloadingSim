@@ -167,6 +167,8 @@ CFG_PROFILE=train_ready_v2 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu 
 CFG_PROFILE=train_ready_v3 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 CFG_PROFILE=train_ready_v4 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 python scripts/plot_training_metrics.py --run_dir <run_dir>
+# 关键指标图（v4）
+python scripts/plot_key_metrics_v4.py --run-dir <run_dir> --window 15
 
 # 正式训练（GPU）
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
