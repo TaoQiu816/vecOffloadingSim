@@ -122,6 +122,16 @@ def _env_int(name):
         return None
 
 
+def _env_float(name):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _env_str(name):
     raw = os.environ.get(name)
     if raw is None:
@@ -395,6 +405,10 @@ def main():
     env_disable_baseline = _env_str("DISABLE_BASELINE_EVAL")
     env_use_lr_decay = _env_str("USE_LR_DECAY")
     env_device = _env_str("DEVICE_NAME")
+    env_time_penalty_mode = _env_str("TIME_LIMIT_PENALTY_MODE")
+    env_time_penalty = _env_float("TIME_LIMIT_PENALTY")
+    env_time_penalty_k = _env_float("TIME_LIMIT_PENALTY_K")
+    env_time_penalty_clip = _env_float("TIME_LIMIT_PENALTY_RATIO_CLIP")
 
     reward_mode = args.reward_mode or env_reward_mode or Cfg.REWARD_MODE
     bonus_mode = args.bonus_mode or env_bonus_mode or Cfg.BONUS_MODE
@@ -423,6 +437,15 @@ def main():
                 TC.MAX_STEPS = int(Cfg.MAX_STEPS)
         except Exception:
             pass
+
+    if env_time_penalty_mode:
+        Cfg.TIME_LIMIT_PENALTY_MODE = env_time_penalty_mode
+    if env_time_penalty is not None:
+        Cfg.TIME_LIMIT_PENALTY = env_time_penalty
+    if env_time_penalty_k is not None:
+        Cfg.TIME_LIMIT_PENALTY_K = env_time_penalty_k
+    if env_time_penalty_clip is not None:
+        Cfg.TIME_LIMIT_PENALTY_RATIO_CLIP = env_time_penalty_clip
 
     if args.log_interval is not None:
         TC.LOG_INTERVAL = int(args.log_interval)
@@ -887,16 +910,6 @@ def main():
         # 协作率
         collaboration_rate = (stats['v2v_count'] / total_decisions) * 100 if total_decisions > 0 else 0
 
-        # PPO更新
-        last_value = agent.get_value(obs_list)
-        buffer.compute_returns_and_advantages(last_value)
-        update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
-        buffer.clear()
-
-        # 显存清理
-        if episode % 10 == 0 and device == "cuda":
-            torch.cuda.empty_cache()
-
         # 汇总Episode数据
         duration = time.time() - ep_start_time
         avg_assigned_cpu = stats['assigned_cpu_sum'] / total_decisions
@@ -1052,15 +1065,23 @@ def main():
         time_limit_penalty_value = 0.0
         remaining_time_used = None
         remaining_ratio_used = None
-        if truncated and not terminated and buffer.rewards_buffer:
+        should_apply_tl_penalty = (
+            truncated_flag
+            and termination_reason == "time_limit"
+            and (success_rate_end is None or success_rate_end < 1.0)
+            and buffer.rewards_buffer
+        )
+        if should_apply_tl_penalty:
             remaining_time_used = env_metrics.get("cft_curr_rem.mean")
             if remaining_time_used is None:
                 remaining_time_used = mean_cft_rem
+            if remaining_time_used is None and env_stats:
+                remaining_time_used = env_stats.get("mean_cft_rem")
             deadline_used = deadline_seconds if deadline_seconds is not None else episode_time_seconds
             penalty, ratio = _compute_time_limit_penalty(
                 getattr(Cfg, "TIME_LIMIT_PENALTY_MODE", "fixed"),
                 remaining_time_used if remaining_time_used is not None else 0.0,
-                deadline_used if deadline_used is not None else episode_time_seconds,
+                deadline_used if deadline_used is not None else 1.0,
                 getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0),
                 getattr(Cfg, "TIME_LIMIT_PENALTY_K", 2.0),
                 getattr(Cfg, "TIME_LIMIT_PENALTY_RATIO_CLIP", 3.0),
@@ -1072,6 +1093,16 @@ def main():
             ep_reward += penalty
             time_limit_penalty_applied = True
             time_limit_penalty_value = penalty
+
+        # PPO更新（在末步惩罚后计算，以确保惩罚参与梯度更新）
+        last_value = agent.get_value(obs_list)
+        buffer.compute_returns_and_advantages(last_value)
+        update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
+        buffer.clear()
+
+        # 显存清理
+        if episode % 10 == 0 and device == "cuda":
+            torch.cuda.empty_cache()
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
