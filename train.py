@@ -620,6 +620,12 @@ def main():
         "elapsed_sec",
         "reward_mode",
         "seed",
+        "terminated",
+        "truncated",
+        "termination_reason",
+        "episode_vehicle_count",
+        "episode_task_count",
+        "total_subtasks",
         # reward: signed per-step mean/p95; abs_mean optional
         "reward_mean",
         "reward_p50",
@@ -640,6 +646,9 @@ def main():
         "illegal_action_rate",
         "hard_trigger_rate",
         # decisions
+        "decision_local_frac",
+        "decision_rsu_frac",
+        "decision_v2v_frac",
         "decision_frac_local",
         "decision_frac_rsu",
         "decision_frac_v2v",
@@ -858,6 +867,7 @@ def main():
 
         # 成功率统计（存储为0-1，展示时再乘100）
         episode_vehicle_count = len(env.vehicles)
+        episode_task_count = episode_vehicle_count
         success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
         veh_success_rate = success_count / max(episode_vehicle_count, 1)
         task_success_rate = success_count / max(episode_vehicle_count, 1)
@@ -913,6 +923,14 @@ def main():
         reward_abs_mean = env_metrics.get("reward_abs.mean")
         if reward_abs_mean is None:
             reward_abs_mean = float(np.mean(np.abs(step_rewards)))
+        terminated_flag = bool(env_stats.get("terminated")) if env_stats else bool(terminated)
+        truncated_flag = bool(env_stats.get("truncated")) if env_stats else bool(truncated)
+        if terminated_flag:
+            termination_reason = "all_finished"
+        elif truncated_flag:
+            termination_reason = "time_limit"
+        else:
+            termination_reason = "other"
         success_rate_end = env_stats.get("success_rate_end") if env_stats else veh_success_rate
         task_success_rate = env_stats.get("task_success_rate", task_success_rate) if env_stats else task_success_rate
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
@@ -938,6 +956,9 @@ def main():
             mean_cft_rem = max(mean_cft - env.time, 0.0)
         power_ratio_mean = env_metrics.get("power_ratio.mean")
         power_ratio_p95 = env_metrics.get("power_ratio.p95")
+        episode_vehicle_count = env_stats.get("episode_vehicle_count", episode_vehicle_count) if env_stats else episode_vehicle_count
+        episode_task_count = env_stats.get("episode_task_count", episode_task_count) if env_stats else episode_task_count
+        total_subtasks_metric = env_stats.get("total_subtasks", total_subtasks) if env_stats else total_subtasks
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
@@ -990,6 +1011,12 @@ def main():
             "elapsed_sec": duration,
             "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
+            "terminated": terminated_flag,
+            "truncated": truncated_flag,
+            "termination_reason": termination_reason,
+            "episode_vehicle_count": episode_vehicle_count,
+            "episode_task_count": episode_task_count,
+            "total_subtasks": total_subtasks_metric,
             # reward: signed per-step mean/p95 (avoid reward_abs for policy quality)
             "reward_mean": reward_mean,
             "reward_p50": reward_p50,
@@ -1010,6 +1037,9 @@ def main():
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # decisions
+            "decision_local_frac": frac_local,
+            "decision_rsu_frac": frac_rsu,
+            "decision_v2v_frac": frac_v2v,
             "decision_frac_local": frac_local,
             "decision_frac_rsu": frac_rsu,
             "decision_frac_v2v": frac_v2v,
@@ -1072,12 +1102,12 @@ def main():
             tb.add_scalar("success/subtask_success_rate", subtask_success, episode)
             tb.add_scalar("success/deadline_miss_rate", deadline_miss_rate, episode)
             # safety
-            tb.add_scalar("safety/illegal_action_rate", illegal_action_rate or 0.0, episode)
-            tb.add_scalar("safety/hard_trigger_rate", hard_trigger_rate or 0.0, episode)
+            tb.add_scalar("constraint/illegal_rate", illegal_action_rate or 0.0, episode)
+            tb.add_scalar("constraint/hard_trigger_rate", hard_trigger_rate or 0.0, episode)
             # decision
-            tb.add_scalar("decision/frac_local", frac_local, episode)
-            tb.add_scalar("decision/frac_rsu", frac_rsu, episode)
-            tb.add_scalar("decision/frac_v2v", frac_v2v, episode)
+            tb.add_scalar("decision/local_frac", frac_local, episode)
+            tb.add_scalar("decision/rsu_frac", frac_rsu, episode)
+            tb.add_scalar("decision/v2v_frac", frac_v2v, episode)
             # PPO
             if update_stats.get("entropy") is not None:
                 tb.add_scalar("ppo/entropy", update_stats.get("entropy"), episode)

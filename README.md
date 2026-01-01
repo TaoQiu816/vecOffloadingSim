@@ -157,16 +157,31 @@ python utils/plot_baseline_comparison.py
 ## Training Metrics Semantics
 - 训练轮次默认 200 的原因：`scripts/run_train_ready.sh` 早期硬编码了 `MAX_EPISODES=200`，覆盖了 `TrainConfig.MAX_EPISODES` 默认值；现已改为环境变量优先且默认 5000。
 - `reward_abs` 与 `reward_mean` 区别：`reward_abs` 是每步奖励的绝对值均值，仅用于稳定性参考，不能替代带符号的 `reward_mean`。之前 `metrics.csv` 缺少 `reward_mean`，绘图脚本回退到 `reward_abs` 或错误列（如累计 total_reward）时会出现数值异常（可达 1e8）；当前已统一以 `reward_mean` 作为主曲线并固定列名。
+- 新增 `train_ready_v2` 配置：关闭动态车流、收紧 DAG 负载（0.8e8~1.2e8 cycles & 1.0e6~2.0e6 bits）、RSU 提升至 10 GHz/4 核/20e9 cycles 队列、车辆队列 6e9 cycles，deadline 放宽至 γ∈[12,16]，便于收敛和平滑曲线。
 
 ## 验收命令
 ```bash
 # 快速冒烟
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
+CFG_PROFILE=train_ready_v2 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
+CFG_PROFILE=train_ready_v3 MAX_EPISODES=20 MAX_STEPS=300 SEED=7 DEVICE_NAME=cpu python train.py
 python scripts/plot_training_metrics.py --run_dir <run_dir>
 
 # 正式训练（GPU）
 CFG_PROFILE=train_ready_v1 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
+CFG_PROFILE=train_ready_v2 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
+CFG_PROFILE=train_ready_v3 MAX_EPISODES=5000 MAX_STEPS=300 SEED=7 DEVICE_NAME=cuda bash scripts/run_train_ready.sh
 ```
+
+### train_ready_v3（更重负载，压制秒通关）
+- 关闭动态车流，任务负载提升（0.8e9~2.4e9 cycles，8e6~2.0e7 bits，边 1.6e6~4.0e6 bits）
+- RSU 6 GHz/2 核/12e9 cycles，V2I 15 MHz，V2V 40 MHz，V2V 干扰 -110 dBm，范围 350 m
+- Deadline 放宽 γ∈[18,24]，奖励使用 delta_cft（scale 15，energy weight 0.03）
+- 快速验收示例：
+  ```bash
+  CFG_PROFILE=train_ready_v3 MAX_EPISODES=100 MAX_STEPS=300 DEVICE_NAME=cpu SEED=7 DISABLE_BASELINE_EVAL=1 DISABLE_AUTO_PLOT=1 RUN_ID=smoke_ready_v3 python train.py
+  python scripts/analyze_episode_bimodality.py --run_dir runs/<smoke_run_dir>
+  ```
 
 ## TensorBoard（AutoDL）
 最短步骤：

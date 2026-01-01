@@ -374,6 +374,66 @@ PROFILE_REGISTRY = {
         "DELTA_CFT_SCALE": 8.0,
         "DELTA_CFT_ENERGY_WEIGHT": 0.03,
         "EPISODE_JSONL_STDOUT": False,
+    },
+    # train_ready_v2: reduce difficulty variance, tighten DAG load, boost RSU, and slightly relax deadlines.
+    "train_ready_v2": {
+        # 1) Disable dynamic arrivals to reduce episode variability
+        "VEHICLE_ARRIVAL_RATE": 0.0,
+        # 2) Narrow DAG load distribution
+        "MIN_COMP": 0.8e8,
+        "MAX_COMP": 1.2e8,
+        "MIN_DATA": 1.0e6,
+        "MAX_DATA": 2.0e6,
+        "MIN_EDGE_DATA": 0.2e6,
+        "MAX_EDGE_DATA": 0.4e6,
+        # 3) Stronger RSU to mitigate queue-induced misses
+        "F_RSU": 10.0e9,
+        "RSU_NUM_PROCESSORS": 4,
+        "RSU_QUEUE_CYCLES_LIMIT": 20.0e9,
+        "VEHICLE_QUEUE_CYCLES_LIMIT": 6.0e9,
+        # 4) Deadline lightly relaxed vs train_ready_v1 (~+20%)
+        "DEADLINE_TIGHTENING_FACTOR": 1.05,
+        "DEADLINE_TIGHTENING_MIN": 12.0,
+        "DEADLINE_TIGHTENING_MAX": 16.0,
+        # 5) Time discretization unchanged
+        "MAX_STEPS": 300,
+        # 6) Reward mode unchanged (delta_cft)
+        "REWARD_MODE": "delta_cft",
+        "BONUS_MODE": "none",
+        "DELTA_CFT_SCALE": 8.0,
+        "DELTA_CFT_ENERGY_WEIGHT": 0.03,
+    }
+    ,
+    # train_ready_v3: heavier tasks to avoid 6~9 step easy wins; moderate RSU; stronger V2V; relaxed deadlines.
+    "train_ready_v3": {
+        "MAX_STEPS": 300,
+        # Heavier DAG loads to reduce fast completion
+        "MIN_COMP": 0.8e9,
+        "MAX_COMP": 2.4e9,
+        "MIN_DATA": 8.0e6,
+        "MAX_DATA": 2.0e7,
+        "MIN_EDGE_DATA": 1.6e6,
+        "MAX_EDGE_DATA": 4.0e6,
+        # RSU moderate
+        "F_RSU": 6.0e9,
+        "RSU_NUM_PROCESSORS": 2,
+        "RSU_QUEUE_CYCLES_LIMIT": 12.0e9,
+        # Keep vehicle queue in line with larger tasks
+        "VEHICLE_QUEUE_CYCLES_LIMIT": 6.0e9,
+        # Communication: stronger V2V, moderate V2I
+        "BW_V2I": 15.0e6,
+        "BW_V2V": 40.0e6,
+        "V2V_INTERFERENCE_DBM": -110.0,
+        "V2V_RANGE": 350.0,
+        # Deadline relaxed for heavier load
+        "DEADLINE_TIGHTENING_FACTOR": 1.05,
+        "DEADLINE_TIGHTENING_MIN": 18.0,
+        "DEADLINE_TIGHTENING_MAX": 24.0,
+        # Reward scale for delta_cft
+        "REWARD_MODE": "delta_cft",
+        "BONUS_MODE": "none",
+        "DELTA_CFT_SCALE": 15.0,
+        "DELTA_CFT_ENERGY_WEIGHT": 0.03,
     }
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Purpose: plot training metrics from a run directory.
+"""Purpose: plot training metrics to PNG (reward_mean as primary).
 Inputs: --run_dir (repeatable), expects run_dir/logs/metrics.csv.
-Outputs: run_dir/plots/*.png with stable filenames for comparison.
+Outputs: run_dir/plots/*.png (fixed names, with raw + rolling mean).
 Example: python scripts/plot_training_metrics.py --run_dir runs/my_run
 """
 import argparse
@@ -36,22 +36,29 @@ def _load_csv(path):
 
 
 def _series(rows, key):
-    xs = []
-    ys = []
+    xs, ys = [], []
     for idx, row in enumerate(rows):
-        ep = row.get("episode") or row.get("ep")
-        ep_val = _to_float(ep)
-        if ep_val is None:
-            ep_val = idx + 1
+        ep = _to_float(row.get("episode"))
+        if ep is None:
+            ep = idx + 1
         val = _to_float(row.get(key))
         if val is None:
             continue
-        xs.append(ep_val)
+        xs.append(ep)
         ys.append(val)
     return xs, ys
 
 
-def _rolling_mean(values, window=20):
+def _series_first(rows, keys):
+    for key in keys:
+        xs, ys = _series(rows, key)
+        if xs and ys:
+            return xs, ys
+    # fallback: return last key even if empty to keep structure
+    return _series(rows, keys[-1])
+
+
+def _rolling(values, window=20):
     if not values:
         return []
     if len(values) < window:
@@ -70,8 +77,8 @@ def _plot_lines(out_dir, title, series, filename, ylabel=None, window=20):
         if not x or not y:
             continue
         has_any = True
-        smooth = _rolling_mean(y, window=window)
-        plt.plot(x, y, linewidth=1.0, alpha=0.25, label=f"{label}_raw")
+        smooth = _rolling(y, window=window)
+        plt.plot(x, y, linewidth=1.0, alpha=0.3, label=f"{label}_raw")
         plt.plot(x, smooth, linewidth=1.8, label=label)
     if not has_any:
         plt.close()
@@ -88,16 +95,11 @@ def _plot_lines(out_dir, title, series, filename, ylabel=None, window=20):
 
 
 def _metrics_path(run_dir: Path) -> Path:
-    primary = run_dir / "logs" / "metrics.csv"
-    if primary.exists():
-        return primary
-    fallback = run_dir / "metrics" / "metrics.csv"
-    if fallback.exists():
-        return fallback
-    legacy = run_dir / "metrics" / "train_metrics.csv"
-    if legacy.exists():
-        return legacy
-    raise FileNotFoundError(f"metrics csv not found in {run_dir}/logs or {run_dir}/metrics")
+    candidates = [run_dir / "logs" / "metrics.csv", run_dir / "metrics" / "metrics.csv", run_dir / "metrics" / "train_metrics.csv"]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"metrics csv not found in {run_dir}")
 
 
 def _plot_for_run(run_dir):
@@ -110,110 +112,66 @@ def _plot_for_run(run_dir):
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    _plot_lines(
-        plots_dir,
-        "reward_mean",
-        {
-            "reward_mean": _series(rows, "reward_mean"),
-            "reward_p95": _series(rows, "reward_p95"),
-        },
-        "reward_mean.png",
-        ylabel="reward",
-    )
+    _plot_lines(plots_dir, "reward_mean", {
+        "reward_mean": _series(rows, "reward_mean"),
+        "reward_p95": _series(rows, "reward_p95"),
+    }, "reward_mean.png", ylabel="reward")
 
-    _plot_lines(
-        plots_dir,
-        "delta_cft_rem_mean",
-        {"delta_cft_rem_mean": _series(rows, "delta_cft_rem_mean")},
-        "delta_cft_rem_mean.png",
-        ylabel="delta_cft_rem_mean",
-    )
+    _plot_lines(plots_dir, "reward_abs_mean", {
+        "reward_abs_mean": _series(rows, "reward_abs_mean"),
+    }, "reward_abs_mean.png", ylabel="reward_abs_mean")
 
-    _plot_lines(
-        plots_dir,
-        "mean_cft",
-        {"mean_cft": _series(rows, "mean_cft")},
-        "mean_cft.png",
-        ylabel="mean_cft",
-    )
+    _plot_lines(plots_dir, "delta_cft_rem_mean", {
+        "delta_cft_rem_mean": _series(rows, "delta_cft_rem_mean"),
+    }, "delta_cft_rem_mean.png", ylabel="delta_cft_rem_mean")
 
-    _plot_lines(
-        plots_dir,
-        "success_rates",
-        {
-            "success_rate_end": _series(rows, "success_rate_end"),
-            "task_success_rate": _series(rows, "task_success_rate"),
-            "subtask_success_rate": _series(rows, "subtask_success_rate"),
-        },
-        "success_rates.png",
-        ylabel="rate",
-    )
+    _plot_lines(plots_dir, "mean_cft", {
+        "mean_cft": _series(rows, "mean_cft"),
+        "mean_cft_rem": _series(rows, "mean_cft_rem"),
+    }, "mean_cft.png", ylabel="cft")
 
-    _plot_lines(
-        plots_dir,
-        "deadline_miss_rate",
-        {"deadline_miss_rate": _series(rows, "deadline_miss_rate")},
-        "deadline_miss_rate.png",
-        ylabel="rate",
-    )
+    _plot_lines(plots_dir, "success_rates", {
+        "success_rate_end": _series(rows, "success_rate_end"),
+        "task_success_rate": _series(rows, "task_success_rate"),
+        "subtask_success_rate": _series(rows, "subtask_success_rate"),
+    }, "success_rates.png", ylabel="rate")
 
-    _plot_lines(
-        plots_dir,
-        "safety_rates",
-        {
-            "illegal_action_rate": _series(rows, "illegal_action_rate"),
-            "hard_trigger_rate": _series(rows, "hard_trigger_rate"),
-        },
-        "safety_rates.png",
-        ylabel="rate",
-    )
+    _plot_lines(plots_dir, "deadline_miss_rate", {
+        "deadline_miss_rate": _series(rows, "deadline_miss_rate"),
+    }, "deadline_miss_rate.png", ylabel="rate")
 
-    _plot_lines(
-        plots_dir,
-        "decision_fractions",
-        {
-            "local": _series(rows, "decision_frac_local"),
-            "rsu": _series(rows, "decision_frac_rsu"),
-            "v2v": _series(rows, "decision_frac_v2v"),
-        },
-        "decision_fracs.png",
-        ylabel="fraction",
-    )
+    _plot_lines(plots_dir, "safety_rates", {
+        "illegal_action_rate": _series(rows, "illegal_action_rate"),
+        "hard_trigger_rate": _series(rows, "hard_trigger_rate"),
+    }, "safety_rates.png", ylabel="rate")
 
-    _plot_lines(
-        plots_dir,
-        "ppo_diagnostics",
-        {
-            "entropy": _series(rows, "entropy"),
-            "approx_kl": _series(rows, "approx_kl"),
-            "clip_frac": _series(rows, "clip_frac"),
-        },
-        "ppo_diagnostics.png",
-        ylabel="value",
-    )
+    _plot_lines(plots_dir, "decision_fractions", {
+        "local": _series_first(rows, ["decision_local_frac", "decision_frac_local"]),
+        "rsu": _series_first(rows, ["decision_rsu_frac", "decision_frac_rsu"]),
+        "v2v": _series_first(rows, ["decision_v2v_frac", "decision_frac_v2v"]),
+    }, "decision_fracs.png", ylabel="fraction")
 
-    _plot_lines(
-        plots_dir,
-        "losses",
-        {
-            "policy_loss": _series(rows, "policy_loss"),
-            "value_loss": _series(rows, "value_loss"),
-            "total_loss": _series(rows, "total_loss"),
-        },
-        "losses.png",
-        ylabel="loss",
-    )
+    _plot_lines(plots_dir, "ppo_diagnostics", {
+        "entropy": _series(rows, "entropy"),
+        "approx_kl": _series(rows, "approx_kl"),
+        "clip_frac": _series(rows, "clip_frac"),
+    }, "ppo_diagnostics.png", ylabel="value")
 
-    _plot_lines(
-        plots_dir,
-        "power_ratio_mean",
-        {
-            "power_ratio_mean": _series(rows, "power_ratio_mean"),
-            "power_ratio_p95": _series(rows, "power_ratio_p95"),
-        },
-        "power_ratio_mean.png",
-        ylabel="power_ratio",
-    )
+    _plot_lines(plots_dir, "losses", {
+        "policy_loss": _series(rows, "policy_loss"),
+        "value_loss": _series(rows, "value_loss"),
+        "total_loss": _series(rows, "total_loss"),
+    }, "losses.png", ylabel="loss")
+
+    _plot_lines(plots_dir, "power_ratio_mean", {
+        "power_ratio_mean": _series(rows, "power_ratio_mean"),
+        "power_ratio_p95": _series(rows, "power_ratio_p95"),
+    }, "power_ratio_mean.png", ylabel="power_ratio")
+
+    _plot_lines(plots_dir, "safety_rates", {
+        "illegal_rate": _series(rows, "illegal_action_rate"),
+        "hard_rate": _series(rows, "hard_trigger_rate"),
+    }, "safety_rates.png", ylabel="rate")
 
     return plots_dir
 
