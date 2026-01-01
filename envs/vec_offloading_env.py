@@ -84,6 +84,11 @@ class VecOffloadingEnv(gym.Env):
         self._diag_neighbor_count_sum = 0.0
         self._diag_best_v2v_rate_sum = 0.0
         self._diag_best_v2v_valid_steps = 0
+        self._diag_cost_compare_steps = 0
+        self._diag_cost_gap_sum = 0.0
+        self._diag_cost_rsu_sum = 0.0
+        self._diag_cost_v2v_sum = 0.0
+        self._diag_cost_v2v_better = 0
 
         # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
@@ -735,6 +740,16 @@ class VecOffloadingEnv(gym.Env):
         else:
             extra["best_v2v_rate_mean"] = float("nan")
         extra["best_v2v_valid_rate"] = self._diag_best_v2v_valid_steps / steps if steps > 0 else 0.0
+        if self._diag_cost_compare_steps > 0:
+            extra["v2v_beats_rsu_rate"] = self._diag_cost_v2v_better / self._diag_cost_compare_steps
+            extra["mean_cost_gap_v2v_minus_rsu"] = self._diag_cost_gap_sum / self._diag_cost_compare_steps
+            extra["mean_cost_rsu"] = self._diag_cost_rsu_sum / self._diag_cost_compare_steps
+            extra["mean_cost_v2v"] = self._diag_cost_v2v_sum / self._diag_cost_compare_steps
+        else:
+            extra["v2v_beats_rsu_rate"] = 0.0
+            extra["mean_cost_gap_v2v_minus_rsu"] = float("nan")
+            extra["mean_cost_rsu"] = float("nan")
+            extra["mean_cost_v2v"] = float("nan")
         # 清洗非数值，避免 JSON NaN 导致读取失败
         for k, v in list(extra.items()):
             if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
@@ -766,6 +781,11 @@ class VecOffloadingEnv(gym.Env):
         self._diag_neighbor_count_sum = 0.0
         self._diag_best_v2v_rate_sum = 0.0
         self._diag_best_v2v_valid_steps = 0
+        self._diag_cost_compare_steps = 0
+        self._diag_cost_gap_sum = 0.0
+        self._diag_cost_rsu_sum = 0.0
+        self._diag_cost_v2v_sum = 0.0
+        self._diag_cost_v2v_better = 0
         
         # 重置RSU队列和FAT
         for rsu in self.rsus:
@@ -1740,6 +1760,12 @@ class VecOffloadingEnv(gym.Env):
             )
             rsu_available = rsu_id is not None
             rsu_load_norm = np.clip(rsu_wait * self._inv_max_wait, 0, 1) if rsu_available else 0.0
+            rsu_total_time = None
+            if rsu_available:
+                rsu_cpu = self.rsus[rsu_id].cpu_freq if (self.rsus and rsu_id < len(self.rsus)) else Cfg.F_RSU
+                rsu_tx_time = (task_data_size / max(rsu_rate, 1e-6)) if task_data_size > 0 else 0.0
+                rsu_comp_time = task_comp_size / max(rsu_cpu, 1e-6)
+                rsu_total_time = (rsu_tx_time + rsu_wait + rsu_comp_time) * 1.0
 
             neighbor_dim = 8
             neighbors_array = np.zeros((Cfg.MAX_NEIGHBORS, neighbor_dim), dtype=np.float32)
@@ -1841,6 +1867,15 @@ class VecOffloadingEnv(gym.Env):
                 best_rate = max(info['rate'] for info in candidate_info)
                 step_best_v2v_sum += float(best_rate)
                 step_best_v2v_valid += 1
+            # 诊断：V2V vs RSU 成本比较
+            if neighbor_count > 0 and rsu_total_time is not None:
+                min_v2v_time = min(info["total_time"] for info in candidate_info)
+                self._diag_cost_compare_steps += 1
+                self._diag_cost_rsu_sum += rsu_total_time
+                self._diag_cost_v2v_sum += min_v2v_time
+                self._diag_cost_gap_sum += (min_v2v_time - rsu_total_time)
+                if min_v2v_time < rsu_total_time:
+                    self._diag_cost_v2v_better += 1
 
             self._last_candidates[v.id] = candidate_ids
             self._last_rsu_choice[v.id] = rsu_id

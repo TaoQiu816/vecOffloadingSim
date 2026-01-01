@@ -265,6 +265,10 @@ class SystemConfig:
     PENALTY_OVERFLOW = -10.0     # 队列溢出（触发后直接返回）
     PENALTY_FAILURE = -10.0      # 任务失败惩罚（超时）
     TIME_LIMIT_PENALTY = -1.0    # episode 因时间截断的额外终端惩罚
+    # time_limit penalty模式
+    TIME_LIMIT_PENALTY_MODE = "fixed"  # {"fixed","scaled"}
+    TIME_LIMIT_PENALTY_K = 2.0
+    TIME_LIMIT_PENALTY_RATIO_CLIP = 3.0
 
     # F. 成功奖励参数 (Success Bonus) - 稀疏奖励强化
     SUCCESS_BONUS = 20.0  # 任务成功完成时的固定奖励（增大以提高V2V探索动力）

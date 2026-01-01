@@ -75,6 +75,24 @@ def _format_table_row(values, columns):
     return "| " + " | ".join(parts) + " |"
 
 
+def _compute_time_limit_penalty(mode, remaining_time, deadline, base_penalty, k, ratio_clip):
+    """
+    Compute scaled time-limit penalty.
+    mode: "fixed" or "scaled"
+    remaining_time: seconds remaining to finish
+    deadline: deadline seconds
+    """
+    if mode == "scaled":
+        if remaining_time is None or not np.isfinite(remaining_time):
+            return 0.0, 0.0
+        denom = max(deadline if deadline is not None and np.isfinite(deadline) else 1.0, 1e-6)
+        ratio = np.clip(remaining_time / denom, 0.0, ratio_clip)
+        penalty = -float(k) * float(ratio)
+        return penalty, ratio
+    else:
+        return float(base_penalty), 0.0
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(description="Train MAPPO offloading policy.")
     parser.add_argument("--max-episodes", type=int, default=None)
@@ -681,6 +699,14 @@ def main():
         "neighbor_count_mean",
         "best_v2v_rate_mean",
         "best_v2v_valid_rate",
+        "v2v_beats_rsu_rate",
+        "mean_cost_gap_v2v_minus_rsu",
+        "mean_cost_rsu",
+        "mean_cost_v2v",
+        "time_limit_penalty_applied",
+        "time_limit_penalty_value",
+        "remaining_time_seconds_used",
+        "remaining_ratio_used",
     ]
     step_metrics_fields = [
         "episode",
@@ -848,12 +874,31 @@ def main():
             env._log_episode_stats(False, True)
 
         # 末尾截断惩罚（time_limit且未完成）
+        time_limit_penalty_applied = False
+        time_limit_penalty_value = 0.0
+        remaining_time_used = None
+        remaining_ratio_used = None
         if truncated and not terminated and buffer.rewards_buffer:
-            penalty = getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0)
+            # 估算剩余时间：优先用 env_metrics 的 cft_curr_rem.mean
+            remaining_time_used = env_metrics.get("cft_curr_rem.mean")
+            if remaining_time_used is None:
+                remaining_time_used = mean_cft_rem
+            deadline_used = deadline_seconds if deadline_seconds is not None else None
+            penalty, ratio = _compute_time_limit_penalty(
+                getattr(Cfg, "TIME_LIMIT_PENALTY_MODE", "fixed"),
+                remaining_time_used if remaining_time_used is not None else 0.0,
+                deadline_used if deadline_used is not None else episode_time_seconds,
+                getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0),
+                getattr(Cfg, "TIME_LIMIT_PENALTY_K", 2.0),
+                getattr(Cfg, "TIME_LIMIT_PENALTY_RATIO_CLIP", 3.0),
+            )
+            remaining_ratio_used = ratio
             buffer.rewards_buffer[-1] = buffer.rewards_buffer[-1] + penalty
             if ep_step_rewards:
                 ep_step_rewards[-1] += penalty
             ep_reward += penalty
+            time_limit_penalty_applied = True
+            time_limit_penalty_value = penalty
 
         # Episode结束后的分析与更新
         total_steps = step + 1
@@ -1022,6 +1067,10 @@ def main():
         entropy_loss_val = update_stats.get("entropy_loss")
         if entropy_loss_val is None and policy_entropy_val is not None:
             entropy_loss_val = -policy_entropy_val
+        v2v_beats_rsu_rate = env_stats.get("v2v_beats_rsu_rate", 0.0) if env_stats else 0.0
+        mean_cost_gap = env_stats.get("mean_cost_gap_v2v_minus_rsu") if env_stats else float("nan")
+        mean_cost_rsu = env_stats.get("mean_cost_rsu") if env_stats else float("nan")
+        mean_cost_v2v = env_stats.get("mean_cost_v2v") if env_stats else float("nan")
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
@@ -1089,6 +1138,10 @@ def main():
             "mean_cft_completed": mean_cft_completed,
             "vehicle_cft_count": vehicle_cft_count,
             "cft_est_valid": cft_est_valid,
+            "time_limit_penalty_applied": time_limit_penalty_applied,
+            "time_limit_penalty_value": time_limit_penalty_value,
+            "remaining_time_seconds_used": remaining_time_used if remaining_time_used is not None else 0.0,
+            "remaining_ratio_used": remaining_ratio_used if remaining_ratio_used is not None else 0.0,
             "deadline_gamma": deadline_gamma,
             "deadline_seconds": deadline_seconds,
             "critical_path_cycles": critical_path_cycles,
@@ -1141,6 +1194,10 @@ def main():
             "neighbor_count_mean": neighbor_count_mean,
             "best_v2v_rate_mean": best_v2v_rate_mean,
             "best_v2v_valid_rate": best_v2v_valid_rate,
+            "v2v_beats_rsu_rate": v2v_beats_rsu_rate,
+            "mean_cost_gap_v2v_minus_rsu": mean_cost_gap,
+            "mean_cost_rsu": mean_cost_rsu,
+            "mean_cost_v2v": mean_cost_v2v,
         }
         metrics_row_full = dict(metrics_row)
         metrics_row_full.update(env_metrics)
@@ -1215,6 +1272,24 @@ def main():
             # action power
             if power_ratio_mean is not None:
                 tb.add_scalar("action/power_ratio_mean", power_ratio_mean, episode)
+            # diagnostics
+            tb.add_scalar("diag/avail_L", avail_L, episode)
+            tb.add_scalar("diag/avail_R", avail_R, episode)
+            tb.add_scalar("diag/avail_V", avail_V, episode)
+            tb.add_scalar("diag/neighbor_count_mean", neighbor_count_mean, episode)
+            if best_v2v_rate_mean is not None:
+                tb.add_scalar("diag/best_v2v_rate_mean", best_v2v_rate_mean, episode)
+            if best_v2v_valid_rate is not None:
+                tb.add_scalar("diag/best_v2v_valid_rate", best_v2v_valid_rate, episode)
+            tb.add_scalar("diag/v2v_beats_rsu_rate", v2v_beats_rsu_rate, episode)
+            if mean_cost_gap is not None and np.isfinite(mean_cost_gap):
+                tb.add_scalar("diag/mean_cost_gap_v2v_minus_rsu", mean_cost_gap, episode)
+            if mean_cost_rsu is not None and np.isfinite(mean_cost_rsu):
+                tb.add_scalar("diag/mean_cost_rsu", mean_cost_rsu, episode)
+            if mean_cost_v2v is not None and np.isfinite(mean_cost_v2v):
+                tb.add_scalar("diag/mean_cost_v2v", mean_cost_v2v, episode)
+            tb.add_scalar("constraint/time_limit_penalty", time_limit_penalty_value, episode)
+            tb.add_scalar("constraint/remaining_ratio_used", remaining_ratio_used or 0.0, episode)
 
         if log_step_metrics and step_metrics_rows:
             with open(step_metrics_csv_path, "a", newline="", encoding="utf-8") as f:
