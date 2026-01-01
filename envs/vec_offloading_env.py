@@ -735,6 +735,10 @@ class VecOffloadingEnv(gym.Env):
         else:
             extra["best_v2v_rate_mean"] = float("nan")
         extra["best_v2v_valid_rate"] = self._diag_best_v2v_valid_steps / steps if steps > 0 else 0.0
+        # 清洗非数值，避免 JSON NaN 导致读取失败
+        for k, v in list(extra.items()):
+            if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                extra[k] = None
         self._assert_metric_bounds(extra)
         json_line = self._reward_stats.to_json_line(extra=extra)
         if Cfg.EPISODE_JSONL_STDOUT:

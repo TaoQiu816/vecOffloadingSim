@@ -978,8 +978,8 @@ def main():
         episode_time_seconds = env_stats.get("episode_time_seconds") if env_stats else (env.time if env else None)
         mean_cft_est = env_stats.get("mean_cft_est") if env_stats else None
         mean_cft_completed = env_stats.get("mean_cft_completed") if env_stats else None
-        vehicle_cft_count = env_stats.get("vehicle_cft_count") if env_stats else None
-        cft_est_valid = env_stats.get("cft_est_valid") if env_stats else None
+        vehicle_cft_count = env_stats.get("vehicle_cft_count") if env_stats else 0
+        cft_est_valid = env_stats.get("cft_est_valid") if env_stats else False
         mean_cft = episode_time_seconds  # 保持旧列但语义为episode时长
         mean_cft_rem = env_metrics.get("cft_curr_rem.mean")
         if mean_cft_rem is None and episode_time_seconds is not None:
@@ -989,9 +989,39 @@ def main():
         deadline_gamma = env_stats.get("deadline_gamma_mean") if env_stats else None
         deadline_seconds = env_stats.get("deadline_seconds_mean") if env_stats else None
         critical_path_cycles = env_stats.get("critical_path_cycles_mean") if env_stats else None
+        avail_L = env_stats.get("avail_L") if env_stats else None
+        avail_R = env_stats.get("avail_R") if env_stats else None
+        avail_V = env_stats.get("avail_V") if env_stats else None
+        neighbor_count_mean = env_stats.get("neighbor_count_mean") if env_stats else None
+        best_v2v_rate_mean = env_stats.get("best_v2v_rate_mean") if env_stats else None
+        best_v2v_valid_rate = env_stats.get("best_v2v_valid_rate") if env_stats else None
+        if avail_L is None: avail_L = 0.0
+        if avail_R is None: avail_R = 0.0
+        if avail_V is None: avail_V = 0.0
+        if neighbor_count_mean is None: neighbor_count_mean = 0.0
+        if best_v2v_valid_rate is None or not (np.isfinite(best_v2v_valid_rate)): best_v2v_valid_rate = 0.0
+        if best_v2v_rate_mean is None or (isinstance(best_v2v_rate_mean, float) and not np.isfinite(best_v2v_rate_mean)):
+            best_v2v_rate_mean = float("nan")
+        for name, val in (("avail_L", avail_L), ("avail_R", avail_R), ("avail_V", avail_V), ("neighbor_count_mean", neighbor_count_mean)):
+            if not np.isfinite(val):
+                if name == "neighbor_count_mean":
+                    neighbor_count_mean = 0.0
+                elif name == "avail_L":
+                    avail_L = 0.0
+                elif name == "avail_R":
+                    avail_R = 0.0
+                elif name == "avail_V":
+                    avail_V = 0.0
         episode_vehicle_count = env_stats.get("episode_vehicle_count", episode_vehicle_count) if env_stats else episode_vehicle_count
         episode_task_count = env_stats.get("episode_task_count", episode_task_count) if env_stats else episode_task_count
         total_subtasks_metric = env_stats.get("total_subtasks", total_subtasks) if env_stats else total_subtasks
+        update_stats = getattr(agent, "last_update_stats", {}) or {}
+        policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
+        if policy_entropy_val is None:
+            policy_entropy_val = 0.0
+        entropy_loss_val = update_stats.get("entropy_loss")
+        if entropy_loss_val is None and policy_entropy_val is not None:
+            entropy_loss_val = -policy_entropy_val
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
@@ -1027,7 +1057,7 @@ def main():
                 "elapsed": duration,
             }
             update_stats = getattr(agent, "last_update_stats", {}) or {}
-            table_row["ent"] = update_stats.get("policy_entropy", update_stats.get("entropy"))
+            table_row["ent"] = policy_entropy_val
             table_row["p_loss"] = update_stats.get("policy_loss")
             table_row["v_loss"] = update_stats.get("value_loss")
             table_row["kl"] = update_stats.get("approx_kl")
@@ -1037,6 +1067,12 @@ def main():
             table_row_count += 1
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
+        policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
+        if policy_entropy_val is None:
+            policy_entropy_val = 0.0
+        entropy_loss_val = update_stats.get("entropy_loss")
+        if entropy_loss_val is None and policy_entropy_val is not None:
+            entropy_loss_val = -policy_entropy_val
         metrics_row = {
             # episode metadata
             "episode": episode,
@@ -1089,15 +1125,22 @@ def main():
             "power_ratio_mean": power_ratio_mean,
             "power_ratio_p95": power_ratio_p95,
             # PPO diagnostics
-            "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
+            "entropy": policy_entropy_val,
+            "policy_entropy": policy_entropy_val,
+            "entropy_loss": entropy_loss_val,
             "approx_kl": update_stats.get("approx_kl"),
             "clip_frac": update_stats.get("clip_fraction", clip_hit_ratio),
             "policy_loss": update_stats.get("policy_loss"),
             "value_loss": update_stats.get("value_loss"),
             "total_loss": update_stats.get("loss", update_loss),
             "grad_norm": update_stats.get("grad_norm"),
-            "policy_entropy": update_stats.get("policy_entropy"),
-            "entropy_loss": update_stats.get("entropy_loss"),
+            # diagnostics
+            "avail_L": avail_L,
+            "avail_R": avail_R,
+            "avail_V": avail_V,
+            "neighbor_count_mean": neighbor_count_mean,
+            "best_v2v_rate_mean": best_v2v_rate_mean,
+            "best_v2v_valid_rate": best_v2v_valid_rate,
         }
         metrics_row_full = dict(metrics_row)
         metrics_row_full.update(env_metrics)
@@ -1157,8 +1200,8 @@ def main():
             tb.add_scalar("decision/rsu_frac", frac_rsu, episode)
             tb.add_scalar("decision/v2v_frac", frac_v2v, episode)
             # PPO
-            if update_stats.get("policy_entropy") is not None:
-                tb.add_scalar("ppo/policy_entropy", update_stats.get("policy_entropy"), episode)
+            if policy_entropy_val is not None:
+                tb.add_scalar("ppo/policy_entropy", policy_entropy_val, episode)
             if update_stats.get("approx_kl") is not None:
                 tb.add_scalar("ppo/approx_kl", update_stats.get("approx_kl"), episode)
             if update_stats.get("clip_fraction") is not None:

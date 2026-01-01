@@ -27,5 +27,5 @@ def test_mean_cft_nan_on_empty():
     record = json.loads(output[-1])
     # 当 vehicle_cfts 为空时，估计值应为 NaN
     assert record.get("mean_cft_est") != 15.0
-    assert str(record.get("mean_cft_est")).lower() == "nan"
-    assert str(record.get("mean_cft_completed")).lower() == "nan"
+    assert record.get("mean_cft_est") is None or str(record.get("mean_cft_est")).lower() == "nan"
+    assert record.get("mean_cft_completed") is None or str(record.get("mean_cft_completed")).lower() == "nan"

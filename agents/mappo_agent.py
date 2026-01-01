@@ -255,9 +255,12 @@ class MAPPOAgent:
                     num_updates += 1
 
         if num_updates > 0:
+            avg_entropy = total_entropy / num_updates
             self.last_update_stats = {
                 "loss": total_loss / num_updates,
-                "entropy": total_entropy / num_updates,
+                "entropy": avg_entropy,
+                "policy_entropy": avg_entropy,
+                "entropy_loss": -avg_entropy,
                 "policy_loss": total_policy / num_updates,
                 "value_loss": total_value / num_updates,
                 "approx_kl": total_kl / num_updates,
@@ -267,7 +270,9 @@ class MAPPOAgent:
         else:
             self.last_update_stats = {
                 "loss": 0.0,
-                "entropy": None,
+                "entropy": 0.0,
+                "policy_entropy": 0.0,
+                "entropy_loss": 0.0,
                 "policy_loss": None,
                 "value_loss": None,
                 "approx_kl": None,
