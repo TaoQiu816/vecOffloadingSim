@@ -6,7 +6,7 @@ set -euo pipefail
 export CFG_PROFILE=${CFG_PROFILE:-train_ready_v4}
 export SEED=${SEED:-7}
 export MAX_STEPS=${MAX_STEPS:-300}
-export MAX_EPISODES=${MAX_EPISODES:-800}
+export MAX_EPISODES=${MAX_EPISODES:-2000}
 export LOG_INTERVAL=${LOG_INTERVAL:-10}
 export DEVICE=${DEVICE:-cuda}
 
