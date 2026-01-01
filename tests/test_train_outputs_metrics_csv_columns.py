@@ -60,5 +60,9 @@ def test_train_outputs_metrics_csv_columns(tmp_path):
         "deadline_seconds",
         "critical_path_cycles",
         "time_limit_rate",
+        "mean_cft_est",
+        "mean_cft_completed",
+        "episode_time_seconds",
+        "vehicle_cft_count",
     }
     assert required.issubset(set(header))

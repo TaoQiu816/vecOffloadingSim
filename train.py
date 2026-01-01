@@ -624,6 +624,11 @@ def main():
         "truncated",
         "termination_reason",
         "time_limit_rate",
+        "episode_time_seconds",
+        "mean_cft_est",
+        "mean_cft_completed",
+        "vehicle_cft_count",
+        "cft_est_valid",
         "deadline_gamma",
         "deadline_seconds",
         "critical_path_cycles",
@@ -667,6 +672,15 @@ def main():
         "value_loss",
         "total_loss",
         "grad_norm",
+        "policy_entropy",
+        "entropy_loss",
+        # Diagnostics
+        "avail_L",
+        "avail_R",
+        "avail_V",
+        "neighbor_count_mean",
+        "best_v2v_rate_mean",
+        "best_v2v_valid_rate",
     ]
     step_metrics_fields = [
         "episode",
@@ -961,12 +975,15 @@ def main():
             delta_cft_rem_mean = env_metrics.get("delta_cft.mean")
         if delta_cft_rem_p95 is None:
             delta_cft_rem_p95 = env_metrics.get("delta_cft.p95")
-        mean_cft = env_stats.get("mean_cft") if env_stats else None
-        if mean_cft is None:
-            mean_cft = env_metrics.get("cft_curr_abs.mean")
+        episode_time_seconds = env_stats.get("episode_time_seconds") if env_stats else (env.time if env else None)
+        mean_cft_est = env_stats.get("mean_cft_est") if env_stats else None
+        mean_cft_completed = env_stats.get("mean_cft_completed") if env_stats else None
+        vehicle_cft_count = env_stats.get("vehicle_cft_count") if env_stats else None
+        cft_est_valid = env_stats.get("cft_est_valid") if env_stats else None
+        mean_cft = episode_time_seconds  # 保持旧列但语义为episode时长
         mean_cft_rem = env_metrics.get("cft_curr_rem.mean")
-        if mean_cft_rem is None and mean_cft is not None:
-            mean_cft_rem = max(mean_cft - env.time, 0.0)
+        if mean_cft_rem is None and episode_time_seconds is not None:
+            mean_cft_rem = max(episode_time_seconds - env.time, 0.0)
         power_ratio_mean = env_metrics.get("power_ratio.mean")
         power_ratio_p95 = env_metrics.get("power_ratio.p95")
         deadline_gamma = env_stats.get("deadline_gamma_mean") if env_stats else None
@@ -1010,7 +1027,7 @@ def main():
                 "elapsed": duration,
             }
             update_stats = getattr(agent, "last_update_stats", {}) or {}
-            table_row["ent"] = update_stats.get("entropy")
+            table_row["ent"] = update_stats.get("policy_entropy", update_stats.get("entropy"))
             table_row["p_loss"] = update_stats.get("policy_loss")
             table_row["v_loss"] = update_stats.get("value_loss")
             table_row["kl"] = update_stats.get("approx_kl")
@@ -1031,6 +1048,11 @@ def main():
             "truncated": truncated_flag,
             "termination_reason": termination_reason,
             "time_limit_rate": time_limit_rate,
+            "episode_time_seconds": episode_time_seconds,
+            "mean_cft_est": mean_cft_est,
+            "mean_cft_completed": mean_cft_completed,
+            "vehicle_cft_count": vehicle_cft_count,
+            "cft_est_valid": cft_est_valid,
             "deadline_gamma": deadline_gamma,
             "deadline_seconds": deadline_seconds,
             "critical_path_cycles": critical_path_cycles,
@@ -1067,13 +1089,15 @@ def main():
             "power_ratio_mean": power_ratio_mean,
             "power_ratio_p95": power_ratio_p95,
             # PPO diagnostics
-            "entropy": update_stats.get("entropy"),
+            "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
             "approx_kl": update_stats.get("approx_kl"),
             "clip_frac": update_stats.get("clip_fraction", clip_hit_ratio),
             "policy_loss": update_stats.get("policy_loss"),
             "value_loss": update_stats.get("value_loss"),
             "total_loss": update_stats.get("loss", update_loss),
             "grad_norm": update_stats.get("grad_norm"),
+            "policy_entropy": update_stats.get("policy_entropy"),
+            "entropy_loss": update_stats.get("entropy_loss"),
         }
         metrics_row_full = dict(metrics_row)
         metrics_row_full.update(env_metrics)
@@ -1112,10 +1136,14 @@ def main():
             if reward_abs_mean is not None:
                 tb.add_scalar("reward/abs_mean", reward_abs_mean, episode)
             # CFT
-            if mean_cft is not None:
-                tb.add_scalar("cft/mean_cft", mean_cft, episode)
+            if mean_cft_est is not None:
+                tb.add_scalar("cft/mean_est", mean_cft_est, episode)
+            if mean_cft_completed is not None:
+                tb.add_scalar("cft/mean_completed", mean_cft_completed, episode)
             if delta_cft_rem_mean is not None:
                 tb.add_scalar("cft/delta_cft_rem_mean", delta_cft_rem_mean, episode)
+            if episode_time_seconds is not None:
+                tb.add_scalar("time/episode_time_seconds", episode_time_seconds, episode)
             # success
             tb.add_scalar("success/success_rate_end", success_rate_end, episode)
             tb.add_scalar("success/task_success_rate", task_success_rate, episode)
@@ -1129,8 +1157,8 @@ def main():
             tb.add_scalar("decision/rsu_frac", frac_rsu, episode)
             tb.add_scalar("decision/v2v_frac", frac_v2v, episode)
             # PPO
-            if update_stats.get("entropy") is not None:
-                tb.add_scalar("ppo/entropy", update_stats.get("entropy"), episode)
+            if update_stats.get("policy_entropy") is not None:
+                tb.add_scalar("ppo/policy_entropy", update_stats.get("policy_entropy"), episode)
             if update_stats.get("approx_kl") is not None:
                 tb.add_scalar("ppo/approx_kl", update_stats.get("approx_kl"), episode)
             if update_stats.get("clip_fraction") is not None:

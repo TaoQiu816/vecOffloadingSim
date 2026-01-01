@@ -152,7 +152,7 @@ def _plot_for_run(run_dir):
     }, "decision_fracs.png", ylabel="fraction")
 
     _plot_lines(plots_dir, "ppo_diagnostics", {
-        "entropy": _series(rows, "entropy"),
+        "policy_entropy": _series_first(rows, ["policy_entropy", "entropy"]),
         "approx_kl": _series(rows, "approx_kl"),
         "clip_frac": _series(rows, "clip_frac"),
     }, "ppo_diagnostics.png", ylabel="value")

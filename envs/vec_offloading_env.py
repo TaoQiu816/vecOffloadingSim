@@ -76,6 +76,14 @@ class VecOffloadingEnv(gym.Env):
         self._jsonl_path = os.environ.get("REWARD_JSONL_PATH")
         self._run_id = os.environ.get("RUN_ID")
         self._target_episodes = os.environ.get("MAX_EPISODES")
+        # 诊断累积器
+        self._diag_steps = 0
+        self._diag_avail_l_sum = 0.0
+        self._diag_avail_r_sum = 0.0
+        self._diag_avail_v_sum = 0.0
+        self._diag_neighbor_count_sum = 0.0
+        self._diag_best_v2v_rate_sum = 0.0
+        self._diag_best_v2v_valid_steps = 0
 
         # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
@@ -697,10 +705,36 @@ class VecOffloadingEnv(gym.Env):
                 extra["deadline_seconds_mean"] = float(np.mean(deadlines))
             if critical_paths:
                 extra["critical_path_cycles_mean"] = float(np.mean(critical_paths))
-        if hasattr(self, "vehicle_cfts") and self.vehicle_cfts:
-            extra["mean_cft"] = float(np.mean(self.vehicle_cfts))
+        episode_time_seconds = float(self.time)
+        vehicle_cfts = getattr(self, "vehicle_cfts", [])
+        valid_cfts = [v for v in vehicle_cfts if v is not None and np.isfinite(v)]
+        extra["episode_time_seconds"] = episode_time_seconds
+        # 保留旧字段，但定义为episode时长，避免混淆为CFT
+        extra["mean_cft"] = episode_time_seconds
+        extra["vehicle_cft_count"] = len(valid_cfts)
+        extra["cft_est_valid"] = len(valid_cfts) > 0
+        extra["mean_cft_est"] = float(np.mean(valid_cfts)) if valid_cfts else float("nan")
+        # 实际完成的车辆CFT（基于DAG CT），仅对完成车辆统计
+        cft_completed = []
+        for v in self.vehicles:
+            if getattr(v.task_dag, "is_finished", False):
+                ct_arr = getattr(v.task_dag, "CT", None)
+                if ct_arr is not None:
+                    vals = [float(x) for x in ct_arr if np.isfinite(x) and x >= 0]
+                    if vals:
+                        cft_completed.append(max(vals))
+        extra["mean_cft_completed"] = float(np.mean(cft_completed)) if cft_completed else float("nan")
+        # 诊断：动作可用性/邻居/V2V速率
+        steps = max(self._diag_steps, 1)
+        extra["avail_L"] = self._diag_avail_l_sum / steps
+        extra["avail_R"] = self._diag_avail_r_sum / steps
+        extra["avail_V"] = self._diag_avail_v_sum / steps
+        extra["neighbor_count_mean"] = self._diag_neighbor_count_sum / steps
+        if self._diag_best_v2v_valid_steps > 0:
+            extra["best_v2v_rate_mean"] = self._diag_best_v2v_rate_sum / self._diag_best_v2v_valid_steps
         else:
-            extra["mean_cft"] = float(self.time)
+            extra["best_v2v_rate_mean"] = float("nan")
+        extra["best_v2v_valid_rate"] = self._diag_best_v2v_valid_steps / steps if steps > 0 else 0.0
         self._assert_metric_bounds(extra)
         json_line = self._reward_stats.to_json_line(extra=extra)
         if Cfg.EPISODE_JSONL_STDOUT:
@@ -720,6 +754,14 @@ class VecOffloadingEnv(gym.Env):
         self._episode_id += 1
         self._episode_steps = 0
         self._reward_stats.reset()
+        # 诊断统计（仅日志，不影响奖励）
+        self._diag_steps = 0
+        self._diag_avail_l_sum = 0.0
+        self._diag_avail_r_sum = 0.0
+        self._diag_avail_v_sum = 0.0
+        self._diag_neighbor_count_sum = 0.0
+        self._diag_best_v2v_rate_sum = 0.0
+        self._diag_best_v2v_valid_steps = 0
         
         # 重置RSU队列和FAT
         for rsu in self.rsus:
@@ -1253,14 +1295,14 @@ class VecOffloadingEnv(gym.Env):
                     )
                     vehicle_cfts.append(CFT)
                 except Exception as e:
-                    # 如果计算失败，使用旧的全局方法
+                    # 如果计算失败，记录缺失
                     print(f"警告: 计算车辆{i}的CFT失败: {e}")
-                    vehicle_cfts.append(self.time + 100.0)  # 使用一个大的默认值
+                    vehicle_cfts.append(np.nan)
         
         # 保存每个车辆的CFT（用于观测和奖励计算）
         self.vehicle_cfts = vehicle_cfts
         # 全局CFT使用所有车辆的最大值（用于兼容旧代码）
-        self.last_global_cft = max(vehicle_cfts) if len(vehicle_cfts) > 0 else self.time
+        self.last_global_cft = np.nanmax(vehicle_cfts) if len(vehicle_cfts) > 0 and np.any(np.isfinite(vehicle_cfts)) else np.nan
 
         delta_cft = 0.0
         if Cfg.REWARD_MODE == "delta_cft":
@@ -1604,6 +1646,13 @@ class VecOffloadingEnv(gym.Env):
         obs_list = []
         dist_matrix = self._get_dist_matrix()
         vehicle_ids = [veh.id for veh in self.vehicles]
+        # step级诊断累积（每次_get_obs仅计一次）
+        step_avail_l = 0.0
+        step_avail_r = 0.0
+        step_avail_v = 0.0
+        step_neighbor_sum = 0.0
+        step_best_v2v_sum = 0.0
+        step_best_v2v_valid = 0
 
         for v in self.vehicles:
             v_idx = vehicle_ids.index(v.id)
@@ -1738,6 +1787,7 @@ class VecOffloadingEnv(gym.Env):
                 })
 
             candidate_info.sort(key=lambda x: (x['total_time'], x['dist']))
+            neighbor_count = len(candidate_info)
 
             candidate_ids = [-1] * Cfg.MAX_NEIGHBORS
             for idx, info in enumerate(candidate_info[:Cfg.MAX_NEIGHBORS]):
@@ -1776,6 +1826,17 @@ class VecOffloadingEnv(gym.Env):
                 expected_id = 0 if candidate_id < 0 else 3 + candidate_id
                 assert resource_id_list[2 + idx] == expected_id, "resource_id_list mismatch"
                 assert target_mask_row[2 + idx] == (candidate_id >= 0), "target_mask mismatch"
+
+            # 诊断：动作可用性/邻居/最佳V2V速率
+            step_avail_l += 1.0 if target_mask_row[0] else 0.0
+            step_avail_r += 1.0 if target_mask_row[1] else 0.0
+            if Cfg.MAX_NEIGHBORS > 0:
+                step_avail_v += float(np.mean(target_mask_row[2:]))
+            step_neighbor_sum += float(neighbor_count)
+            if neighbor_count > 0:
+                best_rate = max(info['rate'] for info in candidate_info)
+                step_best_v2v_sum += float(best_rate)
+                step_best_v2v_valid += 1
 
             self._last_candidates[v.id] = candidate_ids
             self._last_rsu_choice[v.id] = rsu_id
@@ -1908,6 +1969,16 @@ class VecOffloadingEnv(gym.Env):
         if self._audit_enabled():
             assert len(obs_list) == len(self.vehicles), "obs/vehicles length mismatch"
             self._assert_vehicle_integrity()
+        # 诊断：跨车辆均值后累积
+        num_veh = max(len(self.vehicles), 1)
+        self._diag_steps += 1
+        self._diag_avail_l_sum += step_avail_l / num_veh
+        self._diag_avail_r_sum += step_avail_r / num_veh
+        self._diag_avail_v_sum += step_avail_v / num_veh
+        self._diag_neighbor_count_sum += step_neighbor_sum / num_veh
+        if step_best_v2v_valid > 0:
+            self._diag_best_v2v_rate_sum += step_best_v2v_sum / step_best_v2v_valid
+            self._diag_best_v2v_valid_steps += 1
         return obs_list
 
     def _estimate_v2i_users(self):
