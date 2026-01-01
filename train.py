@@ -873,33 +873,6 @@ def main():
         if not (terminated or truncated):
             env._log_episode_stats(False, True)
 
-        # 末尾截断惩罚（time_limit且未完成）
-        time_limit_penalty_applied = False
-        time_limit_penalty_value = 0.0
-        remaining_time_used = None
-        remaining_ratio_used = None
-        if truncated and not terminated and buffer.rewards_buffer:
-            # 估算剩余时间：优先用 env_metrics 的 cft_curr_rem.mean
-            remaining_time_used = env_metrics.get("cft_curr_rem.mean")
-            if remaining_time_used is None:
-                remaining_time_used = mean_cft_rem
-            deadline_used = deadline_seconds if deadline_seconds is not None else None
-            penalty, ratio = _compute_time_limit_penalty(
-                getattr(Cfg, "TIME_LIMIT_PENALTY_MODE", "fixed"),
-                remaining_time_used if remaining_time_used is not None else 0.0,
-                deadline_used if deadline_used is not None else episode_time_seconds,
-                getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0),
-                getattr(Cfg, "TIME_LIMIT_PENALTY_K", 2.0),
-                getattr(Cfg, "TIME_LIMIT_PENALTY_RATIO_CLIP", 3.0),
-            )
-            remaining_ratio_used = ratio
-            buffer.rewards_buffer[-1] = buffer.rewards_buffer[-1] + penalty
-            if ep_step_rewards:
-                ep_step_rewards[-1] += penalty
-            ep_reward += penalty
-            time_limit_penalty_applied = True
-            time_limit_penalty_value = penalty
-
         # Episode结束后的分析与更新
         total_steps = step + 1
         total_decisions = stats["agent_rewards_count"] if stats["agent_rewards_count"] > 0 else 1
@@ -1074,6 +1047,31 @@ def main():
         mean_cost_gap = env_stats.get("mean_cost_gap_v2v_minus_rsu") if env_stats else float("nan")
         mean_cost_rsu = env_stats.get("mean_cost_rsu") if env_stats else float("nan")
         mean_cost_v2v = env_stats.get("mean_cost_v2v") if env_stats else float("nan")
+        # 末尾截断惩罚默认值
+        time_limit_penalty_applied = False
+        time_limit_penalty_value = 0.0
+        remaining_time_used = None
+        remaining_ratio_used = None
+        if truncated and not terminated and buffer.rewards_buffer:
+            remaining_time_used = env_metrics.get("cft_curr_rem.mean")
+            if remaining_time_used is None:
+                remaining_time_used = mean_cft_rem
+            deadline_used = deadline_seconds if deadline_seconds is not None else episode_time_seconds
+            penalty, ratio = _compute_time_limit_penalty(
+                getattr(Cfg, "TIME_LIMIT_PENALTY_MODE", "fixed"),
+                remaining_time_used if remaining_time_used is not None else 0.0,
+                deadline_used if deadline_used is not None else episode_time_seconds,
+                getattr(Cfg, "TIME_LIMIT_PENALTY", -1.0),
+                getattr(Cfg, "TIME_LIMIT_PENALTY_K", 2.0),
+                getattr(Cfg, "TIME_LIMIT_PENALTY_RATIO_CLIP", 3.0),
+            )
+            remaining_ratio_used = ratio
+            buffer.rewards_buffer[-1] = buffer.rewards_buffer[-1] + penalty
+            if ep_step_rewards:
+                ep_step_rewards[-1] += penalty
+            ep_reward += penalty
+            time_limit_penalty_applied = True
+            time_limit_penalty_value = penalty
 
         # 控制台输出（每 LOG_INTERVAL 一行）
         if episode == 1 or episode % TC.LOG_INTERVAL == 0:
