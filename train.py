@@ -978,6 +978,9 @@ def main():
 
         env_stats = _read_last_jsonl(reward_jsonl_path)
         env_metrics = {}
+        if log_step_metrics and step_metrics_rows:
+            # 如有需要，可汇总step级指标；当前使用env_stats为主
+            pass
         if env_stats and isinstance(env_stats.get("metrics"), dict):
             for key, stat in env_stats["metrics"].items():
                 if isinstance(stat, dict):
