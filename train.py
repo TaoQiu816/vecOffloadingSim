@@ -623,6 +623,11 @@ def main():
     if tb_log_obs is not None:
         log_obs_stats = tb_log_obs.lower() in ("1", "true", "yes")
 
+    # 确定训练设备
+    device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
     # =========================================================================
     # 启动参数自检 (Startup Parameter Verification)
     # =========================================================================
@@ -651,10 +656,6 @@ def main():
             # 单一奖励方案，无模式选择；避免在快照中暴露已废弃字段
             continue
         config_dict[k] = v
-    
-    device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
-    if device == "cuda":
-        torch.cuda.empty_cache()
 
     hyperparams = {
         "lr_actor": TC.LR_ACTOR,
