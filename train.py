@@ -1648,17 +1648,17 @@ def main():
             print("\n[Auto Plotting] Generating plots from training_stats.csv...")
         try:
             subprocess.run(
-                    [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
+                [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-                print(f"✓ Plots saved to: {plots_dir}")
-            except subprocess.CalledProcessError as e:
-                print(f"⚠ Auto plot failed: {e.stdout}")
+            print(f"✓ Plots saved to: {plots_dir}")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠ Auto plot failed: {e.stdout}")
         except Exception as e:
-                print(f"⚠ Auto plot failed: {e}")
+            print(f"⚠ Auto plot failed: {e}")
         
         # 保留原有的绘图脚本调用（兼容性）
         legacy_plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
