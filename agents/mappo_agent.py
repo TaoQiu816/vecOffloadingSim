@@ -283,11 +283,16 @@ class MAPPOAgent:
 
         if num_updates > 0:
             avg_entropy = total_entropy / num_updates
+            # 确保entropy是有效的正数（策略分布的熵应该 > 0）
+            if avg_entropy < 1e-6:
+                # 如果熵过小，可能是数值问题或策略过于确定
+                avg_entropy = max(avg_entropy, 0.0)
+            
             self.last_update_stats = {
                 "loss": total_loss / num_updates,
-                "entropy": avg_entropy,
+                "entropy": avg_entropy,  # 真实的策略熵
                 "policy_entropy": avg_entropy,
-                "entropy_loss": -avg_entropy,
+                "entropy_loss": -avg_entropy,  # 熵损失（负号因为我们要最大化熵）
                 "policy_loss": total_policy / num_updates,
                 "value_loss": total_value / num_updates,
                 "approx_kl": total_kl / num_updates,
@@ -295,16 +300,17 @@ class MAPPOAgent:
                 "grad_norm": total_grad_norm / num_updates,
             }
         else:
+            # 如果没有有效更新，保留上一次的stats或使用默认值
             self.last_update_stats = {
                 "loss": 0.0,
                 "entropy": 0.0,
                 "policy_entropy": 0.0,
                 "entropy_loss": 0.0,
-                "policy_loss": None,
-                "value_loss": None,
-                "approx_kl": None,
-                "clip_fraction": None,
-                "grad_norm": None,
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "approx_kl": 0.0,
+                "clip_fraction": 0.0,
+                "grad_norm": 0.0,
             }
 
         return total_loss / num_updates if num_updates > 0 else 0.0

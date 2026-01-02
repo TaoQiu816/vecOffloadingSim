@@ -1242,49 +1242,40 @@ def main():
         if episode % 10 == 0 and device == "cuda":
             torch.cuda.empty_cache()
 
-        # 控制台输出（每 LOG_INTERVAL 一行）
-        if episode == 1 or episode % TC.LOG_INTERVAL == 0:
-            # rolling stats
-            roll_rsum.append(reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps))
-            roll_succ.append(success_rate_end if success_rate_end is not None else 0.0)
-            roll_miss.append(deadline_miss_rate if deadline_miss_rate is not None else 0.0)
-            roll_tl.append(time_limit_rate if time_limit_rate is not None else 0.0)
-            roll_v.append(frac_v2v if frac_v2v is not None else 0.0)
-            if table_row_count % 20 == 0:
-                divider_line = _format_table_divider(table_columns)
-                header_line = _format_table_header(table_columns)
-                print(divider_line, flush=True)
-                print(header_line, flush=True)
-                print(divider_line, flush=True)
-            table_row = {
-                "ep": episode,
-                "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
-                "term": termination_reason,
-                "tlr": time_limit_rate,
-                "r_mean": reward_mean,
-                "r_sum": reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps),
-                "r_p95": reward_p95,
-                "succ": success_rate_end,
-                "miss": deadline_miss_rate,
-                "L": frac_local,
-                "R": frac_rsu,
-                "V": frac_v2v,
-                "v2v_win": v2v_beats_rsu_rate,
-                "gap": mean_cost_gap,
-                "c_rsu": mean_cost_rsu,
-                "c_v2v": mean_cost_v2v,
-                "ent": policy_entropy_val,
-                "kl": update_stats.get("approx_kl"),
-                "clip": update_stats.get("clip_fraction", clip_hit_ratio),
-                "v_loss": update_stats.get("value_loss"),
-                "rSum15": np.mean(roll_rsum) if roll_rsum else None,
-                "succ15": np.mean(roll_succ) if roll_succ else None,
-                "miss15": np.mean(roll_miss) if roll_miss else None,
-                "tl15": np.mean(roll_tl) if roll_tl else None,
-                "V15": np.mean(roll_v) if roll_v else None,
-            }
-            print(_format_table_row(table_row, table_columns), flush=True)
-            table_row_count += 1
+        # =====================================================================
+        # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
+        # =====================================================================
+        if True:  # 每个episode都打印
+            # 计算成功任务的平均时延和能耗
+            avg_latency = 0.0
+            avg_energy = 0.0
+            success_vehicles = [v for v in env.vehicles if v.task_dag.is_finished]
+            if success_vehicles:
+                # 从环境中提取成功任务的时延和能耗
+                latencies = []
+                energies = []
+                for v in success_vehicles:
+                    if hasattr(v, 'task_completion_time') and v.task_completion_time is not None:
+                        latencies.append(v.task_completion_time)
+                    if hasattr(v, 'total_energy') and v.total_energy is not None:
+                        energies.append(v.total_energy)
+                
+                avg_latency = np.mean(latencies) if latencies else 0.0
+                avg_energy = np.mean(energies) if energies else 0.0
+            
+            # 获取训练诊断指标
+            actor_loss = update_stats.get("policy_loss", 0.0) if update_stats.get("policy_loss") is not None else 0.0
+            critic_loss = update_stats.get("value_loss", 0.0) if update_stats.get("value_loss") is not None else 0.0
+            entropy_val = update_stats.get("entropy", 0.0) if update_stats.get("entropy") is not None else 0.0
+            
+            # 打印表头（每20个episode）
+            if episode == 1 or episode % 20 == 1:
+                print("\n" + "="*150)
+                print(f"| {'Ep':>5} | {'Reward':>8} | {'SR':>6} | {'Latency':>8} | {'Energy':>8} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'A_Loss':>8} | {'C_Loss':>8} | {'Entropy':>8} | {'Steps':>5} |")
+                print("="*150)
+            
+            # 打印数据行
+            print(f"| {episode:5d} | {reward_mean:8.2f} | {task_success_rate:6.2%} | {avg_latency:8.3f}s | {avg_energy:8.2f}J | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {actor_loss:8.3f} | {critic_loss:8.3f} | {entropy_val:8.3f} | {total_steps:5d} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
