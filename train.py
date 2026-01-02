@@ -754,7 +754,7 @@ def main():
     training_stats_header_written = os.path.exists(training_stats_csv) and os.path.getsize(training_stats_csv) > 0
     training_stats_fields = [
         "episode", "reward", "task_sr", "subtask_sr", 
-        "latency", "energy", 
+        "task_duration", "completed_tasks", "energy", 
         "ratio_local", "ratio_rsu", "ratio_v2v",
         "actor_loss", "critic_loss", "entropy"
     ]
@@ -875,6 +875,7 @@ def main():
     ]
     table_columns = [
         ("ep", 4), ("steps", 6), ("term", 7), ("tlr", 5),
+        ("t_ep", 7),
         ("r_mean", 8), ("r_sum", 8), ("r_p95", 8),
         ("succ", 6), ("miss", 6),
         ("L", 5), ("R", 5), ("V", 5),
@@ -1139,6 +1140,11 @@ def main():
         dT_eff_p95 = env_stats.get("dT_eff_p95") if env_stats else env_metrics.get("dT_eff.p95")
         energy_norm_mean = env_stats.get("energy_norm_mean") if env_stats else env_metrics.get("energy_norm.mean")
         energy_norm_p95 = env_stats.get("energy_norm_p95") if env_stats else env_metrics.get("energy_norm.p95")
+        
+        # [新增] 真实任务完成时间（物理指标，给人类看的）
+        task_duration_mean = env_stats.get("task_duration_mean") if env_stats else 0.0
+        task_duration_p95 = env_stats.get("task_duration_p95") if env_stats else 0.0
+        completed_tasks_count = env_stats.get("completed_tasks_count") if env_stats else 0
         t_tx_mean = env_stats.get("t_tx_mean") if env_stats else env_metrics.get("t_tx.mean")
         dt_used_mean = env_stats.get("dt_used_mean") if env_stats else env_metrics.get("dt_used.mean")
         implied_dt_mean = env_stats.get("implied_dt_mean")
@@ -1246,9 +1252,10 @@ def main():
         # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
         # =====================================================================
         if True:  # 每个episode都打印
-            # [修复] 从env_stats获取成功任务的平均时延和能耗
-            # vehicle.task_completion_time已不再可靠，使用环境统计的dT_eff_mean
-            avg_latency = dT_eff_mean if dT_eff_mean is not None else 0.0
+            # [物理指标] 使用真实任务完成时间（current_time - arrival_time）
+            # 这是给人类看的物理指标，必然 > 0，有直观意义
+            # dT_eff_mean是给RL看的奖励信号，对人类不直观
+            avg_latency = task_duration_mean if task_duration_mean is not None else 0.0
             avg_energy = energy_norm_mean if energy_norm_mean is not None else 0.0
             
             # 获取训练诊断指标
@@ -1258,12 +1265,12 @@ def main():
             
             # 打印表头（每20个episode）
             if episode == 1 or episode % 20 == 1:
-                print("\n" + "="*150)
-                print(f"| {'Ep':>5} | {'Reward':>8} | {'SR':>6} | {'Latency':>8} | {'Energy':>8} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'A_Loss':>8} | {'C_Loss':>8} | {'Entropy':>8} | {'Steps':>5} |")
-                print("="*150)
+                print("\n" + "="*158)
+                print(f"| {'Ep':>5} | {'Reward':>8} | {'SR':>6} | {'TaskTime':>9} | {'#Done':>5} | {'Energy':>8} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'A_Loss':>8} | {'C_Loss':>8} | {'Entropy':>8} | {'Steps':>5} | {'T_ep(s)':>8} |")
+                print("="*158)
             
             # 打印数据行
-            print(f"| {episode:5d} | {reward_mean:8.2f} | {task_success_rate:6.2%} | {avg_latency:8.3f}s | {avg_energy:8.2f}J | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {actor_loss:8.3f} | {critic_loss:8.3f} | {entropy_val:8.3f} | {total_steps:5d} |", flush=True)
+            print(f"| {episode:5d} | {reward_mean:8.2f} | {task_success_rate:6.2%} | {avg_latency:9.3f}s | {completed_tasks_count:5d} | {avg_energy:8.2f}J | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {actor_loss:8.3f} | {critic_loss:8.3f} | {entropy_val:8.3f} | {total_steps:5d} | {duration:8.3f} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
@@ -1401,7 +1408,8 @@ def main():
             "reward": reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps),
             "task_sr": task_success_rate,
             "subtask_sr": subtask_success,
-            "latency": env_metrics.get("dT_eff.mean", 0.0) if env_metrics else 0.0,
+            "task_duration": task_duration_mean if task_duration_mean is not None else 0.0,  # 真实任务完成时间
+            "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,  # 完成任务数
             "energy": energy_norm_mean if energy_norm_mean is not None else 0.0,
             "ratio_local": frac_local,
             "ratio_rsu": frac_rsu,

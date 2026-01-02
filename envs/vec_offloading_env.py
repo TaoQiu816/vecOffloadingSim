@@ -127,10 +127,8 @@ class VecOffloadingEnv(gym.Env):
         self._episode_dT_eff_values = []
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
+        self._episode_task_durations = []  # [新增] 追踪真实任务完成时间（物理指标）
         self._last_obs_stamp = None
-        self._episode_dT_eff_values = []
-        self._episode_energy_norm_values = []
-        self._episode_t_tx_values = []
 
         # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
@@ -647,6 +645,12 @@ class VecOffloadingEnv(gym.Env):
             # 车辆可能已离开场景
             return
         
+        # [新增] 记录真实任务完成时间（物理指标）
+        # task_duration = 完成时间 - 开始时间
+        task_duration = self.time - task.assigned_time
+        if task_duration > 0:  # 确保是有效的时间
+            self._episode_task_durations.append(task_duration)
+        
         # 更新DAG状态：标记子任务完成
         subtask_id = task.subtask_id
         if subtask_id < len(owner_vehicle.task_dag.status):
@@ -889,6 +893,13 @@ class VecOffloadingEnv(gym.Env):
         dT_samples = np.array(self._episode_dT_eff_values, dtype=float) if self._episode_dT_eff_values else np.array([0.0])
         energy_samples = np.array(self._episode_energy_norm_values, dtype=float) if self._episode_energy_norm_values else np.array([0.0])
         t_tx_samples = np.array(self._episode_t_tx_values, dtype=float) if self._episode_t_tx_values else np.array([0.0])
+        
+        # [新增] 真实任务完成时间统计（物理指标，给人类看的）
+        task_duration_samples = np.array(self._episode_task_durations, dtype=float) if self._episode_task_durations else np.array([0.0])
+        extra["task_duration_mean"] = float(np.mean(task_duration_samples)) if task_duration_samples.size > 0 and np.isfinite(np.mean(task_duration_samples)) else 0.0
+        extra["task_duration_p95"] = float(np.percentile(task_duration_samples, 95)) if task_duration_samples.size > 1 else extra["task_duration_mean"]
+        extra["completed_tasks_count"] = len(self._episode_task_durations)  # 完成的任务数
+        
         extra["dT_eff_mean"] = float(np.mean(dT_samples)) if np.isfinite(np.mean(dT_samples)) else 0.0
         extra["dT_eff_p95"] = float(np.percentile(dT_samples, 95)) if dT_samples.size > 0 else 0.0
         extra["energy_norm_mean"] = float(np.mean(energy_samples)) if np.isfinite(np.mean(energy_samples)) else 0.0
@@ -927,6 +938,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_dT_eff_values = []
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
+        self._episode_task_durations = []  # [新增] 清空任务完成时间追踪
         if Cfg.EPISODE_JSONL_STDOUT:
             print(json_line)
         if self._jsonl_path:
@@ -1687,11 +1699,31 @@ class VecOffloadingEnv(gym.Env):
 
             rewards.append(r)
 
+        # =====================================================================
+        # [强制续航] Episode终止逻辑
+        # =====================================================================
+        # 设计原则：
+        # - 不因任务完成而提前终止episode
+        # - 让环境完整运行到MAX_TIME（MAX_STEPS * DT）
+        # 优势：
+        # 1. 反映长期平均性能（包括空闲期和新任务）
+        # 2. 处理动态到达的新车辆任务
+        # 3. 使Reward曲线更稳定、更真实
+        # 4. 符合连续运行的真实场景（系统不会因为当前任务完成就停机）
+        # =====================================================================
         all_finished = all(v.task_dag.is_finished for v in self.vehicles)
         time_limit_reached = self.steps >= Cfg.MAX_STEPS
-        terminated = all_finished
+        
+        # [修改] 强制续航：只有达到时间上限才终止
+        terminated = False  # 不再使用all_finished作为终止条件
         truncated = time_limit_reached
-        info = {'timeout': time_limit_reached} if time_limit_reached else {}
+        
+        # 在info中记录任务完成状态（用于分析）
+        info = {
+            'timeout': time_limit_reached,
+            'all_finished': all_finished,
+            'num_active_vehicles': len([v for v in self.vehicles if not v.task_dag.is_finished])
+        }
 
         if terminated or truncated:
             self._log_episode_stats(terminated, truncated)
