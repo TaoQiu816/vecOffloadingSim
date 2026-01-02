@@ -115,15 +115,15 @@ class TrainConfig:
     # =========================================================================
     # 3. PPO 算法参数 (PPO Algorithm Parameters)
     # =========================================================================
-    GAMMA = 0.95            # 折扣因子 - Discount factor for future rewards
+    GAMMA = 0.98            # 折扣因子 - Discount factor for future rewards
                             # 影响: 控制对未来奖励的重视程度
                             #       - 接近1: 重视长期回报，适合长期规划任务
                             #       - 接近0: 重视即时回报，适合短期决策任务
                             # Impact: Controls importance of future rewards
                             #       - Close to 1: Values long-term returns, suits long-term planning
                             #       - Close to 0: Values immediate returns, suits short-term decisions
-                            # 推荐范围: 0.90-0.99 (0.95 for Deadline-aware tasks)
-                            # Recommended range: 0.90-0.99 (0.95 for deadline-aware tasks)
+                            # 推荐范围: 0.90-0.99 (0.98 for longer horizon planning)
+                            # Recommended range: 0.90-0.99 (0.98 for longer horizon planning)
     
     GAE_LAMBDA = 0.95       # GAE平滑因子 - Generalized Advantage Estimation lambda
                             # 影响: 权衡优势估计的偏差-方差
@@ -145,35 +145,35 @@ class TrainConfig:
                             # 推荐范围: 0.1-0.3 (0.2 is PPO default)
                             # Recommended range: 0.1-0.3
 
-    PPO_EPOCH = 4           # 每次采样的更新轮数 - Number of optimization epochs per batch
+    PPO_EPOCH = 5           # 每次采样的更新轮数 - Number of optimization epochs per batch
                             # 影响: 重复利用经验，提高样本效率
                             #       - 过少: 样本利用不足
                             #       - 过多: 可能过拟合采样数据
                             # Impact: Reuses experience for sample efficiency
                             #       - Too few: Underutilizes samples
                             #       - Too many: May overfit sampled data
-                            # 推荐范围: 3-10 (4 is standard)
-                            # Recommended range: 3-10
+                            # 推荐范围: 3-10 (5 for better sample utilization)
+                            # Recommended range: 3-10 (5 for better sample utilization)
     
-    MINI_BATCH_SIZE = 64    # 小批次大小 - Mini-batch size for SGD updates
+    MINI_BATCH_SIZE = 128   # 小批次大小 - Mini-batch size for SGD updates
                             # 影响: 梯度估计的方差和计算效率
                             #       - 较大: 梯度稳定，但内存占用高
                             #       - 较小: 增加随机性，适应动态图结构
                             # Impact: Variance of gradient estimation and computational efficiency
                             #       - Larger: Stable gradients, but higher memory usage
                             #       - Smaller: Increases stochasticity, adapts to dynamic graphs
-                            # 推荐范围: 32-128 (取决于buffer size)
-                            # Recommended range: 32-128 (depends on buffer size)
+                            # 推荐范围: 64-256 (128 for stable gradients)
+                            # Recommended range: 64-256 (128 for stable gradients)
 
-    ENTROPY_COEF = 0.02     # 熵正则化系数 - Entropy coefficient for exploration
+    ENTROPY_COEF = 0.03     # 熵正则化系数 - Entropy coefficient for exploration
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛
                             #       - 过小: 策略过早收敛到局部最优
                             # Impact: Increases action exploration for dynamic environments
                             #       - Too large: Policy too random, hard to converge
                             #       - Too small: Policy converges prematurely to local optimum
-                            # 推荐范围: 0.01-0.05 (0.02 for moderate exploration)
-                            # Recommended range: 0.01-0.05
+                            # 推荐范围: 0.01-0.05 (0.03 for enhanced exploration)
+                            # Recommended range: 0.01-0.05 (0.03 for enhanced exploration)
 
     VF_COEF = 0.5           # 价值函数损失系数 - Value function loss coefficient
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
@@ -191,21 +191,21 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 8.0    # RSU的Logit偏置 - Logit bias for RSU action
-                            # 影响: 在softmax前给RSU logit加上偏置，提升选择概率
-                            #       从2.0大幅提升到8.0，强制Agent探索RSU卸载
-                            # Impact: Adds bias to RSU logit before softmax, boosts selection probability
-                            #       Increased from 2.0 to 8.0 to force RSU offloading exploration
-                            # 推荐范围: 5.0-10.0 (取决于V2V候选数量)
-                            # Recommended range: 5.0-10.0 (depends on V2V candidate count)
+    LOGIT_BIAS_RSU = 2.0    # RSU的Logit偏置 - Logit bias for RSU action
+                            # 影响: 在softmax前给RSU logit加上偏置，适度提升选择概率
+                            #       降至2.0以允许V2V探索，避免过度抑制（8.0会使V2V<0.2%）
+                            # Impact: Adds bias to RSU logit before softmax, moderately boosts selection
+                            #       Reduced to 2.0 to allow V2V exploration; 8.0 suppresses V2V to <0.2%
+                            # 推荐范围: 1.0-3.0 (平衡探索与利用)
+                            # Recommended range: 1.0-3.0 (balances exploration and exploitation)
     
-    LOGIT_BIAS_LOCAL = 8.0  # Local的Logit偏置 - Logit bias for Local action
-                            # 影响: 在softmax前给Local logit加上偏置，提升选择概率
-                            #       从2.0大幅提升到8.0，强制Agent探索本地执行
-                            # Impact: Adds bias to Local logit before softmax, boosts selection probability
-                            #       Increased from 2.0 to 8.0 to force local execution exploration
-                            # 推荐范围: 5.0-10.0
-                            # Recommended range: 5.0-10.0
+    LOGIT_BIAS_LOCAL = 1.0  # Local的Logit偏置 - Logit bias for Local action
+                            # 影响: 在softmax前给Local logit加上偏置，轻微提升选择概率
+                            #       降至1.0以鼓励卸载探索，Local仍有约15-20%初始概率
+                            # Impact: Adds bias to Local logit before softmax, slightly boosts selection
+                            #       Reduced to 1.0 to encourage offloading; Local still ~15-20% initial prob
+                            # 推荐范围: 0.5-2.0 (轻微偏置即可)
+                            # Recommended range: 0.5-2.0 (light bias sufficient)
 
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)

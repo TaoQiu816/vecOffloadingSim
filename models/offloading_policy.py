@@ -1,11 +1,52 @@
 """
-完整的卸载策略网络
+[卸载策略网络] offloading_policy.py
+Complete Offloading Policy Network
 
-整合所有模块：
-1. DAG特征嵌入
-2. 边增强Transformer
-3. 资源特征编码
-4. Actor-Critic输出（Beta分布版本）
+作用 (Purpose):
+    整合所有模块构建完整的卸载决策网络，从原始观测到动作输出的端到端流程。
+    Integrates all modules to build complete offloading decision network, 
+    end-to-end pipeline from raw observations to action outputs.
+
+网络架构 (Network Architecture):
+    1. DAG特征嵌入 (DAG Feature Embedding)
+       - 节点嵌入：comp, data, status, in_degree, location
+       - 边特征编码：data_matrix → edge_bias
+       - 空间距离编码：shortest_path_matrix → spatial_bias
+    
+    2. 边增强Transformer (Edge-Enhanced Transformer)
+       - 多头自注意力 + 边偏置 + 空间偏置
+       - 捕获DAG依赖关系和拓扑结构
+    
+    3. 资源特征编码 (Resource Feature Encoding)
+       - 14维物理特征：CPU, Queue, Rate, Distance, Contact, Est_Time等
+       - 角色嵌入：Local/RSU/Neighbor（无ID泄漏）
+    
+    4. Actor-Critic输出 (Actor-Critic Heads)
+       - Actor: 双头输出（Target选择 + Power控制）
+         * Target: Categorical分布（Local/RSU/V2V）
+         * Power: Beta分布（连续功率比例）
+       - Critic: 全局池化估值（状态价值函数）
+
+输入输出 (Input/Output):
+    输入 (Input):
+        - node_x: [B, N, 7] - DAG节点特征
+        - adj: [B, N, N] - 邻接矩阵
+        - data_matrix: [B, N, N] - 边数据量
+        - delta: [B, N, N] - 最短路径矩阵
+        - resource_raw: [B, M, 14] - 资源原始特征
+        - resource_ids: [B, M] - 资源角色ID
+        - subtask_index: [B] - 当前调度的子任务索引
+        - action_mask: [B, M] - 动作掩码
+        - task_mask: [B, N] - 任务掩码
+    
+    输出 (Output):
+        - target_logits: [B, M] - 目标选择logits
+        - alpha, beta: [B, 1] - Beta分布参数（功率）
+        - values: [B, 1] - 状态价值
+
+参考文献 (References):
+    - Transformer: Vaswani et al., "Attention Is All You Need" (2017)
+    - Actor-Critic: Mnih et al., "Asynchronous Methods for Deep RL" (2016)
 """
 
 import torch
@@ -28,7 +69,12 @@ from configs.config import SystemConfig as Cfg
 
 class OffloadingPolicyNetwork(nn.Module):
     """
-    完整的卸载决策网络
+    完整的卸载决策网络 (Complete Offloading Policy Network)
+    
+    功能：
+        - 整合DAG编码、Transformer、资源编码和Actor-Critic模块
+        - 端到端学习从观测到动作的映射
+        - 支持离散动作（Target）和连续动作（Power）的混合动作空间
     """
     
     def __init__(self,

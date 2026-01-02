@@ -1,5 +1,27 @@
 """
+[MAPPO智能体] mappo_agent.py
 MAPPO Agent - Lightweight wrapper for OffloadingPolicyNetwork
+
+作用 (Purpose):
+    封装策略网络的训练和推理接口，实现PPO算法的核心逻辑。
+    Wraps policy network for training and inference, implements core PPO algorithm logic.
+
+核心功能 (Core Functions):
+    1. select_action() - 根据观测选择动作（支持确定性/随机策略）
+    2. evaluate_actions() - 重新评估动作的log_prob和value（用于PPO更新）
+    3. update() - 执行PPO更新（Clip Loss + Value Loss + Entropy Regularization）
+    4. get_value() - 获取状态价值（用于GAE计算）
+
+PPO更新流程 (PPO Update Pipeline):
+    1. 从RolloutBuffer采样mini-batch
+    2. 重新评估动作得到新的log_prob和value
+    3. 计算ratio = exp(new_log_prob - old_log_prob)
+    4. 应用Clip约束防止策略突变
+    5. 反向传播并更新网络参数
+    6. 返回训练诊断指标（loss, entropy, kl, clip_frac等）
+
+参考文献 (References):
+    - PPO: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
 """
 
 import torch
@@ -13,7 +35,12 @@ from configs.train_config import TrainConfig as TC
 
 class MAPPOAgent:
     """
-    MAPPO智能体，封装网络的训练和推理接口
+    MAPPO智能体 (Multi-Agent PPO Agent)
+    
+    功能：
+        - 封装策略网络的训练和推理接口
+        - 实现PPO算法的核心更新逻辑
+        - 管理优化器和学习率调度
     """
     
     def __init__(self, network: OffloadingPolicyNetwork, device: str = 'cpu'):

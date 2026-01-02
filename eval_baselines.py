@@ -1,19 +1,29 @@
 """
-基准策略评估脚本
+[基准策略评估脚本] eval_baselines.py
+Baseline Policy Evaluation Script
 
-评估以下策略并对比：
-1. Random Policy: 随机卸载
-2. Local-Only Policy: 全本地执行
-3. Greedy Policy: 贪婪卸载（选择计算能力最强的节点）
-4. MAPPO (Trained): 训练好的MAPPO智能体
+作用 (Purpose):
+    评估多种基准策略并与训练好的MAPPO智能体进行对比，验证强化学习方法的有效性。
+    Evaluates multiple baseline policies and compares them with trained MAPPO agent 
+    to validate the effectiveness of reinforcement learning approach.
 
-评估指标：
-- 平均回合奖励
-- 任务成功率（车辆级、子任务级）
-- 平均完成时间
-- 卸载决策分布（Local/RSU/V2V比例）
-- 平均队列长度
-- 平均功率消耗
+评估策略 (Evaluated Policies):
+    1. Random Policy - 随机选择卸载目标（Local/RSU/V2V）
+    2. Local-Only Policy - 所有任务在本地执行（无卸载）
+    3. Greedy Policy - 贪婪选择计算能力最强的节点
+    4. MAPPO (Trained) - 训练好的MAPPO智能体
+
+评估指标 (Evaluation Metrics):
+    - 平均回合奖励 (Average Episode Reward)
+    - 任务成功率 (Task Success Rate) - 车辆级、子任务级
+    - 平均完成时间 (Average Completion Time)
+    - 卸载决策分布 (Offloading Decision Distribution) - Local/RSU/V2V比例
+    - 平均队列长度 (Average Queue Length)
+    - 平均功率消耗 (Average Power Consumption)
+
+使用方法 (Usage):
+    python eval_baselines.py --model-path runs/run_XXX/models/best_model.pth --num-episodes 100
+    python eval_baselines.py --num-episodes 50 --seed 42
 """
 
 import numpy as np

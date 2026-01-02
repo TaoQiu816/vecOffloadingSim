@@ -66,21 +66,21 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.3 车辆移动性参数 (Vehicle Mobility - Truncated Normal Distribution)
     # -------------------------------------------------------------------------
-    VEL_MEAN = 11.1         # 速度均值 (m/s) ≈ 40 km/h - Mean velocity
-                            # 影响: 城市道路标准速度
-                            # Impact: Standard urban road speed
+    VEL_MEAN = 13.8         # 速度均值 (m/s) ≈ 50 km/h - Mean velocity
+                            # 影响: 城市快速路标准速度，增加拓扑动态性
+                            # Impact: Urban expressway standard speed, increases topology dynamics
     
-    VEL_STD = 2.0           # 速度标准差 (m/s) - Velocity standard deviation
-                            # 影响: 速度异构性，模拟不同驾驶风格
-                            # Impact: Velocity heterogeneity, simulates different driving styles
+    VEL_STD = 3.0           # 速度标准差 (m/s) - Velocity standard deviation
+                            # 影响: 更大的速度异构性，模拟多样化驾驶风格
+                            # Impact: Greater velocity heterogeneity, simulates diverse driving styles
     
     VEL_MIN = 5.0           # 最小速度 (m/s) ≈ 18 km/h - Minimum velocity
                             # 影响: 防止车辆静止，确保拓扑动态性
                             # Impact: Prevents static vehicles, ensures topology dynamics
     
-    VEL_MAX = 16.6          # 最大速度 (m/s) ≈ 60 km/h - Maximum velocity
-                            # 影响: 城市道路限速，控制最大拓扑变化速率
-                            # Impact: Urban speed limit, controls max topology change rate
+    VEL_MAX = 20.0          # 最大速度 (m/s) ≈ 72 km/h - Maximum velocity
+                            # 影响: 城市快速路限速，控制最大拓扑变化速率
+                            # Impact: Urban expressway speed limit, controls max topology change rate
     
     MAX_VELOCITY = VEL_MAX  # 向后兼容 - Backward compatibility
     
@@ -109,7 +109,7 @@ class SystemConfig:
     
     RSU_POS = np.array([500.0, 500.0])  # 单个RSU默认坐标（已废弃，用于向后兼容）
                                          # Single RSU default position (deprecated, for backward compatibility)
-    
+
     # =========================================================================
     # 2. 通信参数 (Communication Model)
     # =========================================================================
@@ -195,7 +195,7 @@ class SystemConfig:
     ALPHA_V2V = 3.0
     RICIAN_K_DB = 6.0
     BETA_0_DB = -30
-    
+
     # =========================================================================
     # 3. 计算资源参数 (Computation Model)
     # =========================================================================
@@ -210,9 +210,9 @@ class SystemConfig:
                                     # 影响: 异构性上界，最强车辆算力
                                     # Impact: Heterogeneity upper bound, strongest vehicle computing power
     
-    F_RSU = 10.0e9          # RSU CPU频率 (Hz) - RSU CPU frequency (10 GHz)
-                            # 影响: RSU算力优势，约为车辆平均频率的5倍
-                            # Impact: RSU computing advantage, ~5x vehicle average frequency
+    F_RSU = 12.0e9          # RSU CPU频率 (Hz) - RSU CPU frequency (12 GHz)
+                            # 影响: RSU算力优势，约为车辆平均频率的6倍，显著强于车辆
+                            # Impact: RSU computing advantage, ~6x vehicle average frequency, significantly stronger
     
     RSU_NUM_PROCESSORS = 4  # RSU处理器核心数 - RSU processor cores
                             # 影响: RSU并行处理能力，4核可同时处理4个任务
@@ -226,19 +226,19 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.2 队列限制 (Queue Limits - Cycle-Based)
     # -------------------------------------------------------------------------
-    VEHICLE_QUEUE_CYCLES_LIMIT = 4.0e9  # 车辆队列上限 (cycles) - Vehicle queue limit
-                                        # 影响: 约20个平均任务，防止车辆队列过载
-                                        # Impact: ~20 average tasks; prevents vehicle queue overload
+    VEHICLE_QUEUE_CYCLES_LIMIT = 5.0e9  # 车辆队列上限 (cycles) - Vehicle queue limit
+                                        # 影响: 约3个平均任务，严格限制防止车辆队列过载
+                                        # Impact: ~3 average tasks; strict limit prevents vehicle queue overload
     
-    RSU_QUEUE_CYCLES_LIMIT = 20.0e9     # RSU队列上限 (cycles) - RSU queue limit
-                                        # 影响: 约100个平均任务，RSU承载能力
-                                        # Impact: ~100 average tasks; RSU capacity
+    RSU_QUEUE_CYCLES_LIMIT = 50.0e9     # RSU队列上限 (cycles) - RSU queue limit
+                                        # 影响: 约33个平均任务，RSU高承载能力
+                                        # Impact: ~33 average tasks; RSU high capacity
     
     # 向后兼容（已废弃，仅用于归一化参考）
     # Backward compatibility (deprecated, only for normalization reference)
     VEHICLE_QUEUE_LIMIT = 20
     RSU_QUEUE_LIMIT = 100
-    
+
     # =========================================================================
     # 4. DAG任务生成参数 (Task Generation)
     # =========================================================================
@@ -253,13 +253,13 @@ class SystemConfig:
                             # 影响: 极大降低依赖链深度，从12降到6
                             # Impact: Greatly reduces dependency depth; decreased from 12 to 6
     
-    DAG_FAT = 0.6           # DAG宽度参数 - DAG width parameter
-                            # 影响: 控制并行度，0.6为中等宽度
-                            # Impact: Controls parallelism; 0.6 is medium width
+    DAG_FAT = 0.5           # DAG宽度参数 - DAG width parameter
+                            # 影响: 控制并行度，0.5为中等偏低宽度，减少并行任务数
+                            # Impact: Controls parallelism; 0.5 is medium-low width, reduces parallel tasks
     
     DAG_DENSITY = 0.2       # DAG连接密度 - DAG edge density
-                            # 影响: 降低依赖复杂度，从0.4降到0.2
-                            # Impact: Reduces dependency complexity; decreased from 0.4 to 0.2
+                            # 影响: 低依赖复杂度，简化调度决策
+                            # Impact: Low dependency complexity, simplifies scheduling decisions
     
     DAG_REGULAR = 0.5       # DAG规则性 - DAG regularity
                             # 影响: 结构规则性，0.5为半规则
@@ -272,21 +272,21 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 1.0e9        # 子任务最小计算量 (cycles) - Min subtask computation
-                            # 影响: 本地执行约0.33s @3GHz，迫使卸载
-                            # Impact: Local execution ~0.33s @3GHz; forces offloading
+    MIN_COMP = 0.8e9        # 子任务最小计算量 (cycles) - Min subtask computation (0.8 Gcycles)
+                            # 影响: 本地执行约0.27s @3GHz，中等负载
+                            # Impact: Local execution ~0.27s @3GHz; medium load
     
-    MAX_COMP = 2.0e9        # 子任务最大计算量 (cycles) - Max subtask computation
-                            # 影响: 本地执行约0.67s @3GHz，强迫卸载
-                            # Impact: Local execution ~0.67s @3GHz; strongly forces offloading
+    MAX_COMP = 2.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (2.5 Gcycles)
+                            # 影响: 本地执行约0.83s @3GHz，强制卸载
+                            # Impact: Local execution ~0.83s @3GHz; forces offloading
     
     MIN_DATA = 1.0e6        # 子任务最小数据量 (bits) - Min subtask data (1 Mbit)
-                            # 影响: V2I传输约0.02s @50Mbps
-                            # Impact: V2I transmission ~0.02s @50Mbps
+                            # 影响: V2I传输约0.017s @60Mbps
+                            # Impact: V2I transmission ~0.017s @60Mbps
     
-    MAX_DATA = 3.0e6        # 子任务最大数据量 (bits) - Max subtask data (3 Mbit)
-                            # 影响: V2I传输约0.06s @50Mbps
-                            # Impact: V2I transmission ~0.06s @50Mbps
+    MAX_DATA = 4.0e6        # 子任务最大数据量 (bits) - Max subtask data (4 Mbit)
+                            # 影响: V2I传输约0.067s @60Mbps
+                            # Impact: V2I transmission ~0.067s @60Mbps
     
     MIN_EDGE_DATA = 0.2e6   # DAG边最小数据量 (bits) - Min edge data (200 Kbit)
                             # 影响: 依赖传输开销约0.004s
@@ -296,8 +296,10 @@ class SystemConfig:
                             # 影响: 依赖传输开销约0.012s
                             # Impact: Dependency transmission overhead ~0.012s
     
-    MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles) - Average computation load
-    AVG_COMP = (MIN_COMP + MAX_COMP) / 2        # 同上 - Same as above
+    MEAN_COMP_LOAD = (0.8e9 + 2.5e9) / 2  # 平均计算负载 (cycles) - Average computation load
+                                         # 动态计算：(MIN_COMP + MAX_COMP) / 2 = 1.65e9
+                                         # Dynamically computed: (MIN_COMP + MAX_COMP) / 2 = 1.65e9
+    AVG_COMP = MEAN_COMP_LOAD            # 同上 - Same as above
     
     # -------------------------------------------------------------------------
     # 4.3 Deadline计算参数 (Deadline Calculation - Ideal Local Anchoring)
@@ -323,17 +325,17 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_FACTOR = 0.85   # γ: 紧缩因子 (default) - Tightening factor
-                                        # 影响: <1强制卸载，>1放宽
-                                        # Impact: <1 forces offloading, >1 relaxes
+    DEADLINE_TIGHTENING_FACTOR = 0.75   # γ: 紧缩因子（默认值，已废弃）- Tightening factor (default, deprecated)
+                                        # 影响: 仅作文档参考，实际使用MIN/MAX随机采样
+                                        # Impact: For documentation only; actual uses MIN/MAX random sampling
     
-    DEADLINE_TIGHTENING_MIN = 5.0       # γ最小值 (s) - γ minimum value
-                                        # 影响: 大幅放宽以容纳V2V+排队+依赖链
-                                        # Impact: Greatly relaxed to accommodate V2V+queueing+dependency
+    DEADLINE_TIGHTENING_MIN = 0.70      # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，0.70表示本地时间的70%
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 0.70 means 70% of local time
     
-    DEADLINE_TIGHTENING_MAX = 8.0       # γ最大值 (s) - γ maximum value
-                                        # 影响: 必须看到Veh%>0，确保物理可行性
-                                        # Impact: Must see Veh%>0; ensures physical feasibility
+    DEADLINE_TIGHTENING_MAX = 0.80      # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，0.80表示本地时间的80%
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 0.80 means 80% of local time
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
@@ -354,7 +356,7 @@ class SystemConfig:
     PRIORITY_W3 = 1.0       # 出度权重 - Out-degree weight (tie-breaking with same computation)
                             # 影响: 同计算量下的tie-breaking
                             # Impact: Tie-breaking with same computation
-    
+
     # =========================================================================
     # 5. 强化学习归一化常量 (RL Normalization Constants)
     # =========================================================================
@@ -378,7 +380,7 @@ class SystemConfig:
     _VEHICLE_MAX_WAIT = VEHICLE_QUEUE_LIMIT * MEAN_COMP_LOAD / MIN_VEHICLE_CPU_FREQ
     DYNAMIC_MAX_WAIT_TIME = max(_RSU_MAX_WAIT, _VEHICLE_MAX_WAIT) * 1.2
     NORM_MAX_WAIT_TIME = DYNAMIC_MAX_WAIT_TIME  # 向后兼容 - Backward compatibility
-    
+
     # =========================================================================
     # 6. 奖励函数参数 (Reward Function - Delta CFT Mode)
     # =========================================================================
@@ -396,9 +398,9 @@ class SystemConfig:
                                     # 影响: 0.1s节省 = +1.0奖励
                                     # Impact: 0.1s saved = +1.0 reward
     
-    DELTA_CFT_ENERGY_WEIGHT = 0.5   # 能耗惩罚权重 - Energy penalty weight
-                                    # 影响: 最大功率开销相当于0.05s时延惩罚
-                                    # Impact: Max power cost equals 0.05s delay penalty
+    DELTA_CFT_ENERGY_WEIGHT = 0.2   # 能耗惩罚权重 - Energy penalty weight
+                                    # 影响: 降低能耗权重，聚焦时延优化（最大功率≈0.02s时延惩罚）
+                                    # Impact: Reduced energy weight, focus on latency (max power ≈ 0.02s delay penalty)
     
     DELTA_CFT_CLIP_MIN = -1.0       # 奖励下限裁剪 - Reward lower bound clipping
                                     # 影响: 防止估计跳变导致梯度爆炸
@@ -437,17 +439,17 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.4 硬约束惩罚 (Hard Constraint Penalties - Episode Termination)
     # -------------------------------------------------------------------------
-    PENALTY_LINK_BREAK = -10.0      # 链路断开惩罚 - Link break penalty
-                                    # 影响: 超出通信范围，直接终止Episode
-                                    # Impact: Out of communication range; terminates episode
+    PENALTY_LINK_BREAK = -20.0      # 链路断开惩罚 - Link break penalty
+                                    # 影响: 超出通信范围，直接终止Episode（加重惩罚）
+                                    # Impact: Out of communication range; terminates episode (heavier penalty)
     
-    PENALTY_OVERFLOW = -10.0        # 队列溢出惩罚 - Queue overflow penalty
-                                    # 影响: 队列超限，直接终止Episode
-                                    # Impact: Queue limit exceeded; terminates episode
+    PENALTY_OVERFLOW = -20.0        # 队列溢出惩罚 - Queue overflow penalty
+                                    # 影响: 队列超限，直接终止Episode（加重惩罚）
+                                    # Impact: Queue limit exceeded; terminates episode (heavier penalty)
     
-    PENALTY_FAILURE = -10.0         # 任务失败惩罚 - Task failure penalty
-                                    # 影响: 超时失败，终止Episode
-                                    # Impact: Timeout failure; terminates episode
+    PENALTY_FAILURE = -20.0         # 任务失败惩罚 - Task failure penalty
+                                    # 影响: 超时失败，终止Episode（加重惩罚以强化时延约束）
+                                    # Impact: Timeout failure; terminates episode (heavier penalty to enforce deadline)
     
     TIME_LIMIT_PENALTY = -1.0       # 时间截断惩罚 - Time truncation penalty
                                     # 影响: Episode因时间截断的额外terminal惩罚
@@ -456,9 +458,9 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.5 成功奖励 (Success Bonuses - Sparse Reward)
     # -------------------------------------------------------------------------
-    SUCCESS_BONUS = 20.0            # 任务成功完成奖励 - Task success bonus
-                                    # 影响: 稀疏奖励强化，提高V2V探索动力
-                                    # Impact: Sparse reward reinforcement; boosts V2V exploration
+    SUCCESS_BONUS = 30.0            # 任务成功完成奖励 - Task success bonus
+                                    # 影响: 强稀疏奖励强化，显著提高V2V/RSU探索动力
+                                    # Impact: Strong sparse reward reinforcement; significantly boosts V2V/RSU exploration
     
     SUBTASK_SUCCESS_BONUS = 2.0     # 子任务成功完成奖励 - Subtask success bonus
                                     # 影响: 计件工资，鼓励单步V2V/RSU成功
@@ -467,13 +469,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.6 奖励范围控制 (Reward Range Control)
     # -------------------------------------------------------------------------
-    REWARD_MAX = 30.0               # 奖励上限 - Reward upper bound
-                                    # 影响: 容纳SUCCESS_BONUS，防止异常值
-                                    # Impact: Accommodates SUCCESS_BONUS; prevents outliers
+    REWARD_MAX = 40.0               # 奖励上限 - Reward upper bound
+                                    # 影响: 容纳SUCCESS_BONUS(30)+时延奖励，防止裁剪
+                                    # Impact: Accommodates SUCCESS_BONUS(30)+latency reward; prevents clipping
     
-    REWARD_MIN = -15.0              # 奖励下限 - Reward lower bound
-                                    # 影响: 容纳大惩罚，防止异常值
-                                    # Impact: Accommodates large penalties; prevents outliers
+    REWARD_MIN = -25.0              # 奖励下限 - Reward lower bound
+                                    # 影响: 容纳PENALTY_FAILURE(-20)，防止裁剪
+                                    # Impact: Accommodates PENALTY_FAILURE(-20); prevents clipping
     
     # -------------------------------------------------------------------------
     # 6.7 旧奖励参数（已废弃，保留以兼容旧代码）
@@ -484,7 +486,7 @@ class SystemConfig:
     CONG_WEIGHT = 0.5               # 拥塞惩罚权重（已废弃）- Congestion weight (deprecated)
     CONG_GAMMA = 2.0                # 拥塞敏感度（已废弃）- Congestion sensitivity (deprecated)
     DELAY_WEIGHT = 1.0              # 时延权重（已废弃）- Delay weight (deprecated)
-    ENERGY_WEIGHT = 0.5             # 能耗权重（已废弃）- Energy weight (deprecated)
+    ENERGY_WEIGHT = 0.2             # 能耗权重（已废弃，与DELTA_CFT_ENERGY_WEIGHT同步）- Energy weight (deprecated, sync with DELTA_CFT_ENERGY_WEIGHT)
     
     # =========================================================================
     # 7. 调试与日志参数 (Debug & Logging)
@@ -500,7 +502,7 @@ class SystemConfig:
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output
                                             # 影响: 是否在stdout打印每个episode的JSONL
                                             # Impact: Whether to print episode JSONL to stdout
-    
+
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
@@ -516,7 +518,7 @@ class SystemConfig:
     RATE_MIN_SAMPLES = 32           # P95最小样本数 - P95 minimum samples
     STATS_RESERVOIR_SIZE = 256      # 统计P95估计样本大小 - Stats P95 estimation sample size
     STATS_SEED = 0                  # 统计随机种子 - Stats random seed
-    
+
     # =========================================================================
     # 10. 辅助方法 (Utility Methods)
     # =========================================================================

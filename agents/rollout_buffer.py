@@ -1,6 +1,31 @@
 """
+[经验回放缓冲区] rollout_buffer.py
 Rollout Buffer with GAE computation for PPO
-支持动态车辆数量
+
+作用 (Purpose):
+    存储单个episode的轨迹数据，并计算Generalized Advantage Estimation (GAE)。
+    支持动态车辆数量（每步车辆数可能不同）。
+    Stores trajectory data for a single episode and computes GAE for PPO updates.
+    Supports dynamic vehicle count (number of agents may vary per step).
+
+核心功能 (Core Functions):
+    1. add() - 添加一步的经验数据（obs, action, reward, value, log_prob）
+    2. compute_returns_and_advantages() - 计算GAE优势和回报
+    3. get_batches() - 生成mini-batch用于PPO更新
+    4. clear() - 清空缓冲区（每个episode结束后调用）
+
+GAE计算公式 (GAE Formula):
+    δ_t = r_t + γ·V(s_{t+1}) - V(s_t)
+    A_t = Σ_{l=0}^∞ (γλ)^l · δ_{t+l}
+    
+    其中：
+    - γ (gamma): 折扣因子，控制对未来奖励的重视程度
+    - λ (lambda): GAE平滑因子，权衡偏差-方差
+    - δ_t: TD残差
+    - A_t: 优势函数
+
+参考文献 (References):
+    - GAE: Schulman et al., "High-Dimensional Continuous Control Using GAE" (2016)
 """
 
 import numpy as np
@@ -10,8 +35,13 @@ from typing import List, Dict, Tuple, Generator
 
 class RolloutBuffer:
     """
-    经验回放缓冲区，用于存储单个episode的轨迹数据并计算GAE
-    支持动态车辆数量（每步车辆数可能不同）
+    经验回放缓冲区 (Rollout Buffer)
+    
+    功能：
+        - 存储单个episode的轨迹数据（obs, action, reward, value, log_prob）
+        - 计算GAE优势和回报
+        - 生成mini-batch用于PPO更新
+        - 支持动态车辆数量（每步车辆数可能不同）
     """
     
     def __init__(self, gamma: float = 0.99, gae_lambda: float = 0.95):

@@ -1,10 +1,48 @@
 """
-Actor-Critic网络模块
+[Actor-Critic网络模块] actor_critic.py
+Actor-Critic Network Module
 
-功能：
-- Cross-Attention融合DAG特征与资源特征
-- Actor: 双头输出（Target + Power）
-- Critic: 全局池化估值
+作用 (Purpose):
+    实现Actor-Critic架构的核心组件，包括交叉注意力融合、动作头和价值头。
+    Implements core components of Actor-Critic architecture including cross-attention fusion,
+    action heads, and value head.
+
+核心模块 (Core Modules):
+    1. CrossAttentionWithPhysicsBias - 带物理偏置的交叉注意力
+       - 融合DAG特征（Query）和资源特征（Key/Value）
+       - 注入物理先验（距离、负载）作为注意力偏置
+    
+    2. ActorHead - 动作头
+       - Target Head: 输出目标选择logits（Categorical分布）
+       - Power Head: 输出Beta分布参数（alpha, beta）用于连续功率控制
+    
+    3. CriticHead - 价值头
+       - 全局池化DAG特征和资源特征
+       - 输出状态价值估计
+
+物理偏置设计 (Physics Bias Design):
+    双流输入架构：
+    - 语义流：编码后的特征 → K/V（学习的表示）
+    - 物理流：原始14维特征 → 物理偏置（显式先验）
+    
+    物理偏置公式：
+        Bias = -λ_dist * Dist_Norm - λ_load * Queue_Norm
+    
+    作用：
+        - 引导注意力关注近距离、低负载的资源
+        - 加速训练收敛（物理先验）
+        - 提高泛化能力（减少对特定ID的依赖）
+
+Beta分布初始化 (Beta Distribution Initialization):
+    - 初始化bias使alpha≈2, beta≈2（Beta(2,2)分布）
+    - Beta(2,2)在0.5附近集中，避免极端功率值
+    - 权重缩小0.01倍，让bias主导初期行为
+    - 随着训练进行，网络逐渐学习任务相关的功率策略
+
+参考文献 (References):
+    - Actor-Critic: Mnih et al., "Asynchronous Methods for Deep RL" (2016)
+    - Cross-Attention: Vaswani et al., "Attention Is All You Need" (2017)
+    - Beta Policy: Chou et al., "Improving Stochastic Policy Gradients" (2017)
 """
 
 import torch
@@ -16,13 +54,19 @@ from configs.config import SystemConfig as Cfg
 
 class CrossAttentionWithPhysicsBias(nn.Module):
     """
-    带物理偏置的交叉注意力模块
+    带物理偏置的交叉注意力模块 (Cross-Attention with Physics Bias)
+    
+    功能：
+        - 融合DAG特征（Query）和资源特征（Key/Value）
+        - 注入物理先验（距离、负载）作为注意力偏置
+        - 加速训练收敛并提高泛化能力
     
     双流输入架构：
-    - 语义流：编码后的特征 → K/V（学习的表示）
-    - 物理流：原始9维特征 → 物理偏置（显式先验）
+        - 语义流：编码后的特征 → K/V（学习的表示）
+        - 物理流：原始14维特征 → 物理偏置（显式先验）
     
-    物理偏置公式：Bias = -λ_dist * Dist - λ_load * Load
+    物理偏置公式：
+        Bias = -λ_dist * Dist_Norm - λ_load * Queue_Norm
     """
     
     def __init__(self, d_model: int = 128, num_heads: int = 8, dropout: float = 0.1):

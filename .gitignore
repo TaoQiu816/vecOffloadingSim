@@ -1,56 +1,62 @@
-# ==================== Python项目通用忽略 ====================
-# 字节码文件（缓存文件）
-*.__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.whl
-*.egg-info/
-dist/
-build/
-.cursor
-.cursorrules
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 
-# 虚拟环境（本地/服务器环境，无需上传）
+# 虚拟环境
+.venv/
 venv/
+ENV/
 env/
-*.env/
-miniconda3/
-anaconda3/
-(vec_sim_v2)/
-(sim_env)/
 
-# ==================== 系统/工具忽略 ====================
-# Mac系统冗余文件
-.DS_Store
-__MACOSX/
-
-# Windows系统冗余文件
-Thumbs.db
-Desktop.ini
-
-# PyCharm IDE配置文件（个人配置，无需共享）
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# .tests/
-.intro.txt
-
-# 测试脚本和生成的文档（不同步到仓库）
-# tests文件夹内的所有文件都会被忽略
-# tests/
-
-
-data/
+# 训练输出
+runs/
 logs/
-results_dbg/
-results_v2/
-results_dbg/
+models/*.pth
+*.pth
 
+# 数据文件
+data/
+*.csv
+*.jsonl
+*.json
 
-runs/**/logs/tb/tensorboard.log
-runs/**/logs/tb/tensorboard.pid
+# 图表
+plots/
+*.png
+*.jpg
+*.pdf
 
-**/step_log.csv
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# TensorBoard
+tensorboard/
+events.out.tfevents.*
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.log
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 文档构建
+docs/_build/
+docs/build/

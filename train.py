@@ -1,3 +1,34 @@
+"""
+[训练主脚本] train.py
+MAPPO Training Script for VEC Task Offloading
+
+作用 (Purpose):
+    使用MAPPO算法训练DAG任务卸载策略，支持动态车联网环境中的多智能体协作决策。
+    Trains DAG task offloading policy using MAPPO algorithm for multi-agent collaborative 
+    decision-making in dynamic vehicular edge computing environments.
+
+核心功能 (Core Features):
+    1. 参数自检 - 启动时验证关键配置参数（RESOURCE_RAW_DIM, DEADLINE, LOGIT_BIAS等）
+    2. 全指标记录 - 记录训练过程的所有关键指标到CSV（reward, success_rate, loss等）
+    3. 最佳模型保存 - 基于成功率（50-ep滑动平均）保存最佳模型
+    4. 自动可视化 - 训练结束后自动调用plot_results.py生成图表
+    5. Baseline对比 - 定期评估Random/LocalOnly/Greedy策略作为基准
+
+使用方法 (Usage):
+    python train.py --max-episodes 5000 --device cuda --seed 42
+    python train.py --max-episodes 1000 --log-interval 10 --save-interval 100
+
+输出文件 (Output Files):
+    - runs/run_XXX/logs/training_stats.csv - 训练指标（用于绘图）
+    - runs/run_XXX/logs/metrics.csv - 详细指标（包含物理量和诊断信息）
+    - runs/run_XXX/models/best_model.pth - 最佳模型（基于成功率）
+    - runs/run_XXX/plots/*.png - 自动生成的可视化图表
+
+参考文献 (References):
+    - PPO: Schulman et al., "Proximal Policy Optimization Algorithms" (2017)
+    - MAPPO: Yu et al., "The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games" (2021)
+"""
+
 import time
 import json
 import csv
@@ -14,7 +45,7 @@ from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from configs.config import SystemConfig as Cfg, apply_profile
+from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from models.offloading_policy import OffloadingPolicyNetwork
@@ -104,8 +135,7 @@ def _parse_args():
     parser.add_argument("--log-interval", type=int, default=None)
     parser.add_argument("--eval-interval", type=int, default=None)
     parser.add_argument("--save-interval", type=int, default=None)
-    parser.add_argument("--bonus-mode", type=str, default=None)
-    parser.add_argument("--cfg-profile", type=str, default=None)
+    parser.add_argument("--cfg-profile", type=str, default=None, help="[DEPRECATED] Config profiles removed")
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--step-metrics", action="store_true", default=False)
@@ -442,14 +472,14 @@ def evaluate_single_baseline_episode(env, policy_name):
 def main():
     args = _parse_args()
     disable_baseline_eval = False
+    
+    # CFG_PROFILE已移除，如果传入则忽略并警告
     if args.cfg_profile:
-        os.environ["CFG_PROFILE"] = args.cfg_profile
-        apply_profile(args.cfg_profile)
+        print(f"⚠ Warning: --cfg-profile is deprecated and will be ignored.", file=sys.stderr)
 
     if os.environ.get("EPISODE_JSONL_STDOUT") is None:
         Cfg.EPISODE_JSONL_STDOUT = False
 
-    env_bonus_mode = _env_str("BONUS_MODE")
     env_seed = _env_int("SEED")
     env_max_episodes = _env_int("MAX_EPISODES")
     env_max_steps = _env_int("MAX_STEPS")
@@ -463,11 +493,6 @@ def main():
     env_time_penalty = _env_float("TIME_LIMIT_PENALTY")
     env_time_penalty_k = _env_float("TIME_LIMIT_PENALTY_K")
     env_time_penalty_clip = _env_float("TIME_LIMIT_PENALTY_RATIO_CLIP")
-
-    # 固定使用配置内的单一奖励模式，不再响应外部 override
-    bonus_mode = args.bonus_mode or env_bonus_mode or Cfg.BONUS_MODE
-    if bonus_mode:
-        Cfg.BONUS_MODE = bonus_mode
 
     # Env/train overrides from environment variables (after profile/reward selection)
     apply_env_overrides()
@@ -598,6 +623,21 @@ def main():
     if tb_log_obs is not None:
         log_obs_stats = tb_log_obs.lower() in ("1", "true", "yes")
 
+    # =========================================================================
+    # 启动参数自检 (Startup Parameter Verification)
+    # =========================================================================
+    print("\n" + "="*80)
+    print("  STARTUP PARAMETER VERIFICATION")
+    print("="*80)
+    print(f"  RESOURCE_RAW_DIM:             {Cfg.RESOURCE_RAW_DIM} (Expected: 14)")
+    print(f"  DEADLINE_TIGHTENING_MIN:      {Cfg.DEADLINE_TIGHTENING_MIN:.2f} (Expected: 0.70)")
+    print(f"  DEADLINE_TIGHTENING_MAX:      {Cfg.DEADLINE_TIGHTENING_MAX:.2f} (Expected: 0.80)")
+    print(f"  LOGIT_BIAS_LOCAL:             {TC.LOGIT_BIAS_LOCAL:.1f} (Expected: 1.0)")
+    print(f"  LOGIT_BIAS_RSU:               {TC.LOGIT_BIAS_RSU:.1f} (Expected: 2.0)")
+    print(f"  F_RSU:                        {Cfg.F_RSU/1e9:.1f} GHz (Expected: 12.0 GHz)")
+    print(f"  Device:                       {device}")
+    print("="*80 + "\n")
+
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
     recorder = DataRecorder(experiment_name=exp_name, base_dir=run_dir, quiet=True)
@@ -639,8 +679,6 @@ def main():
         train_config_dict[k] = v
 
     env_snapshot = {
-        "CFG_PROFILE": os.environ.get("CFG_PROFILE"),
-        "BONUS_MODE": os.environ.get("BONUS_MODE"),
         "SEED": os.environ.get("SEED"),
         "RUN_ID": run_id,
         "RUN_DIR": run_dir,
@@ -662,7 +700,6 @@ def main():
         ("DT", Cfg.DT),
         ("MAX_STEPS", TC.MAX_STEPS),
         ("MAX_EPISODES", TC.MAX_EPISODES),
-        ("CFG_PROFILE", os.environ.get("CFG_PROFILE")),
         ("BW_V2I", Cfg.BW_V2I),
         ("BW_V2V", Cfg.BW_V2V),
         ("V2V_RANGE", Cfg.V2V_RANGE),
@@ -700,12 +737,27 @@ def main():
     buffer = RolloutBuffer(gamma=TC.GAMMA, gae_lambda=TC.GAE_LAMBDA)
 
     best_reward = -float('inf')
+    best_success_rate = 0.0  # 用于保存最佳模型
+    recent_success_rates = deque(maxlen=50)  # 最近50轮的成功率
     
     # Baseline策略列表
     baseline_policies = ['Random', 'Local-Only', 'Greedy']
     
     # 存储baseline的episode级指标（用于绘图）
     baseline_history = {policy: [] for policy in baseline_policies}
+    
+    # =========================================================================
+    # training_stats.csv (用于plot_results.py)
+    # =========================================================================
+    training_stats_csv = os.path.join(logs_dir, "training_stats.csv")
+    training_stats_header_written = os.path.exists(training_stats_csv) and os.path.getsize(training_stats_csv) > 0
+    training_stats_fields = [
+        "episode", "reward", "task_sr", "subtask_sr", 
+        "latency", "energy", 
+        "ratio_local", "ratio_rsu", "ratio_v2v",
+        "actor_loss", "critic_loss", "entropy"
+    ]
+    
     metrics_csv_path = os.path.join(logs_dir, "metrics.csv")
     metrics_jsonl_path = os.path.join(logs_dir, "metrics.jsonl")
     legacy_metrics_csv_path = os.path.join(metrics_dir, "metrics.csv")
@@ -1014,6 +1066,9 @@ def main():
 
         subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
         v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
+        
+        # 更新成功率历史（用于最佳模型保存）
+        recent_success_rates.append(task_success_rate)
 
         if Cfg.DEBUG_ASSERT_METRICS:
             for name, val in [
@@ -1356,6 +1411,31 @@ def main():
                 writer.writeheader()
                 legacy_train_header_written = True
             writer.writerow(metrics_row)
+        
+        # =====================================================================
+        # 写入 training_stats.csv (用于 plot_results.py)
+        # =====================================================================
+        update_stats = getattr(agent, "last_update_stats", {}) or {}
+        training_stats_row = {
+            "episode": episode,
+            "reward": reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps),
+            "task_sr": task_success_rate,
+            "subtask_sr": subtask_success,
+            "latency": env_metrics.get("dT_eff.mean", 0.0) if env_metrics else 0.0,
+            "energy": energy_norm_mean if energy_norm_mean is not None else 0.0,
+            "ratio_local": frac_local,
+            "ratio_rsu": frac_rsu,
+            "ratio_v2v": frac_v2v,
+            "actor_loss": update_stats.get("policy_loss"),
+            "critic_loss": update_stats.get("value_loss"),
+            "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
+        }
+        with open(training_stats_csv, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=training_stats_fields, extrasaction="ignore")
+            if not training_stats_header_written:
+                writer.writeheader()
+                training_stats_header_written = True
+            writer.writerow(training_stats_row)
 
         if recorder.writer is not None:
             tb = recorder.writer
@@ -1527,27 +1607,60 @@ def main():
                 }
                 recorder.log_episode(baseline_episode_dict)
 
-        # 模型保存
+        # =====================================================================
+        # 模型保存 (Best Model Based on Success Rate)
+        # =====================================================================
+        # 保存基于reward的最佳模型（保留原逻辑）
         if ep_reward > best_reward:
             best_reward = ep_reward
+            agent.save(os.path.join(recorder.model_dir, "best_model_reward.pth"))
+        
+        # 保存基于task_success_rate的最佳模型（新增）
+        avg_recent_sr = np.mean(recent_success_rates) if recent_success_rates else 0.0
+        if avg_recent_sr > best_success_rate:
+            best_success_rate = avg_recent_sr
             agent.save(os.path.join(recorder.model_dir, "best_model.pth"))
+            if episode == 1 or episode % TC.LOG_INTERVAL == 0:
+                print(f"  → Best model saved: Success Rate = {best_success_rate:.3f} (50-ep avg)")
 
         if episode % TC.SAVE_INTERVAL == 0:
             agent.save(os.path.join(recorder.model_dir, f"model_ep{episode}.pth"))
 
-    # 训练结束与绘图
+    # =========================================================================
+    # 训练结束：自动绘图 (Auto Plotting)
+    # =========================================================================
     if not disable_auto_plot:
-        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
-        try:
-            subprocess.run(
-                [sys.executable, plot_script, "--run-dir", run_dir],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except Exception as e:
-            print(f"[warn] auto plot failed: {e}", file=sys.stderr)
+        # 调用新的 plot_results.py
+        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plot_results.py")
+        if os.path.exists(training_stats_csv):
+            print("\n[Auto Plotting] Generating plots from training_stats.csv...")
+            try:
+                subprocess.run(
+                    [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                print(f"✓ Plots saved to: {plots_dir}")
+            except subprocess.CalledProcessError as e:
+                print(f"⚠ Auto plot failed: {e.stdout}")
+            except Exception as e:
+                print(f"⚠ Auto plot failed: {e}")
+        
+        # 保留原有的绘图脚本调用（兼容性）
+        legacy_plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
+        if os.path.exists(legacy_plot_script):
+            try:
+                subprocess.run(
+                    [sys.executable, legacy_plot_script, "--run-dir", run_dir],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except Exception:
+                pass  # 静默失败，不影响新绘图
 
 
 if __name__ == "__main__":
