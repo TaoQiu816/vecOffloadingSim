@@ -348,8 +348,9 @@ class VecOffloadingEnv(gym.Env):
     def _assert_vehicle_integrity(self):
         ids = [v.id for v in self.vehicles]
         assert len(ids) == len(set(ids)), "duplicate vehicle IDs detected"
-        if ids:
-            assert max(ids) < Cfg.MAX_VEHICLE_ID, "vehicle ID exceeds MAX_VEHICLE_ID"
+        # [修复] 移除MAX_VEHICLE_ID断言（已在审计中删除此参数，改用角色嵌入避免ID过拟合）
+        # if ids:
+        #     assert max(ids) < Cfg.MAX_VEHICLE_ID, "vehicle ID exceeds MAX_VEHICLE_ID"
 
     def _assert_metric_bounds(self, extra):
         if not Cfg.DEBUG_ASSERT_METRICS:

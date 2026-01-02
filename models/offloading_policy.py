@@ -110,8 +110,8 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         
         # 4. 资源特征编码器
+        # [修复] 移除max_vehicle_id参数（已在审计中删除，ResourceFeatureEncoder已标记为废弃参数）
         self.resource_encoder = ResourceFeatureEncoder(
-            max_vehicle_id=Cfg.MAX_VEHICLE_ID,
             d_model=d_model
         )
         
