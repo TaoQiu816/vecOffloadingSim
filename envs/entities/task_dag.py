@@ -80,6 +80,7 @@ class DAGTask:
         # 初始化：入度为0的节点设为READY，其他为PENDING
         self.status[self.in_degree == 0] = 1
         self._is_failed = False
+        self.fail_reason = None  # 失败原因：'deadline'/'overflow'/'illegal'/'unfinished'
         self.timeout_logged = False  # 用于死因诊断，避免重复打印
         
         # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
@@ -110,8 +111,15 @@ class DAGTask:
         """
         return self._is_failed
 
-    def set_failed(self):
+    def set_failed(self, reason='deadline'):
+        """
+        标记任务失败
+        
+        Args:
+            reason: 失败原因 ('deadline'/'overflow'/'illegal'/'unfinished')
+        """
         self._is_failed = True
+        self.fail_reason = reason
 
     def get_action_mask(self):
         """
@@ -276,6 +284,12 @@ class DAGTask:
         Returns:
             (bool, float): 该子任务是否在本step完成、通信阶段耗时
         """
+        # [P4隔离断言] 旧引擎已被新物理引擎（ActiveTaskManager）替代，不应再调用
+        assert False, (
+            "❌ [P4隔离] step_progress已被弃用，应使用ActiveTaskManager + _handle_task_completion。"
+            "如果看到此错误，说明旧引擎代码路径被重新启用，需要修复。"
+        )
+        
         if self.status[subtask_id] != 2:
             return False, 0.0
 
@@ -312,36 +326,123 @@ class DAGTask:
         标记任务完成并解锁后继任务
         
         状态转换: RUNNING(2) -> COMPLETED(3)
+        
+        [硬断言] 确保状态转换和依赖计数正确
         """
+        # [硬断言] 状态检查（允许幂等调用）
+        old_status = self.status[subtask_id]
+        if old_status == 3:
+            # 已经是COMPLETED，幂等返回（防止旧引擎和新引擎重复调用）
+            return 0  # 未解锁任何新节点
+        
+        assert old_status in [1, 2], (
+            f"❌ _mark_done状态错误: subtask={subtask_id}, old_status={old_status}, "
+            f"期望READY(1)或RUNNING(2)或COMPLETED(3)，实际={old_status}"
+        )
+        
+        # [硬断言] 记录完成前的计数
+        before_completed = int(np.sum(self.status == 3))
+        
+        # 标记完成
         self.status[subtask_id] = 3
+        
+        # [硬断言] 完成计数+1
+        after_completed = int(np.sum(self.status == 3))
+        assert after_completed == before_completed + 1, (
+            f"❌ _mark_done完成计数错误: subtask={subtask_id}, "
+            f"before={before_completed}, after={after_completed}, 期望after=before+1"
+        )
 
         # 查找后继节点 (Children)
         # adj[i, j] = 1 表示 i -> j
         children = np.where(self.adj[subtask_id, :] == 1)[0]
+        
+        unlocked_ready_count = 0  # [诊断] 统计解锁的READY节点数
 
         for child in children:
+            # [硬断言] 依赖计数检查
+            old_in_degree = self.in_degree[child]
+            assert old_in_degree > 0, (
+                f"❌ _mark_done依赖计数错误: child={child}, old_in_degree={old_in_degree}, "
+                f"期望>0"
+            )
+            
             self.in_degree[child] -= 1
             
-            # 获取依赖传输的数据量
+            # [硬断言] 依赖计数不能为负
+            assert self.in_degree[child] >= 0, (
+                f"❌ _mark_done依赖计数负数: child={child}, in_degree={self.in_degree[child]}"
+            )
+            
+            # 获取依赖传输的数据量和执行位置
             transfer_data = self.data_matrix[subtask_id, child]
+            parent_location = self.task_locations[subtask_id] if subtask_id < len(self.task_locations) else None
+            child_location = self.task_locations[child] if child < len(self.task_locations) else None
+            
+            # [关键修复] 判断是否需要跨节点传输
+            # 1. 如果两个位置都明确且相同，则同节点
+            # 2. 如果父任务是Local，子任务未分配（None）或也是Local，则视为同节点（Local-only场景）
+            explicit_same = (parent_location is not None and child_location is not None and 
+                           parent_location == child_location)
+            # [关键] Local-only场景：如果父任务在Local执行，子任务未分配或也在Local，则不需要传输
+            local_only_infer = (parent_location == 'Local' and 
+                               (child_location is None or child_location == 'Local'))
+            
+            same_location = explicit_same or local_only_infer
+            
+            # [P0硬断言护栏] 同节点绝对禁止创建传输任务
+            # [统计初始化]
+            if not hasattr(self, '_tx_tasks_created_count'):
+                self._tx_tasks_created_count = 0
+            if not hasattr(self, '_same_node_no_tx_count'):
+                self._same_node_no_tx_count = 0
             
             if transfer_data > 0:
-                # 需要传输依赖数据，创建传输任务
-                if child not in self.inter_task_transfers:
-                    self.inter_task_transfers[child] = {}
-                
-                # 初始化传输状态
-                self.inter_task_transfers[child][subtask_id] = {
-                    'rem_data': transfer_data,
-                    'transfer_speed': 0.0  # 初始为0，由环境在step中设置
-                }
-                
-                # 标记子任务正在等待数据传输
-                self.waiting_for_data[child] = True
+                if same_location:
+                    # [修复] 同节点传输：瞬间完成，绝不创建传输任务
+                    # 不需要设置inter_task_transfers和waiting_for_data
+                    self._same_node_no_tx_count += 1
+                else:
+                    # 跨节点传输：需要创建传输任务（由环境层处理）
+                    # [硬断言] 确保不同节点（双重检查，防止逻辑错误）
+                    assert not same_location, (
+                        f"❌ [P0护栏违反] 尝试为同节点创建传输任务: "
+                        f"parent={subtask_id}, child={child}, "
+                        f"parent_loc={parent_location}, child_loc={child_location}, "
+                        f"transfer_data={transfer_data}, same_location={same_location}"
+                    )
+                    
+                    if child not in self.inter_task_transfers:
+                        self.inter_task_transfers[child] = {}
+                    
+                    # 初始化传输状态
+                    self.inter_task_transfers[child][subtask_id] = {
+                        'rem_data': transfer_data,
+                        'transfer_speed': 0.0  # 初始为0，由环境在step中设置
+                    }
+                    
+                    # 标记子任务正在等待数据传输
+                    self.waiting_for_data[child] = True
+                    
+                    # [统计] 记录传输任务创建（用于回归测试）
+                    self._tx_tasks_created_count += 1
             
             # 如果依赖全部满足（入度减为0），检查数据传输状态
             if self.in_degree[child] == 0:
+                # [修复] 同节点传输已完成，不需要检查传输
                 has_pending_transfers = (child in self.inter_task_transfers and 
                                        len(self.inter_task_transfers[child]) > 0)
-                if not has_pending_transfers and self.status[child] == 0:
-                    self.status[child] = 1  # PENDING -> READY
+                
+                if not has_pending_transfers:
+                    # 所有依赖满足且传输完成，解锁为READY
+                    if self.status[child] == 0:  # PENDING
+                        self.status[child] = 1  # PENDING -> READY
+                        unlocked_ready_count += 1
+                    # [硬断言] 如果已经是READY或RUNNING，不应回退
+                    assert self.status[child] in [1, 2], (
+                        f"❌ _mark_done后继状态错误: child={child}, status={self.status[child]}, "
+                        f"期望READY(1)或RUNNING(2)"
+                    )
+        
+        # [诊断] 返回解锁的节点数（用于调试）
+        return unlocked_ready_count

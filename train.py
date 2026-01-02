@@ -1249,6 +1249,18 @@ def main():
             torch.cuda.empty_cache()
 
         # =====================================================================
+        # Bias退火逻辑 (Bias Annealing)
+        # =====================================================================
+        if TC.USE_LOGIT_BIAS and (episode % TC.BIAS_DECAY_EVERY_EP == 0 and episode > 0):
+            TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
+            TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
+            # 更新agent中的bias（如果agent有引用）
+            if hasattr(agent, 'network') and hasattr(agent.network, 'logit_bias_rsu'):
+                agent.network.logit_bias_rsu = TC.LOGIT_BIAS_RSU
+            if hasattr(agent, 'network') and hasattr(agent.network, 'logit_bias_local'):
+                agent.network.logit_bias_local = TC.LOGIT_BIAS_LOCAL
+
+        # =====================================================================
         # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
         # =====================================================================
         if True:  # 每个episode都打印
@@ -1263,14 +1275,26 @@ def main():
             critic_loss = update_stats.get("value_loss", 0.0) if update_stats.get("value_loss") is not None else 0.0
             entropy_val = update_stats.get("entropy", 0.0) if update_stats.get("entropy") is not None else 0.0
             
-            # 打印表头（每20个episode）
-            if episode == 1 or episode % 20 == 1:
-                print("\n" + "="*158)
-                print(f"| {'Ep':>5} | {'Reward':>8} | {'SR':>6} | {'TaskTime':>9} | {'#Done':>5} | {'Energy':>8} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'A_Loss':>8} | {'C_Loss':>8} | {'Entropy':>8} | {'Steps':>5} | {'T_ep(s)':>8} |")
-                print("="*158)
+            # 获取关键健康指标（从info中提取）
+            deadlock_count = env_stats.get('deadlock_vehicle_count', 0) if env_stats else 0
+            deadline_misses = env_stats.get('audit_deadline_misses', 0) if env_stats else 0
+            tx_created = env_stats.get('tx_tasks_created_count', 0) if env_stats else 0
+            same_node_no_tx = env_stats.get('same_node_no_tx_count', 0) if env_stats else 0
+            vehicle_sr = env_stats.get('vehicle_success_rate', veh_success_rate) if env_stats else veh_success_rate
+            episode_all_success = env_stats.get('episode_all_success', 0.0) if env_stats else 0.0
+            service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
+            idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
             
-            # 打印数据行
-            print(f"| {episode:5d} | {reward_mean:8.2f} | {task_success_rate:6.2%} | {avg_latency:9.3f}s | {completed_tasks_count:5d} | {avg_energy:8.2f}J | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {actor_loss:8.3f} | {critic_loss:8.3f} | {entropy_val:8.3f} | {total_steps:5d} | {duration:8.3f} |", flush=True)
+            # 打印表头（每10或20个episode，根据LOG_INTERVAL）
+            log_interval = getattr(TC, 'LOG_INTERVAL', 10)
+            if episode == 1 or episode % log_interval == 1:
+                print("\n" + "="*200)
+                print(f"| {'Ep':>5} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'Deadlock':>8} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
+                print("="*200)
+            
+            # 打印数据行（每LOG_INTERVAL个episode）
+            if episode % log_interval == 0 or episode == 1:
+                print(f"| {episode:5d} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadlock_count:8d} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
@@ -1622,18 +1646,18 @@ def main():
         plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plot_results.py")
         if os.path.exists(training_stats_csv):
             print("\n[Auto Plotting] Generating plots from training_stats.csv...")
-            try:
-                subprocess.run(
+        try:
+            subprocess.run(
                     [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
                 print(f"✓ Plots saved to: {plots_dir}")
             except subprocess.CalledProcessError as e:
                 print(f"⚠ Auto plot failed: {e.stdout}")
-            except Exception as e:
+        except Exception as e:
                 print(f"⚠ Auto plot failed: {e}")
         
         # 保留原有的绘图脚本调用（兼容性）

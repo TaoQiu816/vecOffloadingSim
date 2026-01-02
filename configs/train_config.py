@@ -66,7 +66,7 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate
+    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate (LR = 3e-4)
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
@@ -115,7 +115,7 @@ class TrainConfig:
     # =========================================================================
     # 3. PPO 算法参数 (PPO Algorithm Parameters)
     # =========================================================================
-    GAMMA = 0.98            # 折扣因子 - Discount factor for future rewards
+    GAMMA = 0.99            # 折扣因子 - Discount factor for future rewards
                             # 影响: 控制对未来奖励的重视程度
                             #       - 接近1: 重视长期回报，适合长期规划任务
                             #       - 接近0: 重视即时回报，适合短期决策任务
@@ -135,7 +135,7 @@ class TrainConfig:
                             # 推荐范围: 0.90-0.99 (0.95 balances immediate and long-term)
                             # Recommended range: 0.90-0.99
 
-    CLIP_PARAM = 0.2        # PPO裁剪阈值 epsilon - PPO clipping threshold
+    CLIP_PARAM = 0.2        # PPO裁剪阈值 epsilon - PPO clipping threshold (PPO_CLIP = 0.2)
                             # 影响: 限制策略更新幅度，防止破坏性更新
                             #       - 过小: 更新保守，学习慢
                             #       - 过大: 更新激进，可能不稳定
@@ -145,7 +145,7 @@ class TrainConfig:
                             # 推荐范围: 0.1-0.3 (0.2 is PPO default)
                             # Recommended range: 0.1-0.3
 
-    PPO_EPOCH = 5           # 每次采样的更新轮数 - Number of optimization epochs per batch
+    PPO_EPOCH = 5           # 每次采样的更新轮数 - Number of optimization epochs per batch (NUM_EPOCHS = 5)
                             # 影响: 重复利用经验，提高样本效率
                             #       - 过少: 样本利用不足
                             #       - 过多: 可能过拟合采样数据
@@ -155,7 +155,7 @@ class TrainConfig:
                             # 推荐范围: 3-10 (5 for better sample utilization)
                             # Recommended range: 3-10 (5 for better sample utilization)
     
-    MINI_BATCH_SIZE = 128   # 小批次大小 - Mini-batch size for SGD updates
+    MINI_BATCH_SIZE = 128   # 小批次大小 - Mini-batch size for SGD updates (MINIBATCHES = 4, 每批128样本)
                             # 影响: 梯度估计的方差和计算效率
                             #       - 较大: 梯度稳定，但内存占用高
                             #       - 较小: 增加随机性，适应动态图结构
@@ -165,7 +165,7 @@ class TrainConfig:
                             # 推荐范围: 64-256 (128 for stable gradients)
                             # Recommended range: 64-256 (128 for stable gradients)
 
-    ENTROPY_COEF = 0.03     # 熵正则化系数 - Entropy coefficient for exploration
+    ENTROPY_COEF = 0.01     # 熵正则化系数 - Entropy coefficient for exploration
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛
                             #       - 过小: 策略过早收敛到局部最优
@@ -176,6 +176,16 @@ class TrainConfig:
                             # Recommended range: 0.01-0.05 (0.03 for enhanced exploration)
 
     VF_COEF = 0.5           # 价值函数损失系数 - Value function loss coefficient
+                            # 影响: 平衡Actor-Critic训练，控制值函数更新权重
+                            # Impact: Balances Actor-Critic training, controls value function update weight
+                            # 推荐范围: 0.5-1.0 (0.5 is standard)
+                            # Recommended range: 0.5-1.0
+    
+    TARGET_KL = 0.02        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
+                            # 影响: 如果KL散度超过此值，提前停止policy update（若实现）
+                            # Impact: If KL divergence exceeds this, early stop policy update (if implemented)
+                            # 推荐范围: 0.01-0.05
+                            # Recommended range: 0.01-0.05
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
                             # Impact: Balances Actor-Critic training, controls value function update weight
                             # 推荐范围: 0.5-1.0 (0.5 is standard)
@@ -206,6 +216,29 @@ class TrainConfig:
                             #       Reduced to 1.0 to encourage offloading; Local still ~15-20% initial prob
                             # 推荐范围: 0.5-2.0 (轻微偏置即可)
                             # Recommended range: 0.5-2.0 (light bias sufficient)
+    
+    # -------------------------------------------------------------------------
+    # Bias退火参数 (Bias Annealing)
+    # -------------------------------------------------------------------------
+    BIAS_DECAY_EVERY_EP = 100  # 每N个episode退火一次 - Decay bias every N episodes
+                               # 影响: 控制退火频率，100表示每100个episode降低一次bias
+                               # Impact: Controls decay frequency; 100 means decay every 100 episodes
+    
+    BIAS_DECAY_RSU = 1.0       # RSU bias每次退火减少量 - RSU bias decay amount per step
+                               # 影响: 每次退火时LOGIT_BIAS_RSU减少的量
+                               # Impact: Amount to reduce LOGIT_BIAS_RSU per decay step
+    
+    BIAS_DECAY_LOCAL = 0.5     # Local bias每次退火减少量 - Local bias decay amount per step
+                               # 影响: 每次退火时LOGIT_BIAS_LOCAL减少的量
+                               # Impact: Amount to reduce LOGIT_BIAS_LOCAL per decay step
+    
+    BIAS_MIN_RSU = 0.0         # RSU bias最小值 - Minimum RSU bias
+                               # 影响: LOGIT_BIAS_RSU不会低于此值
+                               # Impact: LOGIT_BIAS_RSU will not go below this value
+    
+    BIAS_MIN_LOCAL = 0.0       # Local bias最小值 - Minimum Local bias
+                               # 影响: LOGIT_BIAS_LOCAL不会低于此值
+                               # Impact: LOGIT_BIAS_LOCAL will not go below this value
 
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
@@ -216,11 +249,11 @@ class TrainConfig:
                             # 推荐范围: 1000-10000 (1000 for quick experiments, 10000 for production)
                             # Recommended range: 1000-10000
     
-    MAX_STEPS = 200         # 每个Episode最大步数 - Max steps per episode
+    MAX_STEPS = 400         # 每个Episode最大步数 - Max steps per episode
                             # 影响: 必须与 SystemConfig.MAX_STEPS 一致
-                            #       MAX_STEPS * DT = Episode总时长 (200 * 0.05s = 10s)
+                            #       MAX_STEPS * DT = Episode总时长 (400 * 0.05s = 20s)
                             # Impact: Must match SystemConfig.MAX_STEPS
-                            #       MAX_STEPS * DT = Total episode duration (200 * 0.05s = 10s)
+                            #       MAX_STEPS * DT = Total episode duration (400 * 0.05s = 20s)
 
     # -------------------------------------------------------------------------
     # 评估与保存 (Evaluation and Checkpointing)

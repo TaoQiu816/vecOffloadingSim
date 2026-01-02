@@ -93,7 +93,7 @@ class Vehicle:
         self.fat_processor = 0.0
         self.fat_uplink = 0.0
 
-    def step(self, dt: float) -> list:
+    def step(self, dt: float, global_step_id: int = -1) -> list:
         """
         [统一处理器共享物理模型]
         推进车辆CPU上所有活跃任务的执行（本地+V2V接收）
@@ -105,11 +105,12 @@ class Vehicle:
         
         Args:
             dt: 时间步长 (秒)
+            global_step_id: 全局step编号（用于双重推进检测）
             
         Returns:
             list: 本step完成的ActiveTask列表
         """
-        return self.active_task_manager.step(dt)
+        return self.active_task_manager.step(dt, global_step_id=global_step_id)
     
     def add_active_task(self, owner_id: int, subtask_id: int, task_type: str, 
                        total_comp: float, current_time: float = 0.0,

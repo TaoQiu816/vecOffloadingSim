@@ -192,7 +192,7 @@ class RSU:
         max_wait = Cfg.DYNAMIC_MAX_WAIT_TIME if hasattr(Cfg, 'DYNAMIC_MAX_WAIT_TIME') else 10.0
         return np.clip(wait_time / max_wait, 0.0, 1.0)
     
-    def step(self, dt: float) -> list:
+    def step(self, dt: float, global_step_id: int = -1) -> list:
         """
         [统一处理器共享物理模型]
         推进RSU上所有活跃任务的执行
@@ -205,11 +205,12 @@ class RSU:
         
         Args:
             dt: 时间步长 (秒)
+            global_step_id: 全局step编号（用于双重推进检测）
             
         Returns:
             list: 本step完成的ActiveTask列表
         """
-        return self.active_task_manager.step(dt)
+        return self.active_task_manager.step(dt, global_step_id=global_step_id)
     
     def add_active_task(self, owner_id: int, subtask_id: int, task_type: str, 
                        total_comp: float, current_time: float = 0.0,

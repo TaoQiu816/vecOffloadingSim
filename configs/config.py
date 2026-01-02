@@ -88,9 +88,9 @@ class SystemConfig:
                             # 影响: 精度与计算开销权衡，0.05s保证 v_max * DT << R_rsu
                             # Impact: Accuracy vs. computation tradeoff; 0.05s ensures v_max * DT << R_rsu
     
-    MAX_STEPS = 200         # Episode最大步数 - Max steps per episode
-                            # 影响: Episode总时长 = MAX_STEPS * DT = 10秒
-                            # Impact: Total episode duration = MAX_STEPS * DT = 10 seconds
+    MAX_STEPS = 400         # Episode最大步数 - Max steps per episode (延长至20s)
+                            # 影响: Episode总时长 = MAX_STEPS * DT = 20秒 (适应处理器共享降速)
+                            # Impact: Total episode duration = MAX_STEPS * DT = 20s (accommodates processor sharing)
     
     # -------------------------------------------------------------------------
     # 1.4 RSU部署参数 (RSU Deployment)
@@ -175,7 +175,7 @@ class SystemConfig:
                             # 影响: V2V衰减速率，3.5模拟NLOS遮挡/干扰
                             # Impact: V2V attenuation rate; 3.5 models NLOS obstruction/interference
     
-    V2V_INTERFERENCE_DBM = -90.0  # V2V背景干扰 (dBm) - V2V background interference
+    V2V_INTERFERENCE_DBM = -95.0  # V2V背景干扰 (dBm) - V2V background interference
                                   # 影响: V2V SINR，降低V2V链路质量
                                   # Impact: V2V SINR; degrades V2V link quality
     
@@ -272,13 +272,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 0.8e9        # 子任务最小计算量 (cycles) - Min subtask computation (0.8 Gcycles)
-                            # 影响: 本地执行约0.27s @3GHz，中等负载
-                            # Impact: Local execution ~0.27s @3GHz; medium load
+    MIN_COMP = 0.3e9        # 子任务最小计算量 (cycles) - Min subtask computation (0.3 Gcycles) [降低62%]
+                            # 影响: 本地执行约0.10s @3GHz，轻量负载
+                            # Impact: Local execution ~0.10s @3GHz; light load
     
-    MAX_COMP = 2.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (2.5 Gcycles)
-                            # 影响: 本地执行约0.83s @3GHz，强制卸载
-                            # Impact: Local execution ~0.83s @3GHz; forces offloading
+    MAX_COMP = 1.2e9        # 子任务最大计算量 (cycles) - Max subtask computation (1.2 Gcycles) [降低52%]
+                            # 影响: 本地执行约0.40s @3GHz，中等负载
+                            # Impact: Local execution ~0.40s @3GHz; medium load
     
     MIN_DATA = 1.0e6        # 子任务最小数据量 (bits) - Min subtask data (1 Mbit)
                             # 影响: V2I传输约0.017s @60Mbps
@@ -325,17 +325,13 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_FACTOR = 0.75   # γ: 紧缩因子（默认值，已废弃）- Tightening factor (default, deprecated)
-                                        # 影响: 仅作文档参考，实际使用MIN/MAX随机采样
-                                        # Impact: For documentation only; actual uses MIN/MAX random sampling
+    DEADLINE_TIGHTENING_MIN = 1.8       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%（Warmup宽松，先保证可训练）
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time (Warmup relaxed, ensures trainability)
     
-    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，1.0表示本地时间的100%（放宽以提升成功率）
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 1.0 means 100% of local time (relaxed for success)
-    
-    DEADLINE_TIGHTENING_MAX = 1.2       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，1.2表示本地时间的120%（课程学习策略）
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 1.2 means 120% of local time (curriculum learning)
+    DEADLINE_TIGHTENING_MAX = 2.2       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.5表示本地时间的250%（Warmup阶段，适应处理器共享降速）
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.5 means 250% of local time (Warmup phase, accommodates processor sharing slowdown)
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加

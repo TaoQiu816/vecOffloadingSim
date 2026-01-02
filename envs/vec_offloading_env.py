@@ -129,6 +129,24 @@ class VecOffloadingEnv(gym.Env):
         self._episode_t_tx_values = []
         self._episode_task_durations = []  # [新增] 追踪真实任务完成时间（物理指标）
         self._last_obs_stamp = None
+        
+        # [审计系统] 12项核心指标收集
+        self._audit_step_info = {}
+        # [Deadline检查计数] 用于诊断是否触发deadline判定
+        self._audit_deadline_checks = 0
+        self._audit_deadline_misses = 0
+        # [P2性能统计] 仅在active时间段统计服务速率
+        self._active_time_steps = []  # 记录active_tasks>0的步数
+        self._delta_w_active = []  # 对应步的计算量减少
+        self._audit_v2v_lifecycle = {
+            'tx_started': set(),    # (owner_id, subtask_id)
+            'tx_done': set(),
+            'received': set(),
+            'added_to_active': set(),
+            'cpu_finished': set(),
+            'dag_completed': set()
+        }
+        self._audit_task_registry = {}  # {(owner, subtask): {'state': , 'host': }}
 
         # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
@@ -629,6 +647,56 @@ class VecOffloadingEnv(gym.Env):
                 return veh
         return None
     
+    def _get_total_W_remaining(self):
+        """
+        [P2辅助函数] 计算所有DAG的总剩余计算量（cycles）
+        
+        Returns:
+            float: 总剩余计算量（cycles）
+        """
+        total_W = 0.0
+        for v in self.vehicles:
+            dag = v.task_dag
+            # 从active_task_manager获取活跃任务的剩余计算量
+            if hasattr(v, 'active_task_manager'):
+                for task in v.active_task_manager.active_tasks:
+                    total_W += task.rem_comp
+            
+            # 从task_dag获取未完成subtask的剩余计算量
+            for i in range(dag.num_subtasks):
+                if dag.status[i] < 3:  # 未完成
+                    # 优先从active_task_manager获取
+                    task_in_active = None
+                    if hasattr(v, 'active_task_manager'):
+                        task_in_active = v.active_task_manager.get_task(v.id, i)
+                    
+                    if task_in_active:
+                        total_W += task_in_active.rem_comp
+                    else:
+                        total_W += dag.total_comp[i]
+        
+        return total_W
+    
+    def _get_total_active_tasks(self):
+        """
+        [P2辅助函数] 计算所有节点（车辆+RSU）的活跃任务总数
+        
+        Returns:
+            int: 总活跃任务数
+        """
+        total_active = 0
+        # 车辆活跃任务
+        for v in self.vehicles:
+            if hasattr(v, 'active_task_manager'):
+                total_active += v.active_task_manager.get_num_active_tasks()
+        
+        # RSU活跃任务
+        for rsu in self.rsus:
+            if hasattr(rsu, 'active_task_manager'):
+                total_active += rsu.active_task_manager.get_num_active_tasks()
+        
+        return total_active
+    
     def _handle_task_completion(self, task, compute_node):
         """
         处理任务完成事件（新物理引擎回调）
@@ -653,8 +721,68 @@ class VecOffloadingEnv(gym.Env):
         
         # 更新DAG状态：标记子任务完成
         subtask_id = task.subtask_id
-        if subtask_id < len(owner_vehicle.task_dag.status):
-            owner_vehicle.task_dag._mark_done(subtask_id)
+        dag = owner_vehicle.task_dag
+        
+        # [硬断言] 边界检查
+        assert subtask_id >= 0 and subtask_id < len(dag.status), (
+            f"❌ _handle_task_completion边界错误: owner={task.owner_id}, "
+            f"subtask={subtask_id}, dag.num_subtasks={len(dag.status)}"
+        )
+        
+        # [硬断言] 记录完成前的状态和计数
+        before_completed = int(np.sum(dag.status == 3))
+        before_status = int(dag.status[subtask_id])
+        
+        # [关键修复] 在调用_mark_done前，设置task_locations以支持同节点传输判断
+        # 确保_mark_done能正确判断是否需要创建传输任务
+        if subtask_id < len(dag.task_locations):
+            if dag.task_locations[subtask_id] is None:
+                # 根据执行节点推断location
+                if task.task_type == 'local':
+                    dag.task_locations[subtask_id] = 'Local'
+                elif task.task_type == 'v2i':
+                    # 如果是RSU执行，找到RSU的ID
+                    if isinstance(compute_node, RSU):
+                        for rsu_idx, rsu in enumerate(self.rsus):
+                            if rsu is compute_node:
+                                dag.task_locations[subtask_id] = ('RSU', rsu_idx)
+                                break
+                elif task.task_type == 'v2v':
+                    # 如果是V2V接收车辆执行，location是接收车辆ID
+                    if hasattr(compute_node, 'id'):
+                        dag.task_locations[subtask_id] = compute_node.id
+        
+        # 调用_mark_done，它应该返回解锁的READY节点数
+        unlocked_ready_count = dag._mark_done(subtask_id)
+        
+        # [硬断言] 完成计数+1
+        after_completed = int(np.sum(dag.status == 3))
+        assert after_completed == before_completed + 1, (
+            f"❌ _handle_task_completion完成计数错误: owner={task.owner_id}, "
+            f"subtask={subtask_id}, before={before_completed}, after={after_completed}, "
+            f"期望after=before+1"
+        )
+        
+        # [硬断言] 状态转换正确
+        assert dag.status[subtask_id] == 3, (
+            f"❌ _handle_task_completion状态转换错误: owner={task.owner_id}, "
+            f"subtask={subtask_id}, before_status={before_status}, "
+            f"after_status={dag.status[subtask_id]}, 期望COMPLETED(3)"
+        )
+        
+        # [诊断] 记录解锁信息（用于死锁诊断）
+        if not hasattr(dag, '_unlocked_ready_history'):
+            dag._unlocked_ready_history = []
+        dag._unlocked_ready_history.append({
+            'subtask_id': subtask_id,
+            'unlocked_count': unlocked_ready_count,
+            'time': self.time
+        })
+            
+        # [审计] V2V生命周期: dag_completed
+        if task.task_type == 'v2v':
+            self._audit_record_v2v_lifecycle('dag_completed', task.owner_id, subtask_id)
+            self._audit_check_task_state_conflict(task.owner_id, subtask_id, 'COMPLETED', None)
         
         # 从计算节点的Active中移除（已由step()自动完成）
         # 从旧队列中移除（向后兼容）
@@ -821,40 +949,263 @@ class VecOffloadingEnv(gym.Env):
         extra["total_subtasks"] = 0
         extra["completed_subtasks"] = 0
         extra["subtask_success_rate"] = 0.0
+        
+        # [Miss Reason分解] 失败原因统计
+        extra["miss_reason_deadline"] = 0
+        extra["miss_reason_overflow"] = 0
+        extra["miss_reason_illegal"] = 0
+        extra["miss_reason_unfinished"] = 0
+        extra["miss_reason_truncated"] = 0
+        
         if self.vehicles:
             success_count = sum(1 for v in self.vehicles if v.task_dag.is_finished)
             failed_count = sum(1 for v in self.vehicles if v.task_dag.is_failed)
-            vehicle_success_rate = success_count / max(episode_vehicle_count, 1)
-            task_success_rate = success_count / max(episode_task_count, 1)
+            
+            # [SR统计口径拆分]
+            vehicle_success_rate = success_count / max(episode_vehicle_count, 1)  # vehicle_SR
+            task_success_rate = success_count / max(episode_task_count, 1)  # task_SR
+            episode_all_success = (success_count == episode_vehicle_count and episode_vehicle_count > 0)  # episode_all_SR (all-or-nothing)
+            
             extra["vehicle_success_rate"] = vehicle_success_rate
-            extra["success_rate"] = vehicle_success_rate
+            extra["success_rate"] = vehicle_success_rate  # 保留向后兼容
             extra["success_rate_end"] = vehicle_success_rate
             extra["task_success_rate"] = task_success_rate
+            extra["episode_all_success"] = 1.0 if episode_all_success else 0.0  # 新增：episode级all-or-nothing SR
             extra["deadline_miss_rate"] = failed_count / max(episode_vehicle_count, 1)
+            
+            # [Miss Reason分解] 统计失败原因
+            miss_reasons = {'deadline': 0, 'overflow': 0, 'illegal': 0, 'unfinished': 0, 'truncated': 0}
+            for v in self.vehicles:
+                if v.task_dag.is_finished:
+                    continue  # 成功任务跳过
+                
+                if v.task_dag.is_failed:
+                    # 已标记失败的任务
+                    reason = v.task_dag.fail_reason or 'deadline'
+                    miss_reasons[reason] = miss_reasons.get(reason, 0) + 1
+                else:
+                    # 未完成但未标记失败 → 可能是truncated或真正的unfinished
+                    if truncated:
+                        miss_reasons['truncated'] += 1
+                    else:
+                        miss_reasons['unfinished'] += 1
+            
+            extra["miss_reason_deadline"] = miss_reasons['deadline']
+            extra["miss_reason_overflow"] = miss_reasons['overflow']
+            extra["miss_reason_illegal"] = miss_reasons['illegal']
+            extra["miss_reason_unfinished"] = miss_reasons['unfinished']
+            extra["miss_reason_truncated"] = miss_reasons['truncated']
 
             total_subtasks = 0
             completed_subtasks = 0
             gammas = []
             deadlines = []
             critical_paths = []
+            dag_makespans = []  # DAG级makespan
+            dag_start_times = []
+            dag_finish_times = []
+            subtask_durations = []  # 单个subtask的执行时间
+            
+            # [死锁检测和W_remaining统计]
+            deadlock_vehicles = []  # 死锁车辆列表
+            w_remaining_stats = []  # W_remaining统计
+            
             for v in self.vehicles:
                 total_subtasks += int(v.task_dag.num_subtasks)
                 completed_subtasks += int(np.sum(v.task_dag.status == 3))
+                
+                # [DAG Makespan计算] finish_time - start_time
+                dag_start_time = getattr(v.task_dag, 'start_time', self.time)
+                dag_start_times.append(dag_start_time)
+                
+                if v.task_dag.is_finished:
+                    # 已完成：使用最后一个subtask的CT作为finish_time
+                    ct_arr = getattr(v.task_dag, 'CT', None)
+                    if ct_arr is not None:
+                        valid_cts = [float(x) for x in ct_arr if np.isfinite(x) and x >= 0]
+                        if valid_cts:
+                            dag_finish_time = max(valid_cts)
+                            dag_finish_times.append(dag_finish_time)
+                            dag_makespan = dag_finish_time - dag_start_time
+                            dag_makespans.append(dag_makespan)
+                
+                # [Subtask Duration统计] 已完成subtask的执行时间
+                ct_arr = getattr(v.task_dag, 'CT', None)
+                est_arr = getattr(v.task_dag, 'EST', None)
+                if ct_arr is not None and est_arr is not None:
+                    for i in range(len(ct_arr)):
+                        if ct_arr[i] >= 0 and est_arr[i] >= 0:
+                            subtask_duration = ct_arr[i] - est_arr[i]
+                            if subtask_duration > 0:
+                                subtask_durations.append(float(subtask_duration))
+                
                 if getattr(v.task_dag, "deadline_gamma", None) is not None:
                     gammas.append(float(v.task_dag.deadline_gamma))
                 if getattr(v.task_dag, "deadline", None) is not None:
                     deadlines.append(float(v.task_dag.deadline))
                 if getattr(v.task_dag, "critical_path_cycles", None) is not None:
                     critical_paths.append(float(v.task_dag.critical_path_cycles))
+                
+                # [死锁检测] READY+RUNNING==0 && COMPLETED<total
+                dag = v.task_dag
+                count_completed = int(np.sum(dag.status == 3))
+                count_ready = int(np.sum(dag.status == 1))
+                count_running = int(np.sum(dag.status == 2))
+                count_pending = int(np.sum(dag.status == 0))
+                total_dag_subtasks = dag.num_subtasks
+                
+                # 检查是否有未完成的前驱（阻塞分析）
+                count_blocked_by_deps = 0
+                for i in range(total_dag_subtasks):
+                    if dag.status[i] == 0:  # PENDING
+                        # 检查是否有未完成的前驱
+                        has_unfinished_predecessor = False
+                        for j in range(total_dag_subtasks):
+                            if dag.adj[j, i] > 0 and dag.status[j] < 3:  # 有前驱且未完成
+                                has_unfinished_predecessor = True
+                                break
+                        if has_unfinished_predecessor:
+                            count_blocked_by_deps += 1
+                
+                # 死锁判定：READY+RUNNING==0 && COMPLETED<total
+                is_deadlocked = (count_ready == 0 and count_running == 0 and 
+                                count_completed < total_dag_subtasks)
+                if is_deadlocked:
+                    # [详细死锁诊断] 选择一个PENDING节点，检查其前驱状态和dep_count
+                    sample_blocked = None
+                    sample_preds_info = None
+                    for i in range(total_dag_subtasks):
+                        if dag.status[i] == 0:  # PENDING
+                            # 查找前驱节点
+                            predecessors = np.where(dag.adj[:, i] > 0)[0]
+                            preds_status = {int(pred): int(dag.status[pred]) for pred in predecessors}
+                            preds_completed = [p for p in predecessors if dag.status[p] == 3]
+                            preds_pending = [p for p in predecessors if dag.status[p] == 0]
+                            preds_ready = [p for p in predecessors if dag.status[p] == 1]
+                            
+                            sample_blocked = i
+                            sample_preds_info = {
+                                'blocked_subtask_id': i,
+                                'in_degree': int(dag.in_degree[i]),
+                                'remaining_preds': len(predecessors) - len(preds_completed),
+                                'preds_total': len(predecessors),
+                                'preds_completed': len(preds_completed),
+                                'preds_pending': len(preds_pending),
+                                'preds_ready': len(preds_ready),
+                                'preds_status': preds_status,
+                                'waiting_for_data': bool(getattr(dag, 'waiting_for_data', [False] * total_dag_subtasks)[i]),
+                                'has_inter_task_transfers': (i in getattr(dag, 'inter_task_transfers', {}) and 
+                                                           len(dag.inter_task_transfers.get(i, {})) > 0)
+                            }
+                            break  # 只记录第一个PENDING节点
+                    
+                    deadlock_info = {
+                        'vehicle_id': v.id,
+                        'completed': count_completed,
+                        'total': total_dag_subtasks,
+                        'pending': count_pending,
+                        'blocked_by_deps': count_blocked_by_deps,
+                        'sample_blocked_subtask': sample_blocked,
+                        'sample_preds_info': sample_preds_info
+                    }
+                    
+                    # [诊断] 如果有解锁历史，也记录下来
+                    if hasattr(dag, '_unlocked_ready_history'):
+                        deadlock_info['unlocked_ready_history'] = dag._unlocked_ready_history
+                    
+                    deadlock_vehicles.append(deadlock_info)
+                
+                # [W_remaining统计] 计算剩余计算量
+                # 从ActiveTaskManager获取当前剩余计算量
+                w_remaining_end = 0.0
+                if hasattr(v, 'active_task_manager'):
+                    for task in v.active_task_manager.active_tasks:
+                        w_remaining_end += task.rem_comp
+                
+                # 从task_dag获取未完成subtask的剩余计算量
+                for i in range(total_dag_subtasks):
+                    if dag.status[i] < 3:  # 未完成
+                        # 尝试从active_task_manager获取，否则使用total_comp
+                        task_in_active = None
+                        if hasattr(v, 'active_task_manager'):
+                            task_in_active = v.active_task_manager.get_task(v.id, i)
+                        
+                        if task_in_active:
+                            w_remaining_end += task_in_active.rem_comp
+                        else:
+                            w_remaining_end += dag.total_comp[i]
+                
+                # 开始时的总计算量
+                w_remaining_start = float(np.sum(dag.total_comp))
+                w_delta = w_remaining_start - w_remaining_end
+                
+                episode_time_for_w = self.time  # 使用当前时间作为episode时长
+                w_remaining_stats.append({
+                    'vehicle_id': v.id,
+                    'w_start': w_remaining_start,
+                    'w_end': w_remaining_end,
+                    'w_delta': w_delta,
+                    'episode_time': episode_time_for_w,
+                    'effective_service_rate': w_delta / max(episode_time_for_w, 1e-6)
+                })
+            
             extra["total_subtasks"] = int(total_subtasks)
             extra["completed_subtasks"] = int(completed_subtasks)
             extra["subtask_success_rate"] = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
+            
+            # [DAG Makespan统计]
+            if dag_makespans:
+                extra["dag_makespan_mean"] = float(np.mean(dag_makespans))
+                extra["dag_makespan_p50"] = float(np.percentile(dag_makespans, 50))
+                extra["dag_makespan_p90"] = float(np.percentile(dag_makespans, 90))
+                extra["dag_makespan_p95"] = float(np.percentile(dag_makespans, 95))
+                extra["dag_makespan_max"] = float(np.max(dag_makespans))
+                extra["dag_makespan_count"] = len(dag_makespans)  # 完成DAG的数量
+            
+            # [Subtask Duration统计]
+            if subtask_durations:
+                extra["subtask_duration_mean"] = float(np.mean(subtask_durations))
+                extra["subtask_duration_p50"] = float(np.percentile(subtask_durations, 50))
+                extra["subtask_duration_p95"] = float(np.percentile(subtask_durations, 95))
+                extra["subtask_duration_count"] = len(subtask_durations)
+            
             if gammas:
                 extra["deadline_gamma_mean"] = float(np.mean(gammas))
             if deadlines:
                 extra["deadline_seconds_mean"] = float(np.mean(deadlines))
             if critical_paths:
                 extra["critical_path_cycles_mean"] = float(np.mean(critical_paths))
+            
+            # [死锁检测输出]
+            extra["deadlock_vehicle_count"] = len(deadlock_vehicles)
+            if deadlock_vehicles:
+                extra["deadlock_vehicles"] = deadlock_vehicles  # 详细死锁信息
+            
+            # [W_remaining统计输出]
+            if w_remaining_stats:
+                w_deltas = [s['w_delta'] for s in w_remaining_stats]
+                effective_rates = [s['effective_service_rate'] for s in w_remaining_stats]
+                extra["w_remaining_delta_mean"] = float(np.mean(w_deltas))
+                extra["w_remaining_delta_sum"] = float(np.sum(w_deltas))
+                extra["effective_service_rate_mean"] = float(np.mean(effective_rates))
+                extra["effective_service_rate_p95"] = float(np.percentile(effective_rates, 95))
+                
+                # [P2性能统计] 仅在active时间段统计服务速率（真实实现）
+                total_time = self._p2_active_time + self._p2_idle_time
+                service_rate_when_active = self._p2_deltaW_active / max(self._p2_active_time, 1e-9)
+                idle_fraction = self._p2_idle_time / max(total_time, 1e-9)
+                
+                # [一致性断言]
+                assert 0.0 <= idle_fraction <= 1.0, (
+                    f"❌ [P2断言失败] idle_fraction={idle_fraction} 不在[0,1]范围内"
+                )
+                assert service_rate_when_active >= 0.0, (
+                    f"❌ [P2断言失败] service_rate_when_active={service_rate_when_active} < 0"
+                )
+                
+                extra["service_rate_when_active"] = float(service_rate_when_active)
+                extra["idle_fraction"] = float(idle_fraction)
+        
         episode_time_seconds = float(self.time)
         vehicle_cfts = getattr(self, "vehicle_cfts", [])
         valid_cfts = [v for v in vehicle_cfts if v is not None and np.isfinite(v)]
@@ -929,6 +1280,49 @@ class VecOffloadingEnv(gym.Env):
             extra["mean_cost_gap_v2v_minus_rsu"] = float("nan")
             extra["mean_cost_rsu"] = float("nan")
             extra["mean_cost_v2v"] = float("nan")
+        
+        # [审计] V2V生命周期守恒检查
+        extra["audit_v2v_tx_started"] = len(self._audit_v2v_lifecycle['tx_started'])
+        extra["audit_v2v_tx_done"] = len(self._audit_v2v_lifecycle['tx_done'])
+        extra["audit_v2v_received"] = len(self._audit_v2v_lifecycle['received'])
+        extra["audit_v2v_added_to_active"] = len(self._audit_v2v_lifecycle['added_to_active'])
+        extra["audit_v2v_cpu_finished"] = len(self._audit_v2v_lifecycle['cpu_finished'])
+        extra["audit_v2v_dag_completed"] = len(self._audit_v2v_lifecycle['dag_completed'])
+        
+        # [Deadline检查计数] 输出到episode summary
+        extra["audit_deadline_checks"] = self._audit_deadline_checks
+        extra["audit_deadline_misses"] = self._audit_deadline_misses
+        
+        # [P0护栏统计] 传输任务创建计数（用于回归测试）
+        total_tx_created = 0
+        total_same_node_no_tx = 0
+        all_local_only = True  # 检查是否为Local-only模式
+        
+        for v in self.vehicles:
+            dag = v.task_dag
+            tx_count = getattr(dag, '_tx_tasks_created_count', 0)
+            same_node_count = getattr(dag, '_same_node_no_tx_count', 0)
+            total_tx_created += tx_count
+            total_same_node_no_tx += same_node_count
+            
+            # 检查是否为Local-only：所有任务都在Local执行
+            if hasattr(dag, 'task_locations'):
+                for loc in dag.task_locations:
+                    if loc is not None and loc != 'Local':
+                        all_local_only = False
+                        break
+        
+        extra["tx_tasks_created_count"] = total_tx_created
+        extra["same_node_no_tx_count"] = total_same_node_no_tx
+        
+        # [P0护栏断言] Local-only模式下不应创建任何传输任务
+        if all_local_only:
+            assert total_tx_created == 0, (
+                f"❌ [P0护栏违反] Local-only模式下不应创建传输任务: "
+                f"tx_tasks_created_count={total_tx_created}, "
+                f"episode_id={self._episode_id}"
+            )
+        
         # 清洗非数值，避免 JSON NaN 导致读取失败
         for k, v in list(extra.items()):
             if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
@@ -939,6 +1333,41 @@ class VecOffloadingEnv(gym.Env):
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
         self._episode_task_durations = []  # [新增] 清空任务完成时间追踪
+        
+        # [P2/P0新增] 保存episode指标到属性（供step方法写入info）
+        self._last_episode_metrics = {
+            'deadlock_vehicle_count': extra.get('deadlock_vehicle_count', 0),
+            'audit_deadline_checks': self._audit_deadline_checks,
+            'audit_deadline_misses': self._audit_deadline_misses,
+            'miss_reason_deadline': extra.get('miss_reason_deadline', 0),
+            'miss_reason_overflow': extra.get('miss_reason_overflow', 0),
+            'miss_reason_illegal': extra.get('miss_reason_illegal', 0),
+            'miss_reason_unfinished': extra.get('miss_reason_unfinished', 0),
+            'miss_reason_truncated': extra.get('miss_reason_truncated', 0),
+            'tx_tasks_created_count': extra.get('tx_tasks_created_count', 0),
+            'same_node_no_tx_count': extra.get('same_node_no_tx_count', 0),
+            'service_rate_when_active': extra.get('service_rate_when_active', 0.0),
+            'idle_fraction': extra.get('idle_fraction', 0.0),
+            'vehicle_success_rate': extra.get('vehicle_success_rate', 0.0),
+            'task_success_rate': extra.get('task_success_rate', 0.0),
+            'episode_all_success': extra.get('episode_all_success', 0.0),
+            'subtask_success_rate': extra.get('subtask_success_rate', 0.0),
+        }
+        
+        # [审计系统] 重置episode级数据
+        self._audit_v2v_lifecycle = {
+            'tx_started': set(),
+            'tx_done': set(),
+            'received': set(),
+            'added_to_active': set(),
+            'cpu_finished': set(),
+            'dag_completed': set()
+        }
+        self._audit_task_registry = {}
+        # [Deadline检查计数] 重置episode级计数器
+        self._audit_deadline_checks = 0
+        self._audit_deadline_misses = 0
+        
         if Cfg.EPISODE_JSONL_STDOUT:
             print(json_line)
         if self._jsonl_path:
@@ -969,6 +1398,15 @@ class VecOffloadingEnv(gym.Env):
         self._diag_cost_rsu_sum = 0.0
         self._diag_cost_v2v_sum = 0.0
         self._diag_cost_v2v_better = 0
+        # [Deadline检查计数] 重置
+        self._audit_deadline_checks = 0
+        self._audit_deadline_misses = 0
+        # [P2性能统计] 初始化
+        self._p2_active_time = 0.0
+        self._p2_idle_time = 0.0
+        self._p2_deltaW_active = 0.0
+        self._p2_W_prev = 0.0  # 将在车辆生成后初始化
+        self._p2_zero_delta_steps = 0  # 用于检测长时间无推进
         
         # 重置RSU队列和FAT
         for rsu in self.rsus:
@@ -1034,6 +1472,10 @@ class VecOffloadingEnv(gym.Env):
         self.last_global_cft = self._calculate_global_cft_critical_path()
         if self._audit_enabled():
             self._assert_vehicle_integrity()
+        
+        # [P2性能统计] 初始化W_prev（在车辆生成后）
+        self._p2_W_prev = self._get_total_W_remaining()
+        
         return self._get_obs(), {}
 
     def step(self, actions):
@@ -1203,6 +1645,9 @@ class VecOffloadingEnv(gym.Env):
                 is_data_ready = True
                 
                 try:
+                    # [审计] 检查任务状态冲突
+                    self._audit_check_task_state_conflict(v.id, subtask_idx, 'ACTIVE', v.id)
+                    
                     v.add_active_task(
                         owner_id=v.id,
                         subtask_id=subtask_idx,
@@ -1301,6 +1746,10 @@ class VecOffloadingEnv(gym.Env):
                         if isinstance(tgt, tuple) and tgt[0] == 'RSU':
                             rsu_id = tgt[1]
                             if 0 <= rsu_id < len(self.rsus):
+                                # [审计] V2V生命周期: added_to_active (v2i)
+                                # [审计] 检查任务状态冲突
+                                self._audit_check_task_state_conflict(v.id, subtask_idx, 'ACTIVE', ('RSU', rsu_id))
+                                
                                 self.rsus[rsu_id].add_active_task(
                                     owner_id=v.id,
                                     subtask_id=subtask_idx,
@@ -1314,6 +1763,11 @@ class VecOffloadingEnv(gym.Env):
                         elif isinstance(tgt, int):
                             target_veh = self._get_vehicle_by_id(tgt)
                             if target_veh is not None:
+                                # [审计] V2V生命周期: added_to_active (v2v)
+                                self._audit_record_v2v_lifecycle('added_to_active', v.id, subtask_idx)
+                                # [审计] 检查任务状态冲突
+                                self._audit_check_task_state_conflict(v.id, subtask_idx, 'ACTIVE', tgt)
+                                
                                 target_veh.add_active_task(
                                     owner_id=v.id,
                                     subtask_id=subtask_idx,
@@ -1328,12 +1782,14 @@ class VecOffloadingEnv(gym.Env):
                         v.illegal_action = True
                         v.illegal_reason = f"handover_admission_failed: {str(e)[:50]}"
 
-            # [旧引擎暂时保留，用于任务完成判定]
-            # TODO: 完全切换到新引擎后移除
-            if v.curr_subtask is not None:
-                task_finished, _ = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
-                
-                if task_finished:
+            # [旧引擎已弃用] 新物理引擎通过ActiveTaskManager和_handle_task_completion处理任务完成
+            # TODO: 完全移除旧引擎代码
+            # [修复] 注释掉旧引擎调用，防止双重完成导致_mark_done被调用两次
+            # if v.curr_subtask is not None:
+            #     task_finished, _ = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
+            #     
+            #     if task_finished:
+            if False:  # 临时禁用旧引擎
                     # [新增] 子任务成功奖励：任何任务完成都给奖励（全域激励）
                     # 包括Local、RSU、V2V，避免智能体歧视Local任务导致依赖链阻塞
                     if not hasattr(v, 'subtask_reward_buffer'):
@@ -1531,16 +1987,22 @@ class VecOffloadingEnv(gym.Env):
                 v.task_dag.step_inter_task_transfers(child_id, transfer['speed'], Cfg.DT)
         
         # ========== [新物理引擎] 处理器共享模型 ==========
-        # 1. RSU计算推进
+        # 1. RSU计算推进（传递global_step_id用于双重推进检测）
         for rsu in self.rsus:
-            finished_tasks = rsu.step(Cfg.DT)
+            finished_tasks = rsu.step(Cfg.DT, global_step_id=self.steps)
             for task in finished_tasks:
+                # [审计] V2V生命周期: cpu_finished
+                if task.task_type == 'v2v':
+                    self._audit_record_v2v_lifecycle('cpu_finished', task.owner_id, task.subtask_id)
                 self._handle_task_completion(task, rsu)
         
-        # 2. 车辆计算推进
+        # 2. 车辆计算推进（传递global_step_id用于双重推进检测）
         for v in self.vehicles:
-            finished_tasks = v.step(Cfg.DT)
+            finished_tasks = v.step(Cfg.DT, global_step_id=self.steps)
             for task in finished_tasks:
+                # [审计] V2V生命周期: cpu_finished
+                if task.task_type == 'v2v':
+                    self._audit_record_v2v_lifecycle('cpu_finished', task.owner_id, task.subtask_id)
                 self._handle_task_completion(task, v)
             
             # 更新车辆位置（道路模型：一维移动）
@@ -1722,11 +2184,97 @@ class VecOffloadingEnv(gym.Env):
         info = {
             'timeout': time_limit_reached,
             'all_finished': all_finished,
-            'num_active_vehicles': len([v for v in self.vehicles if not v.task_dag.is_finished])
+            'num_active_vehicles': len([v for v in self.vehicles if not v.task_dag.is_finished]),
+            'terminated_trigger': 'time_limit' if time_limit_reached else ('all_finished' if all_finished else 'none')
         }
+        
+        # [审计系统] 收集本步审计数据
+        info['audit_step_info'] = self._collect_audit_step_info(commit_plans)
+        
+        # [P2性能统计] 在每个step末尾累计统计（无论是否终止）
+        W_curr = self._get_total_W_remaining()
+        deltaW = max(0.0, self._p2_W_prev - W_curr)  # 防止数值抖动造成负值
+        total_active = self._get_total_active_tasks()
+        
+        if total_active > 0:
+            self._p2_active_time += Cfg.DT
+            self._p2_deltaW_active += deltaW
+            # 检测长时间无推进
+            if deltaW < 1e-6:  # 几乎没有推进
+                self._p2_zero_delta_steps += 1
+            else:
+                self._p2_zero_delta_steps = 0
+        else:
+            self._p2_idle_time += Cfg.DT
+        
+        self._p2_W_prev = W_curr
+        
+        # [一致性检查] 长时间无推进警告
+        if self._p2_zero_delta_steps >= 50 and total_active > 0:
+            import warnings
+            warnings.warn(
+                f"[P2警告] 连续{self._p2_zero_delta_steps}步活跃任务未推进，"
+                f"total_active={total_active}, deltaW={deltaW:.2e}",
+                UserWarning
+            )
+            self._p2_zero_delta_steps = 0  # 重置计数，避免重复警告
 
         if terminated or truncated:
+            # [Miss Reason分解] 在episode结束时标记失败原因
+            for v in self.vehicles:
+                if v.task_dag.is_finished:
+                    continue  # 已完成的跳过
+                
+                # 如果任务已标记failed但没有fail_reason，强制设为deadline
+                if v.task_dag.is_failed and not v.task_dag.fail_reason:
+                    v.task_dag.fail_reason = 'deadline'
+                
+                # 未标记failed的任务，根据情况设置原因
+                if not v.task_dag.is_failed:
+                    # 检查是否有illegal action
+                    if hasattr(v, 'illegal_action') and v.illegal_action:
+                        v.task_dag.set_failed(reason='illegal')
+                    # 检查是否有overflow（队列满）
+                    elif hasattr(v, 'illegal_reason') and v.illegal_reason and 'overflow' in v.illegal_reason.lower():
+                        v.task_dag.set_failed(reason='overflow')
+                    # 其他未标记的保留（在_log_episode_stats中会归为unfinished或truncated）
+            
+            # [P2性能统计] 在每个step末尾累计统计
+            W_curr = self._get_total_W_remaining()
+            deltaW = max(0.0, self._p2_W_prev - W_curr)  # 防止数值抖动造成负值
+            total_active = self._get_total_active_tasks()
+            
+            if total_active > 0:
+                self._p2_active_time += Cfg.DT
+                self._p2_deltaW_active += deltaW
+                # 检测长时间无推进
+                if deltaW < 1e-6:  # 几乎没有推进
+                    self._p2_zero_delta_steps += 1
+                else:
+                    self._p2_zero_delta_steps = 0
+            else:
+                self._p2_idle_time += Cfg.DT
+            
+            self._p2_W_prev = W_curr
+            
+            # [一致性检查] 长时间无推进警告
+            if self._p2_zero_delta_steps >= 50 and total_active > 0:
+                import warnings
+                warnings.warn(
+                    f"[P2警告] 连续{self._p2_zero_delta_steps}步活跃任务未推进，"
+                    f"total_active={total_active}, deltaW={deltaW:.2e}",
+                    UserWarning
+                )
+                self._p2_zero_delta_steps = 0  # 重置计数，避免重复警告
+            
             self._log_episode_stats(terminated, truncated)
+            
+            # [P2/P0新增] 将关键健康指标写入info（供审计脚本使用）
+            # 这些字段在_log_episode_stats中已计算并保存到_last_episode_metrics
+            if hasattr(self, '_last_episode_metrics'):
+                info['episode_metrics'] = self._last_episode_metrics.copy()
+                # 同时直接在info顶层写入这些字段（向后兼容）
+                info.update(self._last_episode_metrics)
 
         return self._get_obs(), rewards, terminated, truncated, info
 
@@ -2137,6 +2685,9 @@ class VecOffloadingEnv(gym.Env):
             # [关键] 死锁兜底：如果所有目标都不可用，强制开启Local
             if not np.any(target_mask_row):
                 target_mask_row[0] = True
+            
+            # [审计] 保存mask到vehicle对象，用于审计收集
+            v._last_action_mask = target_mask_row.copy()
 
             resource_id_list = np.zeros(Cfg.MAX_TARGETS, dtype=np.int64)
             resource_id_list[0] = 1
@@ -2967,10 +3518,44 @@ class VecOffloadingEnv(gym.Env):
 
         if dag.deadline > 0:
             elapsed = self.time - dag.start_time
-            if elapsed > dag.deadline and not dag.is_finished:
+            deadline_abs = dag.start_time + dag.deadline
+            
+            # [Deadline检查计数] 每次检查都计数（不依赖logger）
+            self._audit_deadline_checks += 1
+            
+            # [Deadline判定详细日志] 只在首次触发时打印（避免刷屏）
+            if elapsed > dag.deadline and not dag.is_finished and not dag.is_failed:
+                # [Deadline Miss计数] 记录miss次数（不依赖logger）
+                self._audit_deadline_misses += 1
+                # 计算first_ready_time（最早READY子任务的时间）
+                first_ready_time = dag.start_time
+                ready_status = dag.status >= 1  # READY或更高状态
+                if np.any(ready_status):
+                    # 使用EST作为first_ready_time的近似（EST在任务开始执行时设置）
+                    est_values = dag.EST[dag.EST >= 0]
+                    if len(est_values) > 0:
+                        first_ready_time = float(np.min(est_values))
+                
+                # 记录deadline判定详情（仅首次触发）
+                if not hasattr(dag, '_deadline_miss_logged'):
+                    dag._deadline_miss_logged = True
+                    if hasattr(self, '_logger') and self._logger:
+                        self._logger.warning(
+                            f"[Deadline Miss] Vehicle{v.id}, DAG{dag.id}:\n"
+                            f"  now_time={self.time:.3f}s, deadline_abs={deadline_abs:.3f}s, "
+                            f"start_time={dag.start_time:.3f}s, deadline_rel={dag.deadline:.3f}s\n"
+                            f"  elapsed={elapsed:.3f}s, first_ready_time≈{first_ready_time:.3f}s\n"
+                            f"  is_finished={dag.is_finished}, status_dist={np.bincount(dag.status)}\n"
+                            f"  elapsed > deadline: {elapsed:.3f} > {dag.deadline:.3f} = {elapsed > dag.deadline}"
+                        )
+                
                 overtime_ratio = (elapsed - dag.deadline) / dag.deadline
                 r_timeout = -Cfg.TIMEOUT_PENALTY_WEIGHT * np.tanh(Cfg.TIMEOUT_STEEPNESS * overtime_ratio)
-                dag.set_failed()
+                dag.set_failed(reason='deadline')
+                
+                # [硬断言] 验证时间单位一致性
+                assert abs(deadline_abs - (dag.start_time + dag.deadline)) < 1e-6, \
+                    f"Deadline计算错误: {deadline_abs:.6f} != {dag.start_time:.6f} + {dag.deadline:.6f}"
 
         return {
             "delay_norm": delay_norm,
@@ -3058,3 +3643,144 @@ class VecOffloadingEnv(gym.Env):
         }
 
         return (reward, out_components) if return_components else reward
+    
+    # ========================================================================
+    # 审计系统方法
+    # ========================================================================
+    
+    def _collect_audit_step_info(self, commit_plans):
+        """
+        收集本步的审计数据（12项核心指标）
+        
+        Args:
+            commit_plans: 本步提交的action plans
+            
+        Returns:
+            dict: 审计信息
+        """
+        audit_info = {}
+        
+        # (1) RSU mask可用性 - 从plan中统计
+        rsu_available_count = 0
+        for plan in commit_plans:
+            # 检查RSU是否在本次决策中可用
+            if plan['subtask_idx'] is not None:
+                v = plan['vehicle']
+                # 通过检查_last_rsu_choice判断RSU是否可用
+                if self._last_rsu_choice.get(v.id) is not None:
+                    rsu_available_count += 1
+        audit_info['rsu_mask_true'] = rsu_available_count
+        
+        # (2) V2V可选邻居数 - 从_last_candidates统计
+        valid_v2v_counts = []
+        for plan in commit_plans:
+            if plan['subtask_idx'] is not None:
+                v = plan['vehicle']
+                candidates = self._last_candidates.get(v.id, [])
+                valid_count = sum(1 for cid in candidates if cid is not None and cid >= 0)
+                valid_v2v_counts.append(valid_count)
+        audit_info['valid_v2v_count'] = np.mean(valid_v2v_counts) if valid_v2v_counts else 0
+        
+        # (3) Illegal动作统计 - 从plan中提取
+        for plan in commit_plans:
+            if plan['illegal_reason'] is not None:
+                v = plan['vehicle']
+                target_idx = plan.get('target_idx', 0)
+                
+                # 判断action类型
+                if target_idx == 0:
+                    action_type = 'local'
+                elif target_idx == 1:
+                    action_type = 'rsu'
+                else:
+                    action_type = 'v2v'
+                
+                # 检查mask是否一致（critical check）
+                mask_was_true = False
+                if action_type == 'rsu':
+                    mask_was_true = (self._last_rsu_choice.get(v.id) is not None)
+                elif action_type == 'v2v':
+                    candidates = self._last_candidates.get(v.id, [])
+                    neighbor_idx = target_idx - 2
+                    if 0 <= neighbor_idx < len(candidates):
+                        mask_was_true = (candidates[neighbor_idx] is not None and candidates[neighbor_idx] >= 0)
+                else:  # local
+                    mask_was_true = True  # Local永远可用
+                
+                audit_info['illegal_action'] = True
+                audit_info['action_type'] = action_type
+                audit_info['illegal_reason'] = plan['illegal_reason']
+                audit_info['mask_was_true'] = mask_was_true
+                break  # 记录第一个illegal即可
+        
+        # (4) RSU队列长度
+        if self.rsus:
+            rsu_active_counts = []
+            for rsu in self.rsus:
+                active_len = rsu.get_num_active_tasks() if hasattr(rsu, 'get_num_active_tasks') else 0
+                rsu_active_counts.append(active_len)
+            audit_info['rsu_queue_len'] = np.mean(rsu_active_counts) if rsu_active_counts else 0
+        
+        return audit_info
+    
+    def _audit_record_v2v_lifecycle(self, event_type, owner_id, subtask_id):
+        """
+        记录V2V生命周期事件（用于守恒检查）
+        
+        Args:
+            event_type: 'tx_started'|'tx_done'|'received'|'added_to_active'|'cpu_finished'|'dag_completed'
+            owner_id: 任务所有者ID
+            subtask_id: 子任务ID
+        """
+        key = (owner_id, subtask_id)
+        if event_type in self._audit_v2v_lifecycle:
+            self._audit_v2v_lifecycle[event_type].add(key)
+    
+    def _audit_check_task_state_conflict(self, owner_id, subtask_id, new_state, new_host):
+        """
+        检查任务状态冲突（互斥性断言）
+        
+        Args:
+            owner_id: 任务所有者ID
+            subtask_id: 子任务ID
+            new_state: 新状态 ('PENDING'|'TRANSMITTING'|'ACTIVE'|'COMPLETED')
+            new_host: 新的执行主机 (vehicle_id or ('RSU', rsu_id) or None)
+            
+        Raises:
+            AssertionError: 如果检测到状态冲突
+        """
+        key = (owner_id, subtask_id)
+        
+        if key in self._audit_task_registry:
+            old_entry = self._audit_task_registry[key]
+            old_state = old_entry['state']
+            old_host = old_entry['host']
+            
+            # 允许的状态转换
+            valid_transitions = {
+                'PENDING': ['TRANSMITTING', 'ACTIVE', 'COMPLETED'],
+                'TRANSMITTING': ['ACTIVE', 'COMPLETED'],
+                'ACTIVE': ['COMPLETED'],
+                'COMPLETED': []  # 完成后不应再变化
+            }
+            
+            if new_state not in valid_transitions.get(old_state, []):
+                if not (old_state == new_state):  # 允许幂等更新
+                    raise AssertionError(
+                        f"任务状态冲突: ({owner_id},{subtask_id}) "
+                        f"{old_state}@{old_host} -> {new_state}@{new_host}"
+                    )
+            
+            # 检查ACTIVE状态的唯一主机
+            if new_state == 'ACTIVE' and old_state == 'ACTIVE':
+                if old_host != new_host:
+                    raise AssertionError(
+                        f"任务双重ACTIVE: ({owner_id},{subtask_id}) "
+                        f"同时在 {old_host} 和 {new_host}"
+                    )
+        
+        # 更新registry
+        self._audit_task_registry[key] = {
+            'state': new_state,
+            'host': new_host
+        }

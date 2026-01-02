@@ -88,6 +88,10 @@ class ActiveTask:
         self.total_comp = total_comp
         self.assigned_time = assigned_time
         
+        # [双重推进检测] 记录最后一次更新的step_id
+        self.last_updated_step = -1
+        self.update_source = None  # 'active_manager' or 'old_dag_step'
+        
     def get_progress(self) -> float:
         """获取任务进度 (0.0-1.0)"""
         if self.total_comp <= 0:
@@ -172,7 +176,7 @@ class ActiveTaskManager:
         """获取总计算量 (cycles)"""
         return sum(task.rem_comp for task in self.active_tasks)
     
-    def step(self, dt: float) -> List[ActiveTask]:
+    def step(self, dt: float, global_step_id: int = -1) -> List[ActiveTask]:
         """
         时间推演：使用处理器共享模型推进所有任务（含步内动态）
         
@@ -183,15 +187,28 @@ class ActiveTaskManager:
         关键修复:
         1. 单任务在4核上速度=cpu_freq，不是4×cpu_freq（单线程限制）
         2. 步内动态：任务完成后立即重新分配CPU给剩余任务
+        3. [新增] 双重推进检测：同一step不允许重复更新
         
         Args:
             dt: 时间步长 (秒)
+            global_step_id: 全局step编号（用于双重推进检测）
             
         Returns:
             List[ActiveTask]: 本step完成的任务列表
         """
         if not self.active_tasks:
             return []
+        
+        # [双重推进硬断言] 检查是否有任务在本step已被更新
+        if global_step_id >= 0:
+            for task in self.active_tasks:
+                if task.last_updated_step == global_step_id:
+                    raise AssertionError(
+                        f"❌ 双重推进检测: 任务({task.owner_id},{task.subtask_id})在step={global_step_id}已被更新！\n"
+                        f"   上次更新来源: {task.update_source}\n"
+                        f"   当前更新来源: active_manager\n"
+                        f"   → 检查是否同时调用了旧引擎(task_dag.step_progress)和新引擎(active_manager.step)"
+                    )
         
         completed_tasks = []
         remaining_dt = dt
@@ -223,6 +240,11 @@ class ActiveTaskManager:
                 task.rem_comp -= computation_per_task
                 if task.rem_comp <= 1e-9:
                     task.rem_comp = 0.0
+                
+                # [双重推进检测] 记录本次更新
+                if global_step_id >= 0:
+                    task.last_updated_step = global_step_id
+                    task.update_source = 'active_manager'
             
             # 收集并移除完成的任务
             finished_this_round = [t for t in self.active_tasks if t.rem_comp <= 1e-9]

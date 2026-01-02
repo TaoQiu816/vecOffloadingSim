@@ -151,28 +151,31 @@ class DAGGenerator:
 
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
-        计算相对截止时间（关键路径版本）
+        计算相对截止时间（单核可达基准版本）
         
-        公式: T_deadline = γ × (critical_path_cycles / f_local) + slack_seconds
+        公式: T_deadline = γ × max(CP_cycles, W_cycles) / f_local + slack_seconds
         - critical_path_cycles: DAG关键路径计算量 (Cycles)
-        - f_local: 本地CPU频率 (Hz)
+        - total_cycles: DAG总计算量 (Cycles) = sum(comp_i)
+        - f_local: 本地CPU频率 (Hz)，使用车辆实际频率
         - γ: 截止时间因子（松紧因子），范围 [gamma_min, gamma_max]
         - slack_seconds: 固定松弛时间
         
         设计原则:
-        - 基于关键路径执行时间（不考虑排队）
-        - γ < 1.0 强制卸载，γ > 1.0 放宽Deadline
+        - 基准时间 = max(CP/f, W/f)，考虑单核处理器共享下的实际下界
+        - CP/f是理想并行调度下界，W/f是串行执行硬下界
+        - Processor Sharing会稀释关键路径，实际makespan往W/f靠
+        - γ > 1.0 放宽Deadline，允许PS稀释和通信开销
         
         Args:
             n: 节点数
             adj: 邻接矩阵
             profiles: 节点属性列表
-            f_base: 本地CPU频率(Hz)，None则使用配置最小值
+            f_base: 本地CPU频率(Hz)，None则使用配置最小值（应使用车辆实际频率）
         
         Returns:
             tuple: (deadline_seconds, gamma, critical_path_cycles, base_time)
         """
-        # 获取本地算力
+        # 获取本地算力（使用实际车辆频率，而非最小值）
         if f_base is None or f_base <= 0:
             f_base = Cfg.MIN_VEHICLE_CPU_FREQ
 
@@ -182,8 +185,17 @@ class DAGGenerator:
         if critical_path <= 0 or not np.isfinite(critical_path):
             critical_path = max(Cfg.MIN_COMP, np.sum(comp_arr))
         
-        # 基准时间 = 关键路径 / 本地CPU
-        base_time = critical_path / f_base
+        # 计算总计算量（单核硬下界）
+        total_cycles = np.sum(comp_arr)
+        if total_cycles <= 0 or not np.isfinite(total_cycles):
+            total_cycles = critical_path
+        
+        # 基准时间 = max(关键路径时间, 总计算量时间) / 本地CPU
+        # 这是单核Processor Sharing下的可达基准
+        cp_time = critical_path / f_base
+        total_time = total_cycles / f_base
+        base_time = max(cp_time, total_time)
+        
         if not np.isfinite(base_time) or base_time <= 0:
             base_time = Cfg.MIN_COMP / max(f_base, Cfg.MIN_VEHICLE_CPU_FREQ)
 
