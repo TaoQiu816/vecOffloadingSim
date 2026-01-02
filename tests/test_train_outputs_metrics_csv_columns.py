@@ -19,7 +19,6 @@ def test_train_outputs_metrics_csv_columns(tmp_path):
     env = os.environ.copy()
     env.update({
         "CFG_PROFILE": "train_ready_v1",
-        "REWARD_MODE": "delta_cft",
         "BONUS_MODE": "none",
         "DEVICE_NAME": "cpu",
         "SEED": "7",
@@ -64,5 +63,20 @@ def test_train_outputs_metrics_csv_columns(tmp_path):
         "mean_cft_completed",
         "episode_time_seconds",
         "vehicle_cft_count",
+        "dT_mean",
+        "cft_prev_rem_mean",
+        "cft_curr_rem_mean",
+        "dCFT_abs_mean",
+        "dCFT_abs_p95",
+        "dCFT_rem_mean",
+        "dCFT_rem_p95",
+        "dt_used_mean",
+        "implied_dt_mean",
+        "dT_eff_mean",
+        "dT_eff_p95",
+        "energy_norm_mean",
+        "energy_norm_p95",
+        "t_tx_mean",
+        "reward_step_p95",
     }
     assert required.issubset(set(header))

@@ -123,10 +123,11 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
     # 步骤3：按拓扑顺序计算每个节点的EST和CT
     for node_id in topo_order:
         loc = task_locations[node_id]
+        status = int(dag.status[node_id])
         
         # 特殊情况：节点已完成
         # 已完成节点的CT使用当前时间（实际完成时间）
-        if dag.status[node_id] == 3:
+        if status == 3:
             EST[node_id] = current_time
             CT[node_id] = current_time
             continue
@@ -135,31 +136,35 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         # 步骤3.1：获取处理器FAT（Earliest Available Time）
         # ============================================================
         # 注意：这里只读取FAT值，不修改，因为这是预测计算
-        processor_fat = 0.0
-        if loc == 'Local':
-            # 本地执行：使用车辆本地处理器的FAT
-            processor_fat = vehicle.fat_processor
-        elif isinstance(loc, tuple) and loc[0] == 'RSU':
-            # RSU执行：使用RSU中最小FAT的处理器（负载均衡后的选择）
-            rsu_id = loc[1]
-            if 0 <= rsu_id < len(rsus):
-                rsu = rsus[rsu_id]
-                processor_fat = rsu.get_min_processor_fat()
-        elif isinstance(loc, int):
-            # 其他车辆执行：使用目标车辆处理器的FAT
-            target_veh = _get_vehicle_by_id(vehicles_list, loc)
-            if target_veh is not None:
-                processor_fat = target_veh.fat_processor
+        # 已经在执行的节点：处理器已被占用，用当前时间作为最早启动时间，避免重复叠加等待
+        if status == 2:
+            processor_fat = current_time
+        else:
+            processor_fat = 0.0
+            if loc == 'Local':
+                # 本地执行：使用车辆本地处理器的FAT
+                processor_fat = vehicle.fat_processor
+            elif isinstance(loc, tuple) and loc[0] == 'RSU':
+                # RSU执行：使用RSU中最小FAT的处理器（负载均衡后的选择）
+                rsu_id = loc[1]
+                if 0 <= rsu_id < len(rsus):
+                    rsu = rsus[rsu_id]
+                    processor_fat = rsu.get_min_processor_fat()
+            elif isinstance(loc, int):
+                # 其他车辆执行：使用目标车辆处理器的FAT
+                target_veh = _get_vehicle_by_id(vehicles_list, loc)
+                if target_veh is not None:
+                    processor_fat = target_veh.fat_processor
         
         # ============================================================
         # 步骤3.2：计算上传完成时间（如果任务在远程执行）
         # ============================================================
         # 公式：上传完成时间 = max(上传信道FAT, current_time) + 上传数据量 / 传输速率
         # 注意：上传数据量是子任务的输入数据（total_data[node_id]），不是依赖数据
-        upload_completion_time = 0.0
+        upload_completion_time = current_time if status == 2 else 0.0
         if loc != 'Local':
-            # 上传数据量：子任务的输入数据
-            upload_data = dag.total_data[node_id]
+            # 上传数据量：使用剩余输入数据，确保动态剩余时间正确
+            upload_data = float(dag.rem_data[node_id])
             
             # 根据目标类型选择传输速率（V2I或V2V）
             if isinstance(loc, tuple) and loc[0] == 'RSU':
@@ -187,7 +192,9 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
             upload_rate = max(upload_rate, 1e-6)  # 避免除零
             upload_time = upload_data / upload_rate
             # 上传完成时间考虑上传信道的FAT（串行传输）
-            upload_completion_time = max(vehicle.fat_uplink, current_time) + upload_time
+            # 正在执行的任务已经占用上行，不再叠加额外FAT
+            base_start = current_time if status == 2 else max(vehicle.fat_uplink, current_time)
+            upload_completion_time = base_start + upload_time
         else:
             # 本地执行，无需上传
             upload_completion_time = current_time
@@ -200,7 +207,8 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         max_pred_completion = 0.0
         for pred_id in predecessors.get(node_id, []):
             # 获取前驱节点的完成时间
-            if dag.status[pred_id] == 3:
+            pred_status = int(dag.status[pred_id])
+            if pred_status == 3:
                 # 前驱已完成：使用当前时间
                 pred_ct = current_time
             else:
@@ -318,9 +326,9 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
                 cpu_freq = vehicle.cpu_freq  # 错误情况，使用车辆频率
         else:
             cpu_freq = vehicle.cpu_freq  # 默认
-        
-        # 执行时间 = 计算量 / CPU频率
-        execution_time = dag.total_comp[node_id] / max(cpu_freq, 1e-6)
+
+        # 执行时间 = 剩余计算量 / CPU频率
+        execution_time = float(dag.rem_comp[node_id]) / max(cpu_freq, 1e-6)
         
         # ============================================================
         # 步骤3.6：计算CT（Completion Time）

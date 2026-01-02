@@ -20,7 +20,6 @@ def test_train_smoke_outputs_metrics(tmp_path):
     env = os.environ.copy()
     env.update({
         "CFG_PROFILE": "train_ready_v1",
-        "REWARD_MODE": "delta_cft",
         "BONUS_MODE": "none",
         "DEVICE_NAME": "cpu",
         "SEED": "7",
@@ -49,7 +48,6 @@ def test_train_smoke_outputs_metrics(tmp_path):
     assert snapshot_path.exists()
 
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert snapshot["env"]["REWARD_MODE"] == "delta_cft"
     assert str(snapshot["env"]["SEED"]) == "7"
 
     header = metrics_csv.read_text(encoding="utf-8").splitlines()[0].split(",")

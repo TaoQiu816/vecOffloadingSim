@@ -26,7 +26,8 @@ def test_delta_cft_remaining_time_formula_prevents_time_drift(monkeypatch):
 
         actions = [{"target": 0, "power": 1.0} for _ in env.vehicles]
         _, rewards, _, _, _ = env.step(actions)
-        assert all(abs(r) < 1e-6 for r in rewards)
+        expected = -10.0 * Cfg.DT
+        assert all(abs(r - expected) < 1e-3 for r in rewards)
     finally:
         Cfg.REWARD_MODE = orig["REWARD_MODE"]
         Cfg.ENERGY_IN_DELTA_CFT = orig["ENERGY_IN_DELTA_CFT"]

@@ -270,25 +270,27 @@ class DAGTask:
         Args:
             subtask_id: 子任务索引
             comp_speed: 计算速度 (cycles/s)
-            comm_speed: 通信速度 (bits/s)
-            dt: 时间步长 (s)
+        comm_speed: 通信速度 (bits/s)
+        dt: 时间步长 (s)
 
         Returns:
-            bool: 该子任务是否在本step完成
+            (bool, float): 该子任务是否在本step完成、通信阶段耗时
         """
         if self.status[subtask_id] != 2:
-            return False
+            return False, 0.0
 
         remaining_dt = dt
+        tx_time_used = 0.0
 
         # 传输阶段
         if self.rem_data[subtask_id] > 0:
             time_to_finish_data = self.rem_data[subtask_id] / (comm_speed + 1e-9)
+            tx_time_used = min(time_to_finish_data, remaining_dt)
             if time_to_finish_data > remaining_dt:
                 # 传输未完成，消耗全部时间
                 transmitted = comm_speed * remaining_dt
                 self.rem_data[subtask_id] -= transmitted
-                return False
+                return False, tx_time_used
             else:
                 # 传输完成，剩余时间用于计算
                 self.rem_data[subtask_id] = 0.0
@@ -301,9 +303,9 @@ class DAGTask:
             if self.rem_comp[subtask_id] <= 0:
                 self.rem_comp[subtask_id] = 0.0
                 self._mark_done(subtask_id)
-                return True
+                return True, tx_time_used
 
-        return False
+        return False, tx_time_used
 
     def _mark_done(self, subtask_id):
         """

@@ -59,7 +59,7 @@ class SystemConfig:
     VEHICLE_ARRIVAL_RATE = 0.2  # 车辆到达率 λ (vehicles/s)，即平均每5秒到达1辆车
     # 如果设为0，则禁用动态生成，只在reset时生成初始车辆
 
-    DT = 0.1  # 仿真时间步长 (s) - 建议0.1s或1.0s，需保证 v_max * DT << R_rsu
+    DT = 0.05  # 仿真时间步长 (s) - 建议0.05s或0.1s，需保证 v_max * DT << R_rsu
     MAX_STEPS = 200  # 每个 Episode 步数
 
     # =========================================================================
@@ -181,8 +181,9 @@ class SystemConfig:
     MAX_EDGE_DATA = 0.6e6  # 600 Kbits (传输约0.06s)
 
     # 计算量 (Cycles) - 负重减轻：让任务更轻量，减少排队积压
-    MIN_COMP = 0.5e8  # ≈ 0.05s 本地计算（从1e8降到0.5e8）
-    MAX_COMP = 2.0e8  # ≈ 0.2s 本地计算（从3e8降到2e8）
+    # 提高单任务计算量，迫使多步或卸载：平均约1.5e9 cycles（本地约0.5s @3GHz）
+    MIN_COMP = 1.0e9
+    MAX_COMP = 2.0e9
 
     # 统一使用标准语法，移除内联类型注释
     MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles)
@@ -279,14 +280,15 @@ class SystemConfig:
     DELAY_WEIGHT = 1.0
     ENERGY_WEIGHT = 0.5
 
-    # H. Reward 模式
-    REWARD_MODE = "incremental_cost"  # {"incremental_cost","delta_cft"}
-    ENERGY_IN_DELTA_CFT = True  # delta_cft模式是否额外加入能耗项
-    DELTA_CFT_SCALE = 5.0  # delta_cft主信号缩放
-    DELTA_CFT_ENERGY_WEIGHT = 0.05  # delta_cft下能耗正则系数
-    DELTA_CFT_REF_MODE = "prev"  # {"prev","const"} 归一化参考
-    DELTA_CFT_REF_CONST = 1.0  # DELTA_CFT_REF_MODE="const"时使用
-    DELTA_CFT_REF_EPS = 1e-6  # 避免除零
+    # H. Reward 模式（绝对潜在值成形）
+    REWARD_MODE = "delta_cft"  # {"incremental_cost","delta_cft"} —— 已切到绝对时间差公式
+    # Scales absolute time savings (seconds) to reward points. 10.0 means 0.1s saved = +1.0 reward.
+    DELTA_CFT_SCALE = 10.0
+    # Penalty weight for normalized energy. 0.5 means max power usage cost is equivalent to 0.05s delay penalty.
+    DELTA_CFT_ENERGY_WEIGHT = 0.5
+    # 绝对时间差裁剪范围，防止估计跳变导致梯度爆炸
+    DELTA_CFT_CLIP_MIN = -1.0
+    DELTA_CFT_CLIP_MAX = 1.0
 
     # H. 奖励范围控制
     REWARD_MAX = 30.0    # 奖励上限（扩大以容纳SUCCESS_BONUS）

@@ -12,7 +12,6 @@ def test_env_overrides_take_effect(tmp_path):
     env.update(
         {
             "CFG_PROFILE": "train_ready_v4",
-            "REWARD_MODE": "delta_cft",
             "BONUS_MODE": "none",
             "DEVICE_NAME": "cpu",
             "SEED": "7",

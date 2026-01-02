@@ -104,7 +104,6 @@ def _parse_args():
     parser.add_argument("--log-interval", type=int, default=None)
     parser.add_argument("--eval-interval", type=int, default=None)
     parser.add_argument("--save-interval", type=int, default=None)
-    parser.add_argument("--reward-mode", type=str, default=None)
     parser.add_argument("--bonus-mode", type=str, default=None)
     parser.add_argument("--cfg-profile", type=str, default=None)
     parser.add_argument("--run-id", type=str, default=None)
@@ -450,7 +449,6 @@ def main():
     if os.environ.get("EPISODE_JSONL_STDOUT") is None:
         Cfg.EPISODE_JSONL_STDOUT = False
 
-    env_reward_mode = _env_str("REWARD_MODE")
     env_bonus_mode = _env_str("BONUS_MODE")
     env_seed = _env_int("SEED")
     env_max_episodes = _env_int("MAX_EPISODES")
@@ -466,10 +464,8 @@ def main():
     env_time_penalty_k = _env_float("TIME_LIMIT_PENALTY_K")
     env_time_penalty_clip = _env_float("TIME_LIMIT_PENALTY_RATIO_CLIP")
 
-    reward_mode = args.reward_mode or env_reward_mode or Cfg.REWARD_MODE
+    # 固定使用配置内的单一奖励模式，不再响应外部 override
     bonus_mode = args.bonus_mode or env_bonus_mode or Cfg.BONUS_MODE
-    if reward_mode:
-        Cfg.REWARD_MODE = reward_mode
     if bonus_mode:
         Cfg.BONUS_MODE = bonus_mode
 
@@ -581,7 +577,6 @@ def main():
     os.environ["RUN_ID"] = run_id
     os.environ["RUN_DIR"] = run_dir
     os.environ["MAX_EPISODES"] = str(TC.MAX_EPISODES)
-    os.environ["REWARD_MODE"] = str(Cfg.REWARD_MODE)
     os.environ["SEED"] = str(Cfg.SEED)
 
     reward_jsonl_path = os.environ.get("REWARD_JSONL_PATH")
@@ -611,6 +606,9 @@ def main():
     config_dict = {}
     for k, v in Cfg.__dict__.items():
         if k.startswith('__') or isinstance(v, (staticmethod, classmethod)) or callable(v):
+            continue
+        if k == "REWARD_MODE":
+            # 单一奖励方案，无模式选择；避免在快照中暴露已废弃字段
             continue
         config_dict[k] = v
     
@@ -642,7 +640,6 @@ def main():
 
     env_snapshot = {
         "CFG_PROFILE": os.environ.get("CFG_PROFILE"),
-        "REWARD_MODE": os.environ.get("REWARD_MODE"),
         "BONUS_MODE": os.environ.get("BONUS_MODE"),
         "SEED": os.environ.get("SEED"),
         "RUN_ID": run_id,
@@ -661,7 +658,6 @@ def main():
 
     # 打印生效配置表（stdout仅保留这一张表 + 训练表格行）
     info_rows = [
-        ("REWARD_MODE", Cfg.REWARD_MODE),
         ("SEED", Cfg.SEED),
         ("DT", Cfg.DT),
         ("MAX_STEPS", TC.MAX_STEPS),
@@ -727,7 +723,6 @@ def main():
         "episode",
         "steps",
         "elapsed_sec",
-        "reward_mode",
         "seed",
         "terminated",
         "truncated",
@@ -751,6 +746,21 @@ def main():
         "reward_min",
         "reward_max",
         "reward_abs_mean",
+        "dT_mean",
+        "cft_prev_rem_mean",
+        "cft_curr_rem_mean",
+        "dCFT_abs_mean",
+        "dCFT_abs_p95",
+        "dCFT_rem_mean",
+        "dCFT_rem_p95",
+        "dt_used_mean",
+        "implied_dt_mean",
+        "dT_eff_mean",
+        "dT_eff_p95",
+        "energy_norm_mean",
+        "energy_norm_p95",
+        "t_tx_mean",
+        "reward_step_p95",
         # CFT metrics: mean_cft is absolute mean; delta_cft_rem is remaining-time delta
         "mean_cft",
         "delta_cft_rem_mean",
@@ -1066,6 +1076,21 @@ def main():
             delta_cft_rem_mean = env_metrics.get("delta_cft.mean")
         if delta_cft_rem_p95 is None:
             delta_cft_rem_p95 = env_metrics.get("delta_cft.p95")
+        dT_mean = env_stats.get("dT_mean") if env_stats else env_metrics.get("delta_cft.mean")
+        cft_prev_rem_mean = env_stats.get("cft_prev_rem_mean") if env_stats else env_metrics.get("cft_prev_rem.mean")
+        cft_curr_rem_mean = env_stats.get("cft_curr_rem_mean") if env_stats else env_metrics.get("cft_curr_rem.mean")
+        dT_eff_mean = env_stats.get("dT_eff_mean") if env_stats else env_metrics.get("dT_eff.mean")
+        dT_eff_p95 = env_stats.get("dT_eff_p95") if env_stats else env_metrics.get("dT_eff.p95")
+        energy_norm_mean = env_stats.get("energy_norm_mean") if env_stats else env_metrics.get("energy_norm.mean")
+        energy_norm_p95 = env_stats.get("energy_norm_p95") if env_stats else env_metrics.get("energy_norm.p95")
+        t_tx_mean = env_stats.get("t_tx_mean") if env_stats else env_metrics.get("t_tx.mean")
+        dt_used_mean = env_stats.get("dt_used_mean") if env_stats else env_metrics.get("dt_used.mean")
+        implied_dt_mean = env_stats.get("implied_dt_mean")
+        dCFT_abs_mean = env_stats.get("dCFT_abs_mean") if env_stats else env_metrics.get("delta_cft_abs.mean")
+        dCFT_abs_p95 = env_stats.get("dCFT_abs_p95") if env_stats else env_metrics.get("delta_cft_abs.p95")
+        dCFT_rem_mean = env_stats.get("dCFT_rem_mean") if env_stats else env_metrics.get("delta_cft_rem.mean")
+        dCFT_rem_p95 = env_stats.get("dCFT_rem_p95") if env_stats else env_metrics.get("delta_cft_rem.p95")
+        reward_step_p95 = env_stats.get("reward_step_p95") if env_stats else env_metrics.get("reward_step.p95")
         episode_time_seconds = env_stats.get("episode_time_seconds") if env_stats else (env.time if env else None)
         mean_cft_est = env_stats.get("mean_cft_est") if env_stats else None
         mean_cft_completed = env_stats.get("mean_cft_completed") if env_stats else None
@@ -1217,7 +1242,6 @@ def main():
             "episode": episode,
             "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
             "elapsed_sec": duration,
-            "reward_mode": env_stats.get("reward_mode", Cfg.REWARD_MODE) if env_stats else Cfg.REWARD_MODE,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
             "terminated": terminated_flag,
             "truncated": truncated_flag,
@@ -1245,6 +1269,21 @@ def main():
             "reward_min": reward_min,
             "reward_max": reward_max,
             "reward_abs_mean": reward_abs_mean,
+            "dT_mean": dT_mean if dT_mean is not None else 0.0,
+            "cft_prev_rem_mean": cft_prev_rem_mean if cft_prev_rem_mean is not None else 0.0,
+            "cft_curr_rem_mean": cft_curr_rem_mean if cft_curr_rem_mean is not None else 0.0,
+            "dCFT_abs_mean": dCFT_abs_mean if dCFT_abs_mean is not None else 0.0,
+            "dCFT_abs_p95": dCFT_abs_p95 if dCFT_abs_p95 is not None else 0.0,
+            "dCFT_rem_mean": dCFT_rem_mean if dCFT_rem_mean is not None else 0.0,
+            "dCFT_rem_p95": dCFT_rem_p95 if dCFT_rem_p95 is not None else 0.0,
+            "dt_used_mean": dt_used_mean if dt_used_mean is not None else 0.0,
+            "implied_dt_mean": implied_dt_mean if implied_dt_mean is not None else ( (dT_mean if dT_mean is not None else 0.0) - (dT_eff_mean if dT_eff_mean is not None else 0.0)),
+            "dT_eff_mean": dT_eff_mean if dT_eff_mean is not None else 0.0,
+            "dT_eff_p95": dT_eff_p95 if dT_eff_p95 is not None else 0.0,
+            "energy_norm_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
+            "energy_norm_p95": energy_norm_p95 if energy_norm_p95 is not None else 0.0,
+            "t_tx_mean": t_tx_mean if t_tx_mean is not None else 0.0,
+            "reward_step_p95": reward_step_p95 if reward_step_p95 is not None else 0.0,
             # CFT: absolute mean and remaining-time delta (delta_cft_rem)
             "mean_cft": mean_cft,
             "delta_cft_rem_mean": delta_cft_rem_mean,
@@ -1325,11 +1364,27 @@ def main():
             tb.add_scalar("reward/p95", reward_p95, episode)
             if reward_abs_mean is not None:
                 tb.add_scalar("reward/abs_mean", reward_abs_mean, episode)
+            if dT_mean is not None:
+                tb.add_scalar("reward/dT_mean", dT_mean, episode)
+            if dT_eff_mean is not None:
+                tb.add_scalar("reward/dT_eff_mean", dT_eff_mean, episode)
+            if dt_used_mean is not None:
+                tb.add_scalar("reward/dt_used_mean", dt_used_mean, episode)
+            if implied_dt_mean is not None:
+                tb.add_scalar("reward/implied_dt_mean", implied_dt_mean, episode)
+            if energy_norm_mean is not None:
+                tb.add_scalar("energy/energy_norm_mean", energy_norm_mean, episode)
+            if t_tx_mean is not None:
+                tb.add_scalar("tx/t_tx_mean", t_tx_mean, episode)
             # CFT
             if mean_cft_est is not None:
                 tb.add_scalar("cft/mean_est", mean_cft_est, episode)
             if mean_cft_completed is not None:
                 tb.add_scalar("cft/mean_completed", mean_cft_completed, episode)
+            if cft_prev_rem_mean is not None:
+                tb.add_scalar("cft/prev_rem_mean", cft_prev_rem_mean, episode)
+            if cft_curr_rem_mean is not None:
+                tb.add_scalar("cft/curr_rem_mean", cft_curr_rem_mean, episode)
             if delta_cft_rem_mean is not None:
                 tb.add_scalar("cft/delta_cft_rem_mean", delta_cft_rem_mean, episode)
             if episode_time_seconds is not None:

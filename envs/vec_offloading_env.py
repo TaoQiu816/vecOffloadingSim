@@ -11,6 +11,29 @@ from utils.dag_generator import DAGGenerator
 from utils.reward_stats import RewardStats, ReservoirSampler
 
 
+def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt, reward_min, reward_max, hard_triggered=False, illegal_action=False):
+    """绝对潜在值奖励：仅依赖剩余时间差与动作功率，便于权重外调。"""
+    dT_clipped = float(np.clip(float(np.nan_to_num(dT_rem, nan=0.0, posinf=0.0, neginf=0.0)), Cfg.DELTA_CFT_CLIP_MIN, Cfg.DELTA_CFT_CLIP_MAX))
+    dT_eff = dT_clipped - float(dt)
+    t_tx_clipped = float(np.clip(np.nan_to_num(t_tx, nan=0.0, posinf=0.0, neginf=0.0), 0.0, dt))
+    p_watt = float(np.nan_to_num(p_max_watt, nan=0.0, posinf=0.0, neginf=0.0))
+    p_circuit = float(getattr(Cfg, "P_CIRCUIT_WATT", 0.0))
+    p_tx = float(np.nan_to_num(power_ratio, nan=0.0, posinf=0.0, neginf=0.0)) * p_watt
+    e_step = (p_tx + p_circuit) * float(dt)
+    e_max = max((p_watt + p_circuit) * float(dt), 1e-12)
+    energy_norm = float(np.clip(e_step / e_max, 0.0, 1.0))
+    # 线性组合：时间收益 - 能耗惩罚；权重完全由配置驱动
+    reward = reward_min if (hard_triggered or illegal_action) else (Cfg.DELTA_CFT_SCALE * dT_clipped - Cfg.DELTA_CFT_ENERGY_WEIGHT * energy_norm)
+    reward = float(np.clip(reward, reward_min, reward_max))
+    return reward, {
+        "dT": dT_clipped,
+        "dT_eff": dT_eff,
+        "energy_norm": energy_norm,
+        "t_tx": t_tx_clipped,
+        "dt_used": float(dt),
+    }
+
+
 class VecOffloadingEnv(gym.Env):
     """车联网边缘计算任务卸载环境 (Gymnasium接口)
 
@@ -89,7 +112,13 @@ class VecOffloadingEnv(gym.Env):
         self._diag_cost_rsu_sum = 0.0
         self._diag_cost_v2v_sum = 0.0
         self._diag_cost_v2v_better = 0
+        self._episode_dT_eff_values = []
+        self._episode_energy_norm_values = []
+        self._episode_t_tx_values = []
         self._last_obs_stamp = None
+        self._episode_dT_eff_values = []
+        self._episode_energy_norm_values = []
+        self._episode_t_tx_values = []
 
         # 归一化常数（预先计算倒数以提高性能）
         self._inv_map_size = 1.0 / Cfg.MAP_SIZE
@@ -575,6 +604,25 @@ class VecOffloadingEnv(gym.Env):
             return self._rate_norm_v2i if link_type == 'V2I' else self._rate_norm_v2v
         return Cfg.NORM_MAX_RATE_V2I if link_type == 'V2I' else Cfg.NORM_MAX_RATE_V2V
 
+    def _power_ratio_from_dbm(self, power_dbm):
+        p_min = getattr(Cfg, "TX_POWER_MIN_DBM", power_dbm)
+        p_max = getattr(Cfg, "TX_POWER_MAX_DBM", p_min)
+        denom = p_max - p_min
+        if denom <= 0:
+            return 0.0
+        return float(np.clip((power_dbm - p_min) / denom, 0.0, 1.0))
+
+    def _get_p_max_watt(self, target):
+        if target == 'Local':
+            return 0.0
+        if self._is_rsu_location(target):
+            p_dbm = getattr(Cfg, "TX_POWER_UP_DBM", getattr(Cfg, "TX_POWER_MAX_DBM", getattr(Cfg, "TX_POWER_MIN_DBM", 20.0)))
+        elif isinstance(target, int):
+            p_dbm = getattr(Cfg, "TX_POWER_V2V_DBM", getattr(Cfg, "TX_POWER_MAX_DBM", getattr(Cfg, "TX_POWER_MIN_DBM", 20.0)))
+        else:
+            p_dbm = getattr(Cfg, "TX_POWER_MAX_DBM", getattr(Cfg, "TX_POWER_MIN_DBM", 20.0))
+        return Cfg.dbm2watt(p_dbm)
+
     def _build_task_locations_pi0(self, vehicle):
         num_tasks = vehicle.task_dag.num_subtasks
         task_locations = ['Local'] * num_tasks
@@ -620,6 +668,36 @@ class VecOffloadingEnv(gym.Env):
             return snapshot_time
         return float(np.mean(cft_list))
 
+    def _compute_vehicle_cfts_snapshot(self, snapshot_time, vehicle_ids=None):
+        vehicle_cfts = []
+        vehicles = self.vehicles
+        if vehicle_ids is not None:
+            vehicles = [self._get_vehicle_by_id(vid) for vid in vehicle_ids]
+        for v in vehicles:
+            if v is None:
+                vehicle_cfts.append(np.nan)
+                continue
+            if v.task_dag.is_finished:
+                vehicle_cfts.append(snapshot_time)
+                continue
+            task_locations = self._build_task_locations_pi0(v)
+            try:
+                from envs.modules.time_calculator import calculate_est_ct
+                _, _, cft = calculate_est_ct(
+                    v,
+                    v.task_dag,
+                    task_locations,
+                    self.channel,
+                    self.rsus,
+                    self.vehicles,
+                    snapshot_time,
+                    v2i_user_count=self._estimate_v2i_users(),
+                )
+                vehicle_cfts.append(cft)
+            except Exception:
+                vehicle_cfts.append(np.nan)
+        return vehicle_cfts
+
     def _record_illegal_action(self, vehicle_id, reason):
         self._reward_stats.add_counter("illegal_action_count")
         if reason:
@@ -648,7 +726,6 @@ class VecOffloadingEnv(gym.Env):
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "time_limit_rate": 1.0 if (truncated and not terminated) else 0.0,
-            "reward_mode": Cfg.REWARD_MODE,
             "bonus_mode": Cfg.BONUS_MODE,
             "norm_rate_mode": Cfg.NORM_RATE_MODE,
             "dist_penalty_mode": Cfg.DIST_PENALTY_MODE,
@@ -730,6 +807,33 @@ class VecOffloadingEnv(gym.Env):
                     if vals:
                         cft_completed.append(max(vals))
         extra["mean_cft_completed"] = float(np.mean(cft_completed)) if cft_completed else float("nan")
+        cft_prev_bucket = self._reward_stats.metrics.get("cft_prev_rem")
+        cft_curr_bucket = self._reward_stats.metrics.get("cft_curr_rem")
+        dT_bucket = self._reward_stats.metrics.get("delta_cft")
+        dT_rem_bucket = self._reward_stats.metrics.get("delta_cft_rem")
+        dT_abs_bucket = self._reward_stats.metrics.get("delta_cft_abs")
+        reward_step_bucket = self._reward_stats.metrics.get("reward_step")
+        dt_used_bucket = self._reward_stats.metrics.get("dt_used")
+        extra["cft_prev_rem_mean"] = cft_prev_bucket.mean() if cft_prev_bucket else 0.0
+        extra["cft_curr_rem_mean"] = cft_curr_bucket.mean() if cft_curr_bucket else 0.0
+        extra["dT_mean"] = dT_rem_bucket.mean() if dT_rem_bucket else 0.0
+        extra["dT_p95"] = dT_rem_bucket.p95() if dT_rem_bucket else 0.0
+        # 绝对/剩余 CFT 差分，用于快速定位估计是否在动
+        extra["dCFT_abs_mean"] = dT_abs_bucket.mean() if dT_abs_bucket else 0.0
+        extra["dCFT_abs_p95"] = dT_abs_bucket.p95() if dT_abs_bucket else 0.0
+        extra["dCFT_rem_mean"] = dT_rem_bucket.mean() if dT_rem_bucket else 0.0
+        extra["dCFT_rem_p95"] = dT_rem_bucket.p95() if dT_rem_bucket else 0.0
+        dT_samples = np.array(self._episode_dT_eff_values, dtype=float) if self._episode_dT_eff_values else np.array([0.0])
+        energy_samples = np.array(self._episode_energy_norm_values, dtype=float) if self._episode_energy_norm_values else np.array([0.0])
+        t_tx_samples = np.array(self._episode_t_tx_values, dtype=float) if self._episode_t_tx_values else np.array([0.0])
+        extra["dT_eff_mean"] = float(np.mean(dT_samples)) if np.isfinite(np.mean(dT_samples)) else 0.0
+        extra["dT_eff_p95"] = float(np.percentile(dT_samples, 95)) if dT_samples.size > 0 else 0.0
+        extra["energy_norm_mean"] = float(np.mean(energy_samples)) if np.isfinite(np.mean(energy_samples)) else 0.0
+        extra["energy_norm_p95"] = float(np.percentile(energy_samples, 95)) if energy_samples.size > 0 else 0.0
+        extra["t_tx_mean"] = float(np.mean(t_tx_samples)) if np.isfinite(np.mean(t_tx_samples)) else 0.0
+        extra["dt_used_mean"] = dt_used_bucket.mean() if dt_used_bucket else 0.0
+        extra["implied_dt_mean"] = extra["dT_mean"] - extra["dT_eff_mean"]
+        extra["reward_step_p95"] = reward_step_bucket.p95() if reward_step_bucket else 0.0
         # 诊断：动作可用性/邻居/V2V速率
         steps = max(self._diag_steps, 1)
         extra["avail_L"] = self._diag_avail_l_sum / steps
@@ -757,6 +861,9 @@ class VecOffloadingEnv(gym.Env):
                 extra[k] = None
         self._assert_metric_bounds(extra)
         json_line = self._reward_stats.to_json_line(extra=extra)
+        self._episode_dT_eff_values = []
+        self._episode_energy_norm_values = []
+        self._episode_t_tx_values = []
         if Cfg.EPISODE_JSONL_STDOUT:
             print(json_line)
         if self._jsonl_path:
@@ -884,7 +991,7 @@ class VecOffloadingEnv(gym.Env):
                             )
                         self._last_obs_stamp = obs_stamp
 
-        snapshot_time = self.time
+        snapshot_time = self.time  # 奖励时间轴：步前时间
 
         if abs(self.time - self._cache_time_step) > 1e-6:
             self._comm_rate_cache.clear()
@@ -895,21 +1002,17 @@ class VecOffloadingEnv(gym.Env):
         self._dist_matrix_cache = None
         self._rsu_dist_cache.clear()
 
-        cft_prev = None
-        cft_prev_abs = None
-        cft_prev_rem = None
-        v2i_users_prev = None
-        ids_prev = None
-        if Cfg.REWARD_MODE == "delta_cft":
-            ids_prev = [v.id for v in self.vehicles]
-            v2i_users_prev = self._estimate_v2i_users()
-            cft_prev_abs = self._compute_mean_cft_pi0(
-                snapshot_time=snapshot_time,
-                v2i_user_count=v2i_users_prev,
-                vehicle_ids=ids_prev
-            )
-            cft_prev_rem = max(cft_prev_abs - snapshot_time, 0.0)
-            cft_prev = cft_prev_rem
+        ids_prev = [v.id for v in self.vehicles]
+        v2i_users_prev = self._estimate_v2i_users()
+        t_prev = snapshot_time
+        cft_prev_abs = self._compute_mean_cft_pi0(
+            snapshot_time=t_prev,
+            v2i_user_count=v2i_users_prev,
+            vehicle_ids=ids_prev
+        )
+        cft_prev_rem = max(cft_prev_abs - t_prev, 0.0) if cft_prev_abs is not None else 0.0
+        if not np.isfinite(cft_prev_rem):
+            cft_prev_rem = 0.0
 
         step_congestion_cost = 0.0
         active_agents_count = 0
@@ -917,6 +1020,11 @@ class VecOffloadingEnv(gym.Env):
         for v in self.vehicles:
             v.illegal_action = False
             v.illegal_reason = None
+        step_tx_time = {v.id: 0.0 for v in self.vehicles}
+        step_power_ratio = {
+            v.id: self._power_ratio_from_dbm(getattr(v, "tx_power_dbm", getattr(Cfg, "TX_POWER_MIN_DBM", 0.0)))
+            for v in self.vehicles
+        }
 
         # Phase-1: snapshot planning (no queue mutations), then deterministic commit.
         plans = self._plan_actions_snapshot(actions)
@@ -932,6 +1040,7 @@ class VecOffloadingEnv(gym.Env):
                 v.tx_power_dbm = plan["power_dbm"]
                 self._reward_stats.add_metric("power_ratio", plan["power_ratio"])
                 self._reward_stats.add_metric("tx_power_dbm", v.tx_power_dbm)
+                step_power_ratio[v.id] = plan["power_ratio"] if plan["power_ratio"] is not None else step_power_ratio.get(v.id, 0.0)
 
             subtask_idx = plan["subtask_idx"]
             if subtask_idx is None or subtask_idx < 0:
@@ -1041,18 +1150,16 @@ class VecOffloadingEnv(gym.Env):
             c_spd = max(c_spd, 1e-6)
 
             task_finished = False
+            tx_time_used = 0.0
             if v.curr_subtask is not None:
-                task_finished = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
+                task_finished, tx_time_used = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
 
                 if task_finished:
                     # [新增] 子任务成功奖励：任何任务完成都给奖励（全域激励）
                     # 包括Local、RSU、V2V，避免智能体歧视Local任务导致依赖链阻塞
                     if not hasattr(v, 'subtask_reward_buffer'):
                         v.subtask_reward_buffer = 0.0
-                    
-                    # 无论在哪里执行，完成就给奖励（受BONUS_MODE控制）
-                    if Cfg.REWARD_MODE == "incremental_cost" and Cfg.BONUS_MODE in ("subtask", "both"):
-                        v.subtask_reward_buffer += Cfg.SUBTASK_SUCCESS_BONUS
+                    v.subtask_reward_buffer = 0.0
                     
                     # 任务完成时，从队列中移除一个任务（FIFO顺序）
                     if isinstance(tgt, tuple) and tgt[0] == 'RSU':
@@ -1152,6 +1259,7 @@ class VecOffloadingEnv(gym.Env):
                                 'rem_data': transfer_data,
                                 'speed': transfer_speed
                             })
+            step_tx_time[v.id] = np.clip(tx_time_used, 0.0, Cfg.DT)
 
             completed_transfers = []
             for transfer in v.active_transfers:
@@ -1294,71 +1402,35 @@ class VecOffloadingEnv(gym.Env):
                 # 计算下一辆车的到达时间
                 self._next_vehicle_arrival_time = self.time + np.random.exponential(1.0 / Cfg.VEHICLE_ARRIVAL_RATE)
 
-        self.time += Cfg.DT
+        dt_step = Cfg.DT  # 本步实际 dt（传入奖励，避免重复引用全局）
+        self.time += dt_step
 
         if self._audit_enabled():
             self._assert_vehicle_integrity()
 
         rewards = []
-        # 计算每个车辆的CFT（任务完成时间）
-        vehicle_cfts = []
-        for i, v in enumerate(self.vehicles):
-            if v.task_dag.is_finished:
-                vehicle_cfts.append(self.time)
-            else:
-                # 获取任务位置分配
-                task_locations = ['Local'] * v.task_dag.num_subtasks
-                if hasattr(v, 'exec_locations'):
-                    for j in range(v.task_dag.num_subtasks):
-                        if v.exec_locations[j] is not None:
-                            task_locations[j] = v.exec_locations[j]
-                
-                # 当前正在处理的子任务
-                if v.curr_subtask is not None and 0 <= v.curr_subtask < v.task_dag.num_subtasks:
-                    task_locations[v.curr_subtask] = v.curr_target
-                
-                # 使用time_calculator计算该车辆任务的CFT
-                try:
-                    from envs.modules.time_calculator import calculate_est_ct
-                    EST, CT, CFT = calculate_est_ct(
-                        v, v.task_dag, task_locations,
-                        self.channel, self.rsus, self.vehicles, self.time,
-                        v2i_user_count=self._estimate_v2i_users()
-                    )
-                    vehicle_cfts.append(CFT)
-                except Exception as e:
-                    # 如果计算失败，记录缺失
-                    print(f"警告: 计算车辆{i}的CFT失败: {e}")
-                    vehicle_cfts.append(np.nan)
+        vehicle_cfts = self._compute_vehicle_cfts_snapshot(self.time)
         
         # 保存每个车辆的CFT（用于观测和奖励计算）
         self.vehicle_cfts = vehicle_cfts
         # 全局CFT使用所有车辆的最大值（用于兼容旧代码）
         self.last_global_cft = np.nanmax(vehicle_cfts) if len(vehicle_cfts) > 0 and np.any(np.isfinite(vehicle_cfts)) else np.nan
-
-        delta_cft = 0.0
-        if Cfg.REWARD_MODE == "delta_cft":
-            v2i_users_curr = self._estimate_v2i_users()
-            cft_curr_abs = self._compute_mean_cft_pi0(
-                snapshot_time=self.time,
-                v2i_user_count=v2i_users_curr,
-                vehicle_ids=ids_prev
-            )
-            cft_curr_rem = max(cft_curr_abs - self.time, 0.0)
-            if Cfg.DELTA_CFT_REF_MODE == "prev":
-                t_ref = max(cft_prev_rem if cft_prev_rem is not None else 0.0, Cfg.DELTA_CFT_REF_EPS)
-            else:
-                t_ref = max(Cfg.DELTA_CFT_REF_CONST, Cfg.DELTA_CFT_REF_EPS)
-            delta_cft = (cft_prev_rem - cft_curr_rem) / t_ref if cft_prev_rem is not None else 0.0
-            # keep legacy keys while adding remaining-time metrics
-            self._reward_stats.add_metric("delta_cft", delta_cft)
-            self._reward_stats.add_metric("cft_prev", cft_prev_rem if cft_prev_rem is not None else 0.0)
-            self._reward_stats.add_metric("cft_curr", cft_curr_rem)
-            self._reward_stats.add_metric("delta_cft_rem", delta_cft)
-            self._reward_stats.add_metric("cft_prev_abs", cft_prev_abs if cft_prev_abs is not None else 0.0)
-            self._reward_stats.add_metric("cft_curr_abs", cft_curr_abs)
-            self._reward_stats.add_metric("cft_prev_rem", cft_prev_rem if cft_prev_rem is not None else 0.0)
-            self._reward_stats.add_metric("cft_curr_rem", cft_curr_rem)
+        v2i_users_curr = self._estimate_v2i_users()
+        t_curr = self.time
+        cft_curr_abs = self._compute_mean_cft_pi0(
+            snapshot_time=t_curr,
+            v2i_user_count=v2i_users_curr,
+            vehicle_ids=ids_prev
+        )
+        cft_curr_rem = max(cft_curr_abs - t_curr, 0.0) if cft_curr_abs is not None else 0.0
+        if not np.isfinite(cft_curr_rem):
+            cft_curr_rem = 0.0
+        cft_prev_rem = max(cft_prev_rem, 0.0)
+        cft_curr_rem = max(cft_curr_rem, 0.0)
+        dCFT_abs = float(cft_prev_abs - cft_curr_abs) if (cft_prev_abs is not None and cft_curr_abs is not None) else 0.0
+        dT_rem = cft_prev_rem - cft_curr_rem
+        dT = float(np.clip(dT_rem, Cfg.DELTA_CFT_CLIP_MIN, Cfg.DELTA_CFT_CLIP_MAX))
+        dT_eff = dT - dt_step
         
         # 计算奖励
         for i, v in enumerate(self.vehicles):
@@ -1376,59 +1448,62 @@ class VecOffloadingEnv(gym.Env):
 
             # 获取任务计算量（用于基于计算量的队列限制检查）
             task_comp = dag.total_comp[task_idx] if task_idx is not None and task_idx < len(dag.total_comp) else Cfg.MEAN_COMP_LOAD
-            bonus_added = 0.0
-            if Cfg.REWARD_MODE == "incremental_cost":
-                r, components = self.calculate_agent_reward(i, target, task_idx, data_size, task_comp, return_components=True)
-                if components is None:
-                    components = {
-                        "delay_norm": 0.0,
-                        "energy_norm": 0.0,
-                        "r_soft_pen": 0.0,
-                        "r_timeout": 0.0,
-                        "hard_triggered": False,
-                    }
-                if Cfg.BONUS_MODE in ("subtask", "both") and hasattr(v, 'subtask_reward_buffer'):
-                    bonus_added += v.subtask_reward_buffer
-                    self._reward_stats.add_metric("subtask_bonus_added", v.subtask_reward_buffer)
-                    r += v.subtask_reward_buffer
-                    v.subtask_reward_buffer = 0.0
-                else:
-                    if hasattr(v, 'subtask_reward_buffer'):
-                        v.subtask_reward_buffer = 0.0
-                if getattr(v, "last_success_bonus", 0.0) > 0.0:
-                    self._reward_stats.add_metric("success_bonus_added", v.last_success_bonus)
-                    bonus_added += v.last_success_bonus
+            power_ratio = float(np.clip(step_power_ratio.get(v.id, 0.0), 0.0, 1.0))
+            t_tx_raw = float(step_tx_time.get(v.id, 0.0))
+            if target == 'Local':
+                t_tx = 0.0
+            else:
+                t_tx = float(np.clip(t_tx_raw, 0.0, Cfg.DT))
+            p_max_watt = self._get_p_max_watt(target)
+            reward_parts = None
+            if getattr(v, 'illegal_action', False):
+                r = self._record_illegal_action(i, v.illegal_reason)
+                components = {
+                    "delay_norm": 0.0,
+                    "energy_norm": 0.0,
+                    "r_soft_pen": 0.0,
+                    "r_timeout": 0.0,
+                    "hard_triggered": False,
+                }
+                hard_triggered = False
+                reward_parts = compute_absolute_reward(
+                    dT_rem, 0.0, power_ratio, dt_step, p_max_watt,
+                    Cfg.REWARD_MIN, Cfg.REWARD_MAX, hard_triggered=True, illegal_action=True
+                )[1]
+                reward_parts["energy_norm"] = 0.0
                 r = self._clip_reward(r)
             else:
-                if getattr(v, 'illegal_action', False):
-                    r = self._record_illegal_action(i, v.illegal_reason)
-                    components = {
-                        "delay_norm": 0.0,
-                        "energy_norm": 0.0,
-                        "r_soft_pen": 0.0,
-                        "r_timeout": 0.0,
-                        "hard_triggered": False,
-                    }
-                else:
-                    components = self._compute_cost_components(i, target, task_idx, task_comp)
-                    if components["hard_triggered"]:
-                        r = Cfg.REWARD_MIN
-                    else:
-                        r = Cfg.DELTA_CFT_SCALE * delta_cft
-                        if Cfg.ENERGY_IN_DELTA_CFT:
-                            r += -Cfg.DELTA_CFT_ENERGY_WEIGHT * components["energy_norm"]
-                    r = self._clip_reward(r)
-                if hasattr(v, 'subtask_reward_buffer'):
-                    v.subtask_reward_buffer = 0.0
+                components = self._compute_cost_components(i, target, task_idx, task_comp)
+                hard_triggered = components.get("hard_triggered", False)
+                base_reward, reward_parts = compute_absolute_reward(
+                    dT_rem, t_tx, power_ratio, dt_step, p_max_watt,
+                    Cfg.REWARD_MIN, Cfg.REWARD_MAX, hard_triggered=hard_triggered, illegal_action=False
+                )
+                if hard_triggered:
+                    reward_parts["energy_norm"] = 0.0
+                r = self._clip_reward(base_reward)
+            if hasattr(v, 'subtask_reward_buffer'):
+                v.subtask_reward_buffer = 0.0
 
             self._reward_stats.add_counter("reward_count")
-            self._reward_stats.add_metric("delay_norm", components["delay_norm"])
-            self._reward_stats.add_metric("energy_norm", components["energy_norm"])
-            self._reward_stats.add_metric("r_soft_pen", components["r_soft_pen"])
-            self._reward_stats.add_metric("r_timeout", components["r_timeout"])
+            self._reward_stats.add_metric("delay_norm", components.get("delay_norm", 0.0))
+            self._reward_stats.add_metric("energy_norm", reward_parts.get("energy_norm", 0.0) if reward_parts else 0.0)
+            self._reward_stats.add_metric("r_soft_pen", components.get("r_soft_pen", 0.0))
+            self._reward_stats.add_metric("r_timeout", components.get("r_timeout", 0.0))
             self._reward_stats.add_metric("reward_abs", abs(r))
-            ratio = bonus_added / (abs(r) + 1e-6)
-            self._reward_stats.add_metric("bonus_ratio", ratio)
+            self._reward_stats.add_metric("reward_step", r)
+            self._reward_stats.add_metric("bonus_ratio", 0.0)
+            self._reward_stats.add_metric("delta_cft", dT)
+            self._reward_stats.add_metric("delta_cft_rem", dT_rem)
+            self._reward_stats.add_metric("delta_cft_abs", dCFT_abs)
+            self._reward_stats.add_metric("cft_prev_rem", cft_prev_rem)
+            self._reward_stats.add_metric("cft_curr_rem", cft_curr_rem)
+            self._reward_stats.add_metric("dT_eff", dT_eff)
+            self._reward_stats.add_metric("dt_used", dt_step)
+            self._reward_stats.add_metric("t_tx", step_tx_time.get(v.id, 0.0))
+            self._episode_dT_eff_values.append(dT_eff)
+            self._episode_energy_norm_values.append(reward_parts.get("energy_norm", 0.0) if reward_parts else 0.0)
+            self._episode_t_tx_values.append(step_tx_time.get(v.id, 0.0))
 
             rewards.append(r)
 
@@ -2680,13 +2755,9 @@ class VecOffloadingEnv(gym.Env):
             self._reward_stats.add_counter("clip_hit_max")
         return np.clip(reward, Cfg.REWARD_MIN, Cfg.REWARD_MAX)
 
-    def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0, task_comp=None, return_components=False):
+    def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0, task_comp=None, return_components=False, cft_prev_rem=None, cft_curr_rem=None, power_ratio=None, t_tx=None):
         """
         [MAPPO奖励函数] 计算单个智能体的奖励
-        
-        采用"掩码覆盖"设计：
-        - 硬约束触发时直接返回REWARD_MIN
-        - 否则计算 r = -α*delay - β*energy + r_soft_pen
 
         Args:
             vehicle_id: 车辆ID
@@ -2702,26 +2773,47 @@ class VecOffloadingEnv(gym.Env):
         dag = v.task_dag
 
         v.last_success_bonus = 0.0
-        if getattr(v, 'illegal_action', False):
-            reward = self._record_illegal_action(vehicle_id, v.illegal_reason)
-            return (reward, None) if return_components else reward
-
+        illegal_flag = getattr(v, 'illegal_action', False)
         components = self._compute_cost_components(vehicle_id, target, task_idx, task_comp)
+        hard_triggered = components.get("hard_triggered", False)
 
-        if components["hard_triggered"]:
-            reward = Cfg.REWARD_MIN
-            return (reward, components) if return_components else reward
+        snapshot_time = self.time
+        if cft_prev_rem is None or cft_curr_rem is None:
+            cft_abs = self._compute_mean_cft_pi0(snapshot_time=snapshot_time, vehicle_ids=[v.id])
+            cft_prev_rem = max(cft_abs - snapshot_time, 0.0) if cft_abs is not None else 0.0
+            cft_curr_rem = cft_prev_rem
 
-        reward = (-Cfg.DELAY_WEIGHT * components["delay_norm"] -
-                  Cfg.ENERGY_WEIGHT * components["energy_norm"] +
-                  components["r_soft_pen"] +
-                  components["r_timeout"])
+        if power_ratio is None:
+            power_ratio = self._power_ratio_from_dbm(getattr(v, "tx_power_dbm", getattr(Cfg, "TX_POWER_MIN_DBM", 0.0)))
+        if t_tx is None:
+            t_tx = 0.0
+        t_tx = float(np.clip(t_tx, 0.0, Cfg.DT))
+        if target == 'Local':
+            t_tx = 0.0
+        p_max_watt = self._get_p_max_watt(target)
+        dT_rem = cft_prev_rem - cft_curr_rem
 
-        if Cfg.REWARD_MODE == "incremental_cost" and Cfg.BONUS_MODE in ("success", "both"):
-            if dag.is_finished and not dag.is_failed:
-                reward += Cfg.SUCCESS_BONUS
-                v.last_success_bonus = Cfg.SUCCESS_BONUS
-
+        reward, parts = compute_absolute_reward(
+            dT_rem,
+            t_tx,
+            power_ratio,
+            Cfg.DT,
+            p_max_watt,
+            Cfg.REWARD_MIN,
+            Cfg.REWARD_MAX,
+            hard_triggered=hard_triggered or illegal_flag,
+            illegal_action=illegal_flag,
+        )
         reward = self._clip_reward(reward)
 
-        return (reward, components) if return_components else reward
+        out_components = {
+            "delay_norm": components.get("delay_norm", 0.0),
+            "energy_norm": parts.get("energy_norm", 0.0),
+            "r_soft_pen": components.get("r_soft_pen", 0.0),
+            "r_timeout": components.get("r_timeout", 0.0),
+            "hard_triggered": hard_triggered,
+            "dT_eff": parts.get("dT_eff", 0.0),
+            "t_tx": parts.get("t_tx", 0.0),
+        }
+
+        return (reward, out_components) if return_components else reward
