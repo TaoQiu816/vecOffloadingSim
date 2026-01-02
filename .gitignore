@@ -11,7 +11,7 @@ ENV/
 env/
 
 # 训练输出
-runs/
+# runs/
 logs/
 models/*.pth
 *.pth
@@ -60,3 +60,6 @@ htmlcov/
 # 文档构建
 docs/_build/
 docs/build/
+
+# 忽略所有目录下的 step_log.csv 文件
+**/step_log.csv
