@@ -329,13 +329,13 @@ class SystemConfig:
                                         # 影响: 仅作文档参考，实际使用MIN/MAX随机采样
                                         # Impact: For documentation only; actual uses MIN/MAX random sampling
     
-    DEADLINE_TIGHTENING_MIN = 0.70      # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，0.70表示本地时间的70%
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 0.70 means 70% of local time
+    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，1.0表示本地时间的100%（放宽以提升成功率）
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 1.0 means 100% of local time (relaxed for success)
     
-    DEADLINE_TIGHTENING_MAX = 0.80      # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，0.80表示本地时间的80%
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 0.80 means 80% of local time
+    DEADLINE_TIGHTENING_MAX = 1.2       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，1.2表示本地时间的120%（课程学习策略）
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 1.2 means 120% of local time (curriculum learning)
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
@@ -487,7 +487,7 @@ class SystemConfig:
     CONG_GAMMA = 2.0                # 拥塞敏感度（已废弃）- Congestion sensitivity (deprecated)
     DELAY_WEIGHT = 1.0              # 时延权重（已废弃）- Delay weight (deprecated)
     ENERGY_WEIGHT = 0.2             # 能耗权重（已废弃，与DELTA_CFT_ENERGY_WEIGHT同步）- Energy weight (deprecated, sync with DELTA_CFT_ENERGY_WEIGHT)
-    
+
     # =========================================================================
     # 7. 调试与日志参数 (Debug & Logging)
     # =========================================================================
@@ -509,7 +509,7 @@ class SystemConfig:
     RESOURCE_RAW_DIM = 14           # 资源原始特征维度 - Resource raw feature dimension
                                     # 影响: 11原始特征 + 3时间预估特征
                                     # Impact: 11 raw features + 3 time estimation features
-    
+
     # =========================================================================
     # 9. 统计与采样参数 (Statistics & Sampling)
     # =========================================================================

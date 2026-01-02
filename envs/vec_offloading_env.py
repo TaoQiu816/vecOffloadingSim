@@ -12,13 +12,25 @@ from utils.reward_stats import RewardStats, ReservoirSampler
 
 
 def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt, reward_min, reward_max, hard_triggered=False, illegal_action=False):
-    """绝对潜在值奖励：仅依赖剩余时间差与动作功率，便于权重外调。"""
+    """
+    绝对潜在值奖励：仅依赖剩余时间差与动作功率，便于权重外调。
+    
+    能耗计算说明：
+    - 当前实现：E = (p_tx + p_circuit) * dt （传输能耗）
+    - 计算能耗：E_comp = K * f^2 * cycles （未显式计入）
+    - 设计理由：
+      1. 对于单车辆offloading决策，传输能耗是主要因素
+      2. Local执行无传输能耗，只有固定计算能耗
+      3. RSU/V2V执行的远程计算能耗由远程节点承担
+    - 扩展方向：如需系统级能耗优化，可传入comp_cycles和cpu_freq参数
+    """
     dT_clipped = float(np.clip(float(np.nan_to_num(dT_rem, nan=0.0, posinf=0.0, neginf=0.0)), Cfg.DELTA_CFT_CLIP_MIN, Cfg.DELTA_CFT_CLIP_MAX))
     dT_eff = dT_clipped - float(dt)
     t_tx_clipped = float(np.clip(np.nan_to_num(t_tx, nan=0.0, posinf=0.0, neginf=0.0), 0.0, dt))
     p_watt = float(np.nan_to_num(p_max_watt, nan=0.0, posinf=0.0, neginf=0.0))
     p_circuit = float(getattr(Cfg, "P_CIRCUIT_WATT", 0.0))
     p_tx = float(np.nan_to_num(power_ratio, nan=0.0, posinf=0.0, neginf=0.0)) * p_watt
+    # 能耗组成：传输能耗（当前）+ 计算能耗（可扩展）
     e_step = (p_tx + p_circuit) * float(dt)
     e_max = max((p_watt + p_circuit) * float(dt), 1e-12)
     energy_norm = float(np.clip(e_step / e_max, 0.0, 1.0))
@@ -139,9 +151,51 @@ class VecOffloadingEnv(gym.Env):
         # 动态车辆统计：记录整个episode出现过的车辆ID
         self._vehicles_seen = set()
         self._last_obs_stamp = None
+        
+        # =====================================================================
+        # 单位一致性检查（Units Sanity Check）
+        # =====================================================================
+        # 验证数据量（bits）和带宽（Hz -> bps）单位一致性
+        mean_data_bits = (Cfg.MIN_DATA + Cfg.MAX_DATA) / 2  # bits
+        mean_bandwidth = Cfg.BW_V2I / max(Cfg.NUM_VEHICLES // 5, 1)  # Hz (shared)
+        # 假设SINR=10 (10dB) → log2(11)≈3.46
+        typical_sinr = 10.0
+        typical_rate_bps = mean_bandwidth * np.log2(1 + typical_sinr)  # bps
+        typical_tx_time = mean_data_bits / typical_rate_bps  # seconds
+        
+        assert typical_tx_time > 0.01, (
+            f"❌ 单位缩放错误：典型传输时间为 {typical_tx_time*1000:.2f}ms < 10ms！"
+            f"请检查 DATA_SIZE (当前:{Cfg.MIN_DATA:.2e}-{Cfg.MAX_DATA:.2e} bits) "
+            f"和 BW_V2I (当前:{Cfg.BW_V2I:.2e} Hz) 的单位是否一致。"
+        )
+        assert typical_tx_time < 1.0, (
+            f"⚠️  单位缩放警告：典型传输时间为 {typical_tx_time:.2f}s > 1s，"
+            f"可能导致任务超时。考虑增加带宽或减少数据量。"
+        )
 
     def _audit_enabled(self):
         return os.environ.get("AUDIT_ASSERTS", "").lower() in ("1", "true", "yes")
+    
+    def _get_node_delay(self, node):
+        """
+        统一获取节点的延迟估计（处理器共享模型）
+        
+        Args:
+            node: Vehicle or RSU实例
+        Returns:
+            float: 估计延迟（秒）- 当前负载下的平均剩余执行时间
+        
+        注意：处理器共享模型中，新任务立即开始执行（无等待），
+        但速度会因负载增加而变慢。此函数返回的是当前平均负载延迟。
+        """
+        if hasattr(node, 'get_estimated_delay'):
+            # 使用新的处理器共享模型
+            return node.get_estimated_delay()
+        else:
+            # 向后兼容：使用旧的FIFO模型
+            if hasattr(node, 'task_queue'):
+                return node.task_queue.get_estimated_wait_time(node.cpu_freq)
+            return 0.0
 
     def _simulate_enqueue_capacity(self, queue_like, task_cycles):
         if task_cycles is None:
@@ -496,7 +550,8 @@ class VecOffloadingEnv(gym.Env):
             )
             rate = max(rate, 1e-6)
             tx_time = task_data / rate if task_data > 0 else 0.0
-            wait_time = rsu.get_estimated_wait_time()
+            # [处理器共享] 使用新的延迟估算方法
+            wait_time = self._get_node_delay(rsu)
             comp_time = task_comp / max(rsu.cpu_freq, 1e-6)
             metric = tx_time + wait_time + comp_time
 
@@ -575,6 +630,35 @@ class VecOffloadingEnv(gym.Env):
             if veh.id == veh_id:
                 return veh
         return None
+    
+    def _handle_task_completion(self, task, compute_node):
+        """
+        处理任务完成事件（新物理引擎回调）
+        
+        连接物理层（ActiveTaskManager）与逻辑层（DAG状态）
+        
+        Args:
+            task: 完成的ActiveTask对象
+            compute_node: 执行节点（Vehicle或RSU）
+        """
+        # 找到任务所属车辆
+        owner_vehicle = self._get_vehicle_by_id(task.owner_id)
+        if owner_vehicle is None:
+            # 车辆可能已离开场景
+            return
+        
+        # 更新DAG状态：标记子任务完成
+        subtask_id = task.subtask_id
+        if subtask_id < len(owner_vehicle.task_dag.status):
+            owner_vehicle.task_dag._mark_done(subtask_id)
+        
+        # 从计算节点的Active中移除（已由step()自动完成）
+        # 从旧队列中移除（向后兼容）
+        if hasattr(compute_node, 'task_queue'):
+            if compute_node.task_queue.get_queue_length() > 0:
+                compute_node.task_queue.dequeue_one()
+            if hasattr(compute_node, 'update_queue_sync'):
+                compute_node.update_queue_sync()
 
     def _update_rate_norm(self, rate, link_type):
         # 归一化模式已固化为static，此方法保留以兼容接口调用
@@ -1078,15 +1162,56 @@ class VecOffloadingEnv(gym.Env):
                         v.curr_target = 'Local'
                         if not v.is_queue_full(new_task_cycles=task_comp):
                             v.task_queue.enqueue(task_comp)
+                    # [修复数据传送Bug] RSU任务：不在决策阶段加入Active
+                    # 等待数据传输完成后，在step_progress中handover到计算阶段
+                            
             elif isinstance(actual_target, int):
                 t_veh = self._get_vehicle_by_id(actual_target)
                 if t_veh is not None:
                     t_veh.task_queue.enqueue(task_comp)
+                    # [修复数据传送Bug] V2V任务：不在决策阶段加入Active
+                    # 等待数据传输完成后，在step_progress中handover到计算阶段
                 else:
                     v.illegal_action = True
                     v.illegal_reason = "internal_invariant_violation"
             elif actual_target == 'Local':
                 v.task_queue.enqueue(task_comp)
+                
+                # [集成] 添加任务到ActiveTaskManager（处理器共享模型）
+                # 准入条件检查（硬断言强制执行）
+                task_status_code = v.task_dag.status[subtask_idx]
+                # 状态映射: 0=PENDING, 1=READY, 2=RUNNING, 3=COMPLETED
+                status_map = {0: 'PENDING', 1: 'READY', 2: 'RUNNING', 3: 'COMPLETED'}
+                task_status_str = status_map.get(task_status_code, 'PENDING')
+                
+                # DAG依赖检查：status>=1表示依赖已满足
+                is_dag_ready = (task_status_code >= 1)
+                
+                # Local任务：数据始终在本地，无需传输
+                is_data_ready = True
+                
+                try:
+                    v.add_active_task(
+                        owner_id=v.id,
+                        subtask_id=subtask_idx,
+                        task_type='local',
+                        total_comp=task_comp,
+                        current_time=self.time,
+                        is_dag_ready=is_dag_ready,
+                        is_data_ready=is_data_ready,
+                        task_status=task_status_str
+                    )
+                except AssertionError as e:
+                    # 准入失败：非法调度决策（如PENDING状态任务被调度）
+                    # 记录警告并标记为非法动作
+                    v.illegal_action = True
+                    v.illegal_reason = f"admission_failed: {str(e)[:50]}"
+                    if hasattr(self, '_logger'):
+                        self._logger.warning(
+                            f"[Step{self.steps}] Vehicle{v.id} Local任务准入失败: "
+                            f"subtask={subtask_idx}, status={task_status_str}, "
+                            f"dag_ready={is_dag_ready}, error={str(e)[:80]}"
+                        )
 
             v.last_action_step = self.steps
             v.last_action_target = v.curr_target
@@ -1130,9 +1255,72 @@ class VecOffloadingEnv(gym.Env):
 
             task_finished = False
             tx_time_used = 0.0
+            data_just_arrived = False  # 标记数据是否刚完成传输
+            
             if v.curr_subtask is not None:
-                task_finished, tx_time_used = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
+                # [传输阶段] 处理数据传输
+                subtask_idx = v.curr_subtask
+                rem_data_before = v.task_dag.rem_data[subtask_idx]
+                
+                if rem_data_before > 0:
+                    # 数据还在传输中
+                    time_to_finish_data = rem_data_before / (c_spd + 1e-9)
+                    tx_time_used = min(time_to_finish_data, Cfg.DT)
+                    
+                    if time_to_finish_data > Cfg.DT:
+                        # 传输未完成，消耗全部时间
+                        transmitted = c_spd * Cfg.DT
+                        v.task_dag.rem_data[subtask_idx] -= transmitted
+                    else:
+                        # [关键] 传输刚完成！
+                        v.task_dag.rem_data[subtask_idx] = 0.0
+                        data_just_arrived = True
+                
+                # [Handover逻辑] 数据刚到达时，加入ActiveTaskManager
+                if data_just_arrived and tgt != 'Local':
+                    task_comp = v.task_dag.total_comp[subtask_idx]
+                    task_status_code = v.task_dag.status[subtask_idx]
+                    status_map = {0: 'PENDING', 1: 'READY', 2: 'RUNNING', 3: 'COMPLETED'}
+                    task_status_str = status_map.get(task_status_code, 'PENDING')
+                    is_dag_ready = (task_status_code >= 1)
+                    is_data_ready = True  # 物理真实！数据刚传输完成
+                    
+                    try:
+                        if isinstance(tgt, tuple) and tgt[0] == 'RSU':
+                            rsu_id = tgt[1]
+                            if 0 <= rsu_id < len(self.rsus):
+                                self.rsus[rsu_id].add_active_task(
+                                    owner_id=v.id,
+                                    subtask_id=subtask_idx,
+                                    task_type='v2i',
+                                    total_comp=task_comp,
+                                    current_time=self.time,
+                                    is_dag_ready=is_dag_ready,
+                                    is_data_ready=is_data_ready,
+                                    task_status=task_status_str
+                                )
+                        elif isinstance(tgt, int):
+                            target_veh = self._get_vehicle_by_id(tgt)
+                            if target_veh is not None:
+                                target_veh.add_active_task(
+                                    owner_id=v.id,
+                                    subtask_id=subtask_idx,
+                                    task_type='v2v',
+                                    total_comp=task_comp,
+                                    current_time=self.time,
+                                    is_dag_ready=is_dag_ready,
+                                    is_data_ready=is_data_ready,
+                                    task_status=task_status_str
+                                )
+                    except AssertionError as e:
+                        v.illegal_action = True
+                        v.illegal_reason = f"handover_admission_failed: {str(e)[:50]}"
 
+            # [旧引擎暂时保留，用于任务完成判定]
+            # TODO: 完全切换到新引擎后移除
+            if v.curr_subtask is not None:
+                task_finished, _ = v.task_dag.step_progress(v.curr_subtask, comp_spd, c_spd, Cfg.DT)
+                
                 if task_finished:
                     # [新增] 子任务成功奖励：任何任务完成都给奖励（全域激励）
                     # 包括Local、RSU、V2V，避免智能体歧视Local任务导致依赖链阻塞
@@ -1329,7 +1517,20 @@ class VecOffloadingEnv(gym.Env):
                         v.task_dag.inter_task_transfers[child_id][parent_id]['rem_data'] = 0
 
                 v.task_dag.step_inter_task_transfers(child_id, transfer['speed'], Cfg.DT)
-
+        
+        # ========== [新物理引擎] 处理器共享模型 ==========
+        # 1. RSU计算推进
+        for rsu in self.rsus:
+            finished_tasks = rsu.step(Cfg.DT)
+            for task in finished_tasks:
+                self._handle_task_completion(task, rsu)
+        
+        # 2. 车辆计算推进
+        for v in self.vehicles:
+            finished_tasks = v.step(Cfg.DT)
+            for task in finished_tasks:
+                self._handle_task_completion(task, v)
+            
             # 更新车辆位置（道路模型：一维移动）
             v.update_pos(Cfg.DT, Cfg.MAP_SIZE)
         
@@ -1792,7 +1993,8 @@ class VecOffloadingEnv(gym.Env):
                 v, rsu_pos_for_v2i, 'V2I', curr_time=self.time,
                 v2i_user_count=self._estimate_v2i_users()
             )
-            self_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+            # [处理器共享] 使用新的延迟估算方法
+            self_wait = self._get_node_delay(v)
 
             self_info = np.array([
                 v.vel[0] * self._inv_max_velocity, v.vel[1] * self._inv_max_velocity,
@@ -1846,7 +2048,8 @@ class VecOffloadingEnv(gym.Env):
                 est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
                 est_v2v_rate = max(est_v2v_rate, 1e-6)
                 trans_time = task_data_size / est_v2v_rate if task_data_size > 0 else 0.0
-                queue_wait_time = other.task_queue.get_estimated_wait_time(other.cpu_freq)
+                # [处理器共享] 使用新的延迟估算方法
+                queue_wait_time = self._get_node_delay(other)
                 comp_time = task_comp_size / max(other.cpu_freq, 1e-6)
                 total_task_time = (trans_time + queue_wait_time + comp_time) * 1.2
 

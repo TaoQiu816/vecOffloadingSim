@@ -11,6 +11,7 @@ RSU（路侧单元）实体类
 import numpy as np
 from configs.config import SystemConfig as Cfg
 from envs.modules.rsu_queue_manager import RSUQueueManager
+from envs.modules.active_task_manager import ActiveTaskManager, ActiveTask
 
 
 class RSU:
@@ -22,6 +23,7 @@ class RSU:
     - 多处理器队列管理
     - 计算资源（CPU频率）
     - 任务分配和等待时间计算
+    - [新增] 统一处理器共享物理模型
     """
     
     def __init__(self, rsu_id, position, cpu_freq=None, num_processors=None, queue_limit=None, coverage_range=None):
@@ -46,7 +48,13 @@ class RSU:
         # 覆盖范围
         self.coverage_range = coverage_range if coverage_range is not None else Cfg.RSU_RANGE
         
-        # 队列管理器（多处理器队列）
+        # [新增] 活跃任务管理器：统一管理所有接收的任务
+        self.active_task_manager = ActiveTaskManager(
+            num_processors=self.num_processors, 
+            cpu_freq=self.cpu_freq
+        )
+        
+        # [保留] 旧的队列管理器（用于向后兼容和容量检查）
         queue_limit_val = queue_limit if queue_limit is not None else Cfg.RSU_QUEUE_LIMIT
         self.queue_manager = RSUQueueManager(
             num_processors=self.num_processors,
@@ -112,9 +120,25 @@ class RSU:
         self.queue_length = self.queue_manager.get_queue_length()
         return (success, processor_id)
     
+    def get_estimated_delay(self):
+        """
+        获取基于处理器共享模型的估计延迟（新版）
+        
+        使用ActiveTaskManager计算当前负载下的平均剩余时间。
+        
+        Returns:
+            float: 估计延迟（秒）
+        """
+        return self.active_task_manager.get_estimated_delay()
+    
     def get_estimated_wait_time(self):
         """
-        获取估计的等待时间（负载最低处理器的等待时间）
+        [已弃用] 获取估计的等待时间（基于旧队列模型）
+        
+        ⚠️  警告：此方法使用旧的FIFO队列模型，不反映处理器共享物理。
+        推荐使用 get_estimated_delay() 替代。
+        
+        保留此方法仅用于向后兼容和容量检查。
         
         Returns:
             float: 等待时间（秒）
@@ -168,10 +192,78 @@ class RSU:
         max_wait = Cfg.DYNAMIC_MAX_WAIT_TIME if hasattr(Cfg, 'DYNAMIC_MAX_WAIT_TIME') else 10.0
         return np.clip(wait_time / max_wait, 0.0, 1.0)
     
+    def step(self, dt: float) -> list:
+        """
+        [统一处理器共享物理模型]
+        推进RSU上所有活跃任务的执行
+        
+        处理器共享逻辑：
+        - 多个处理器提供并行能力
+        - total_capacity = num_processors * cpu_freq
+        - effective_speed = total_capacity / max(1, num_active_tasks)
+        - 修复"无限并行"bug：任务数增加时速度下降
+        
+        Args:
+            dt: 时间步长 (秒)
+            
+        Returns:
+            list: 本step完成的ActiveTask列表
+        """
+        return self.active_task_manager.step(dt)
+    
+    def add_active_task(self, owner_id: int, subtask_id: int, task_type: str, 
+                       total_comp: float, current_time: float = 0.0,
+                       # [关键] 准入验证参数（必须由调用方提供）
+                       is_dag_ready: bool = True,
+                       is_data_ready: bool = True,
+                       task_status: str = 'READY') -> bool:
+        """
+        添加活跃任务到RSU处理器（含完整准入验证）
+        
+        [硬断言] 准入条件（由ActiveTask强制执行）：
+        1. task_status in ['READY', 'RUNNING']
+        2. is_dag_ready=True（DAG依赖已满足）
+        3. is_data_ready=True（数据传输已完成）
+        4. total_comp > 0
+        
+        Args:
+            owner_id: 任务所属车辆ID
+            subtask_id: 子任务ID
+            task_type: 通常为 'v2i'
+            total_comp: 总计算量 (cycles)
+            current_time: 当前时间戳
+            is_dag_ready: DAG依赖是否已满足
+            is_data_ready: 数据是否已传输完成
+            task_status: 任务状态（'READY'或'RUNNING'）
+            
+        Returns:
+            bool: 是否成功添加
+            
+        Raises:
+            AssertionError: 准入条件不满足时触发
+        """
+        task = ActiveTask(owner_id, subtask_id, task_type, total_comp, current_time,
+                         is_dag_ready=is_dag_ready,
+                         is_data_ready=is_data_ready,
+                         task_status=task_status)
+        return self.active_task_manager.add_task(task)
+    
+    def remove_active_task(self, owner_id: int, subtask_id: int):
+        """移除指定的活跃任务"""
+        return self.active_task_manager.remove_task(owner_id, subtask_id)
+    
+    def get_active_task(self, owner_id: int, subtask_id: int):
+        """获取指定的活跃任务（不移除）"""
+        return self.active_task_manager.get_task(owner_id, subtask_id)
+    
+    def get_num_active_tasks(self) -> int:
+        """获取活跃任务数量"""
+        return self.active_task_manager.get_num_active_tasks()
+    
     def update_queue_sync(self):
         """同步队列长度（用于向后兼容）"""
         self.queue_length = self.queue_manager.get_queue_length()
     
     def __repr__(self):
-        return f"RSU(id={self.id}, pos={self.position}, queue_len={self.queue_length}/{self.queue_manager.num_processors * self.queue_manager.queue_limit_per_processor})"
+        return f"RSU(id={self.id}, pos={self.position}, active_tasks={self.get_num_active_tasks()}, queue_len={self.queue_length}/{self.queue_manager.num_processors * self.queue_manager.queue_limit_per_processor})"
 

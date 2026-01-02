@@ -1246,22 +1246,10 @@ def main():
         # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
         # =====================================================================
         if True:  # 每个episode都打印
-            # 计算成功任务的平均时延和能耗
-            avg_latency = 0.0
-            avg_energy = 0.0
-            success_vehicles = [v for v in env.vehicles if v.task_dag.is_finished]
-            if success_vehicles:
-                # 从环境中提取成功任务的时延和能耗
-                latencies = []
-                energies = []
-                for v in success_vehicles:
-                    if hasattr(v, 'task_completion_time') and v.task_completion_time is not None:
-                        latencies.append(v.task_completion_time)
-                    if hasattr(v, 'total_energy') and v.total_energy is not None:
-                        energies.append(v.total_energy)
-                
-                avg_latency = np.mean(latencies) if latencies else 0.0
-                avg_energy = np.mean(energies) if energies else 0.0
+            # [修复] 从env_stats获取成功任务的平均时延和能耗
+            # vehicle.task_completion_time已不再可靠，使用环境统计的dT_eff_mean
+            avg_latency = dT_eff_mean if dT_eff_mean is not None else 0.0
+            avg_energy = energy_norm_mean if energy_norm_mean is not None else 0.0
             
             # 获取训练诊断指标
             actor_loss = update_stats.get("policy_loss", 0.0) if update_stats.get("policy_loss") is not None else 0.0

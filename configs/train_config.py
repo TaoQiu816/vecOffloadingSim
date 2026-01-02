@@ -191,18 +191,18 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 2.0    # RSU的Logit偏置 - Logit bias for RSU action
-                            # 影响: 在softmax前给RSU logit加上偏置，适度提升选择概率
-                            #       降至2.0以允许V2V探索，避免过度抑制（8.0会使V2V<0.2%）
-                            # Impact: Adds bias to RSU logit before softmax, moderately boosts selection
+    LOGIT_BIAS_RSU = 5.0    # RSU的Logit偏置 - Logit bias for RSU action
+                            # 影响: 在softmax前给RSU logit加上偏置，大幅提升选择概率以对抗11个邻居的概率淹没
+                            #       提升至5.0以强制探索RSU，防止策略崩溃到V2V
+                            # Impact: Adds bias to RSU logit before softmax, drastically boosts selection to counter neighbor swamping
                             #       Reduced to 2.0 to allow V2V exploration; 8.0 suppresses V2V to <0.2%
                             # 推荐范围: 1.0-3.0 (平衡探索与利用)
                             # Recommended range: 1.0-3.0 (balances exploration and exploitation)
     
-    LOGIT_BIAS_LOCAL = 1.0  # Local的Logit偏置 - Logit bias for Local action
-                            # 影响: 在softmax前给Local logit加上偏置，轻微提升选择概率
-                            #       降至1.0以鼓励卸载探索，Local仍有约15-20%初始概率
-                            # Impact: Adds bias to Local logit before softmax, slightly boosts selection
+    LOGIT_BIAS_LOCAL = 2.0  # Local的Logit偏置 - Logit bias for Local action
+                            # 影响: 在softmax前给Local logit加上偏置，中等提升选择概率
+                            #       提升至2.0以增加Local探索，配合Deadline放宽策略
+                            # Impact: Adds bias to Local logit before softmax, moderately boosts selection
                             #       Reduced to 1.0 to encourage offloading; Local still ~15-20% initial prob
                             # 推荐范围: 0.5-2.0 (轻微偏置即可)
                             # Recommended range: 0.5-2.0 (light bias sufficient)
