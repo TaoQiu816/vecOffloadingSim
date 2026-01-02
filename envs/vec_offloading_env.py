@@ -576,32 +576,13 @@ class VecOffloadingEnv(gym.Env):
         return None
 
     def _update_rate_norm(self, rate, link_type):
-        if Cfg.NORM_RATE_MODE != "ema_p95":
-            return
-        if link_type == 'V2I':
-            sampler = self._rate_sampler_v2i
-            current = self._rate_norm_v2i
-        else:
-            sampler = self._rate_sampler_v2v
-            current = self._rate_norm_v2v
-
-        sampler.add(rate)
-        if sampler.count < self._rate_min_samples:
-            return
-        p95 = sampler.quantile(0.95)
-        alpha = Cfg.RATE_EMA_ALPHA
-        updated = (1.0 - alpha) * current + alpha * max(p95, 1e-6)
-        if link_type == 'V2I':
-            self._rate_norm_v2i = updated
-        else:
-            self._rate_norm_v2v = updated
+        # 归一化模式已固化为static，此方法保留以兼容接口调用
+        # Normalization mode is fixed to static; method kept for interface compatibility
+        pass
 
     def _get_norm_rate(self, link_type):
-        if Cfg.NORM_RATE_MODE == "ema_p95":
-            sampler = self._rate_sampler_v2i if link_type == 'V2I' else self._rate_sampler_v2v
-            if sampler.count < self._rate_min_samples:
-                return Cfg.NORM_MAX_RATE_V2I if link_type == 'V2I' else Cfg.NORM_MAX_RATE_V2V
-            return self._rate_norm_v2i if link_type == 'V2I' else self._rate_norm_v2v
+        # 归一化模式已固化为static，直接返回静态常量
+        # Normalization mode fixed to static; directly return static constants
         return Cfg.NORM_MAX_RATE_V2I if link_type == 'V2I' else Cfg.NORM_MAX_RATE_V2V
 
     def _power_ratio_from_dbm(self, power_dbm):
@@ -726,9 +707,6 @@ class VecOffloadingEnv(gym.Env):
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "time_limit_rate": 1.0 if (truncated and not terminated) else 0.0,
-            "bonus_mode": Cfg.BONUS_MODE,
-            "norm_rate_mode": Cfg.NORM_RATE_MODE,
-            "dist_penalty_mode": Cfg.DIST_PENALTY_MODE,
             "run_id": self._run_id,
             "seed": Cfg.SEED,
             "target_episodes": int(os.environ.get("MAX_EPISODES", 0)) if os.environ.get("MAX_EPISODES") else int(self._target_episodes) if self._target_episodes else None,
@@ -1966,24 +1944,39 @@ class VecOffloadingEnv(gym.Env):
             resource_raw = np.zeros((Cfg.MAX_TARGETS, Cfg.RESOURCE_RAW_DIM), dtype=np.float32)
             slack_norm = val_urgency
 
+            # Local节点特征：计算时间预估
+            local_est_exec = task_comp_size / max(v.cpu_freq, 1e-6) if task_comp_size > 0 else 0.0
+            local_est_comm = 0.0  # Local无传输
+            local_est_wait = self_wait
+            
             resource_raw[0] = [
                 v.cpu_freq * self._inv_max_cpu,
                 np.clip(self_wait * self._inv_max_wait, 0, 1),
-                0.0,
-                1.0,
-                0.0,
-                0.0,
+                0.0,  # 距离为0
+                0.0,  # [修复] Local无传输，Rate=0而非1
+                0.0,  # 相对位置X
+                0.0,  # 相对位置Y
                 v.vel[0] * self._inv_max_velocity,
                 v.vel[1] * self._inv_max_velocity,
-                1.0,
+                1.0,  # Node_Type = 1 (Local)
                 slack_norm,
-                1.0
+                1.0,  # Contact永久连接
+                np.clip(local_est_exec / 10.0, 0, 1),  # Est_Exec_Time
+                np.clip(local_est_comm / 10.0, 0, 1),  # Est_Comm_Time
+                np.clip(local_est_wait / 10.0, 0, 1)   # Est_Wait_Time
             ]
 
             if rsu_available:
                 rsu = self.rsus[rsu_id]
                 rel_rsu = (rsu.position - v.pos) * self._inv_map_size
                 rsu_contact_norm = np.clip(rsu_contact / max(self._max_rsu_contact_time, 1e-6), 0, 1)
+                
+                # RSU节点特征：计算时间预估
+                rsu_cpu = rsu.cpu_freq if rsu else Cfg.F_RSU
+                rsu_est_exec = task_comp_size / max(rsu_cpu, 1e-6) if task_comp_size > 0 else 0.0
+                rsu_est_comm = task_data_size / max(rsu_rate, 1e-6) if task_data_size > 0 else 0.0
+                rsu_est_wait = rsu_wait
+                
                 resource_raw[1] = [
                     rsu.cpu_freq * self._inv_max_cpu,
                     np.clip(rsu_wait * self._inv_max_wait, 0, 1),
@@ -1991,15 +1984,24 @@ class VecOffloadingEnv(gym.Env):
                     np.clip(rsu_rate * self._inv_max_rate_v2i, 0, 1),
                     rel_rsu[0],
                     rel_rsu[1],
-                    0.0,
-                    0.0,
-                    2.0,
+                    0.0,  # RSU速度为0
+                    0.0,  # RSU速度为0
+                    2.0,  # Node_Type = 2 (RSU)
                     slack_norm,
-                    rsu_contact_norm
+                    rsu_contact_norm,
+                    np.clip(rsu_est_exec / 10.0, 0, 1),  # Est_Exec_Time
+                    np.clip(rsu_est_comm / 10.0, 0, 1),  # Est_Comm_Time
+                    np.clip(rsu_est_wait / 10.0, 0, 1)   # Est_Wait_Time
                 ]
 
             for idx, info in enumerate(candidate_info[:Cfg.MAX_NEIGHBORS]):
                 contact_norm = np.clip(info['contact_time'] / max(self._max_v2v_contact_time, 1e-6), 0, 1)
+                
+                # Neighbor节点特征：计算时间预估
+                neighbor_est_exec = task_comp_size / max(info['cpu_freq'], 1e-6) if task_comp_size > 0 else 0.0
+                neighbor_est_comm = task_data_size / max(info['rate'], 1e-6) if task_data_size > 0 else 0.0
+                neighbor_est_wait = info['queue_wait']
+                
                 resource_raw[2 + idx] = [
                     info['cpu_freq'] * self._inv_max_cpu,
                     np.clip(info['queue_wait'] * self._inv_max_wait, 0, 1),
@@ -2009,9 +2011,12 @@ class VecOffloadingEnv(gym.Env):
                     info['rel_pos'][1],
                     info['vel'][0] * self._inv_max_velocity,
                     info['vel'][1] * self._inv_max_velocity,
-                    3.0,
+                    3.0,  # Node_Type = 3 (Neighbor)
                     slack_norm,
-                    contact_norm
+                    contact_norm,
+                    np.clip(neighbor_est_exec / 10.0, 0, 1),  # Est_Exec_Time
+                    np.clip(neighbor_est_comm / 10.0, 0, 1),  # Est_Comm_Time
+                    np.clip(neighbor_est_wait / 10.0, 0, 1)   # Est_Wait_Time
                 ]
 
             # [关键] 固定维度填充 - 适配批处理要求
@@ -2588,13 +2593,13 @@ class VecOffloadingEnv(gym.Env):
             if not in_range:
                 hard_triggered = True
             else:
-                # 距离预警（软约束）
-                if Cfg.DIST_PENALTY_MODE != "off":
-                    safe_dist = Cfg.RSU_RANGE * Cfg.DIST_SAFE_FACTOR
-                    if rsu_dist > safe_dist:
-                        dist_ratio = (rsu_dist - safe_dist) / (Cfg.RSU_RANGE - safe_dist + 1e-6)
-                        dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
-                        soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
+                # 距离预警（软约束，固定启用）
+                # Distance warning (soft constraint, permanently enabled)
+                safe_dist = Cfg.RSU_RANGE * Cfg.DIST_SAFE_FACTOR
+                if rsu_dist > safe_dist:
+                    dist_ratio = (rsu_dist - safe_dist) / (Cfg.RSU_RANGE - safe_dist + 1e-6)
+                    dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
+                    soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
         
         # 2. V2V范围检查
         elif isinstance(target, int):
@@ -2607,13 +2612,13 @@ class VecOffloadingEnv(gym.Env):
                 if dist > Cfg.V2V_RANGE:
                     hard_triggered = True
                 else:
-                    # 距离预警（软约束）
-                    if Cfg.DIST_PENALTY_MODE != "off":
-                        safe_dist = Cfg.V2V_RANGE * Cfg.DIST_SAFE_FACTOR
-                        if dist > safe_dist:
-                            dist_ratio = (dist - safe_dist) / (Cfg.V2V_RANGE - safe_dist + 1e-6)
-                            dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
-                            soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
+                    # 距离预警（软约束，固定启用）
+                    # Distance warning (soft constraint, permanently enabled)
+                    safe_dist = Cfg.V2V_RANGE * Cfg.DIST_SAFE_FACTOR
+                    if dist > safe_dist:
+                        dist_ratio = (dist - safe_dist) / (Cfg.V2V_RANGE - safe_dist + 1e-6)
+                        dist_ratio = np.clip(dist_ratio, 0.0, 1.0)
+                        soft_penalty += -Cfg.DIST_PENALTY_WEIGHT * (dist_ratio ** Cfg.DIST_SENSITIVITY)
 
         # 3. 队列溢出检查（硬约束）
         if not hard_triggered:

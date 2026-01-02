@@ -17,11 +17,11 @@ class LocationEncoder(nn.Module):
     位置编码器
     
     将子任务的执行位置编码为嵌入向量
-    位置ID：
+    位置ID（角色级别）：
     - 0: Unscheduled (未调度)
     - 1: Local (本车)
     - 2: RSU
-    - 3 ~ 2+MAX_NEIGHBORS: Neighbor Vehicles
+    - 3: Neighbor (任意邻居车辆，不区分具体ID)
     """
     
     def __init__(self, d_model: int = 128):
@@ -32,20 +32,24 @@ class LocationEncoder(nn.Module):
         super().__init__()
         self.d_model = d_model
         
-        # 位置嵌入层
-        # num_embeddings = 3 + MAX_VEHICLE_ID (覆盖所有可能的邻居ID)
-        num_locations = 3 + Cfg.MAX_VEHICLE_ID
+        # [修复] 位置嵌入层：仅4个角色，移除Vehicle ID依赖
+        num_locations = 4  # {Unscheduled, Local, RSU, Neighbor}
         self.location_embedding = nn.Embedding(num_locations, d_model)
     
     def forward(self, location_ids: torch.Tensor) -> torch.Tensor:
         """
         Args:
             location_ids: [Batch, MAX_NODES], dtype=long
+                         原始值：0=Unscheduled, 1=Local, 2=RSU, 3+=具体邻居ID
         
         Returns:
             [Batch, MAX_NODES, d_model]
         """
-        return self.location_embedding(location_ids)
+        # [修复] 将所有邻居ID统一映射为角色3（Neighbor）
+        # 这样网络只看到"是邻居"，不会过拟合具体ID
+        role_ids = torch.clamp(location_ids, max=3)
+        
+        return self.location_embedding(role_ids)
 
 
 class StatusEncoder(nn.Module):
@@ -255,6 +259,9 @@ class EdgeFeatureEncoder(nn.Module):
         Returns:
             [Batch, num_heads, MAX_NODES, MAX_NODES], 边特征偏置
         """
+        # [修复] 识别无连接边（零值）
+        no_edge_mask = edge_data.abs() < 1e-6  # [B, N, N]
+        
         # 增加最后一维
         edge_data = edge_data.unsqueeze(-1)  # [B, N, N, 1]
         
@@ -263,5 +270,10 @@ class EdgeFeatureEncoder(nn.Module):
         
         # 转置以匹配注意力维度 [B, H, N, N]
         edge_bias = edge_bias.permute(0, 3, 1, 2)
+        
+        # [修复] 将无连接边的bias设为极小值，物理上切断注意力
+        # 广播mask: [B, N, N] -> [B, 1, N, N]
+        no_edge_mask = no_edge_mask.unsqueeze(1)
+        edge_bias = edge_bias.masked_fill(no_edge_mask, -1e9)
         
         return edge_bias

@@ -18,8 +18,9 @@ class ResourceFeatureBuilder:
     """
     资源节点特征构建器
     
-    输出统一的特征向量：
-    [CPU_Norm, Queue_Norm, Dist_Norm, Rate_Norm, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type, Slack_Norm, Contact_Norm]
+    输出统一的特征向量（14维）：
+    [CPU_Norm, Queue_Norm, Dist_Norm, Rate_Norm, Rel_X, Rel_Y, Vel_X, Vel_Y, 
+     Node_Type, Slack_Norm, Contact_Norm, Est_Exec_Time, Est_Comm_Time, Est_Wait_Time]
     """
     
     def __init__(self):
@@ -30,35 +31,50 @@ class ResourceFeatureBuilder:
         self._inv_max_rate_v2i = 1.0 / Cfg.NORM_MAX_RATE_V2I
         self._inv_max_rate_v2v = 1.0 / Cfg.NORM_MAX_RATE_V2V
         self._inv_max_vel = 1.0 / Cfg.MAX_VELOCITY
+        
+        # 时间预估归一化常数（假设最大预估时间为10秒）
+        self._inv_max_time_est = 1.0 / 10.0
     
     def build_local_feature(self, 
                            cpu_freq: float,
                            queue_wait: float,
                            vel_x: float,
-                           vel_y: float) -> np.ndarray:
+                           vel_y: float,
+                           task_comp: float = 0.0,
+                           task_data: float = 0.0) -> np.ndarray:
         """
         构建Local资源节点特征
         
         Args:
-            cpu_freq: CPU频率 (GHz)
+            cpu_freq: CPU频率 (Hz)
             queue_wait: 队列等待时间 (s)
             vel_x, vel_y: 车辆速度 (m/s)
+            task_comp: 任务计算量 (cycles)
+            task_data: 任务数据量 (bits)
         
         Returns:
-            [CPU, Queue, 0, Max_Rate, 0, 0, Vel_x, Vel_y, 1]
+            [CPU, Queue, 0, 0, 0, 0, Vel_x, Vel_y, 1, Slack, Contact, Est_Exec, Est_Comm, Est_Wait]
         """
+        # 时间预估（物理公式）
+        est_exec_time = task_comp / max(cpu_freq, 1e-6) if task_comp > 0 else 0.0
+        est_comm_time = 0.0  # Local无传输
+        est_wait_time = queue_wait
+        
         return np.array([
             cpu_freq * self._inv_max_cpu,
             np.clip(queue_wait * self._inv_max_wait, 0, 1),
             0.0,  # 距离为0（本地）
-            1.0,  # Local传输速率视作无穷大，归一化为1
+            0.0,  # [修复] Local无传输，Rate=0而非1
             0.0,  # 相对位置X为0
             0.0,  # 相对位置Y为0
             vel_x * self._inv_max_vel,
             vel_y * self._inv_max_vel,
             1.0,  # Node_Type = 1 (Local)
-            0.0,  # Slack_Norm (占位)
-            0.0   # Contact_Norm (占位)
+            0.0,  # Slack_Norm (外部填充)
+            1.0,  # Contact_Norm = 1 (永久连接)
+            np.clip(est_exec_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_comm_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_wait_time * self._inv_max_time_est, 0, 1)
         ], dtype=np.float32)
     
     def build_rsu_feature(self,
@@ -67,20 +83,29 @@ class ResourceFeatureBuilder:
                          distance: float,
                          v2i_rate: float,
                          rel_x: float,
-                         rel_y: float) -> np.ndarray:
+                         rel_y: float,
+                         task_comp: float = 0.0,
+                         task_data: float = 0.0) -> np.ndarray:
         """
         构建RSU资源节点特征
         
         Args:
-            cpu_freq: RSU CPU频率 (GHz)
+            cpu_freq: RSU CPU频率 (Hz)
             queue_wait: RSU队列等待时间 (s)
             distance: 到RSU的距离 (m)
-            v2i_rate: V2I通信速率 (Mbps)
+            v2i_rate: V2I通信速率 (bps)
             rel_x, rel_y: 相对位置 (归一化)
+            task_comp: 任务计算量 (cycles)
+            task_data: 任务数据量 (bits)
         
         Returns:
-            [CPU, Queue, Dist, V2I_Rate, Rel_X, Rel_Y, 0, 0, 2]
+            [CPU, Queue, Dist, V2I_Rate, Rel_X, Rel_Y, 0, 0, 2, Slack, Contact, Est_Exec, Est_Comm, Est_Wait]
         """
+        # 时间预估（物理公式）
+        est_exec_time = task_comp / max(cpu_freq, 1e-6) if task_comp > 0 else 0.0
+        est_comm_time = task_data / max(v2i_rate, 1e-6) if task_data > 0 else 0.0
+        est_wait_time = queue_wait
+        
         return np.array([
             cpu_freq * self._inv_max_cpu,
             np.clip(queue_wait * self._inv_max_wait, 0, 1),
@@ -91,8 +116,11 @@ class ResourceFeatureBuilder:
             0.0,    # RSU速度为0
             0.0,    # RSU速度为0
             2.0,    # Node_Type = 2 (RSU)
-            0.0,    # Slack_Norm (占位)
-            0.0     # Contact_Norm (占位)
+            0.0,    # Slack_Norm (外部填充)
+            0.0,    # Contact_Norm (外部填充)
+            np.clip(est_exec_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_comm_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_wait_time * self._inv_max_time_est, 0, 1)
         ], dtype=np.float32)
     
     def build_neighbor_feature(self,
@@ -103,21 +131,30 @@ class ResourceFeatureBuilder:
                               rel_x: float,
                               rel_y: float,
                               vel_x: float,
-                              vel_y: float) -> np.ndarray:
+                              vel_y: float,
+                              task_comp: float = 0.0,
+                              task_data: float = 0.0) -> np.ndarray:
         """
         构建Neighbor资源节点特征
         
         Args:
-            cpu_freq: 邻居CPU频率 (GHz)
+            cpu_freq: 邻居CPU频率 (Hz)
             queue_wait: 邻居队列等待时间 (s)
             distance: 到邻居的距离 (m)
-            v2v_rate: V2V通信速率 (Mbps)
+            v2v_rate: V2V通信速率 (bps)
             rel_x, rel_y: 相对位置 (归一化)
             vel_x, vel_y: 邻居速度 (m/s)
+            task_comp: 任务计算量 (cycles)
+            task_data: 任务数据量 (bits)
         
         Returns:
-            [CPU, Queue, Dist, V2V_Rate, Rel_X, Rel_Y, Vel_x, Vel_y, 3]
+            [CPU, Queue, Dist, V2V_Rate, Rel_X, Rel_Y, Vel_x, Vel_y, 3, Slack, Contact, Est_Exec, Est_Comm, Est_Wait]
         """
+        # 时间预估（物理公式）
+        est_exec_time = task_comp / max(cpu_freq, 1e-6) if task_comp > 0 else 0.0
+        est_comm_time = task_data / max(v2v_rate, 1e-6) if task_data > 0 else 0.0
+        est_wait_time = queue_wait
+        
         return np.array([
             cpu_freq * self._inv_max_cpu,
             np.clip(queue_wait * self._inv_max_wait, 0, 1),
@@ -128,8 +165,11 @@ class ResourceFeatureBuilder:
             vel_x * self._inv_max_vel,
             vel_y * self._inv_max_vel,
             3.0,    # Node_Type = 3 (Neighbor)
-            0.0,    # Slack_Norm (占位)
-            0.0     # Contact_Norm (占位)
+            0.0,    # Slack_Norm (外部填充)
+            0.0,    # Contact_Norm (外部填充)
+            np.clip(est_exec_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_comm_time * self._inv_max_time_est, 0, 1),
+            np.clip(est_wait_time * self._inv_max_time_est, 0, 1)
         ], dtype=np.float32)
     
     def build_batch_resource_features(self,
@@ -211,45 +251,47 @@ class ResourceFeatureBuilder:
 
 class ResourceIDEncoder(nn.Module):
     """
-    资源节点ID编码器
+    资源节点ID编码器（Type-Based）
     
-    将Global ID映射为嵌入向量，并添加Dropout防止过拟合
+    将资源类型（不含具体车辆ID）映射为嵌入向量
     ID映射：
     - 0: Padding（不使用）
     - 1: Local
     - 2: RSU
-    - 3+: Neighbors (3 + vehicle_id)
+    - 3: Neighbor（所有邻居统一）
     """
     
-    def __init__(self, max_vehicle_id: int, d_model: int = 128, dropout: float = 0.2):
+    def __init__(self, d_model: int = 128, dropout: float = 0.2):
         """
         Args:
-            max_vehicle_id: 最大车辆ID（决定embedding表大小）
             d_model: 嵌入维度
-            dropout: Dropout率（训练时防止ID过拟合）
+            dropout: Dropout率（训练时防止过拟合）
         """
         super().__init__()
         self.d_model = d_model
         
-        # ID嵌入层
-        # num_embeddings = 3 + max_vehicle_id (覆盖所有可能的ID)
-        num_embeddings = 3 + max_vehicle_id
+        # [修复] ID嵌入层：仅4个角色类型
+        num_embeddings = 4  # {Padding, Local, RSU, Neighbor}
         self.id_embedding = nn.Embedding(num_embeddings, d_model, padding_idx=0)
         
-        # Dropout层（防止网络只依赖ID判断节点好坏）
+        # Dropout层（防止网络只依赖类型判断节点好坏）
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, resource_ids: torch.Tensor, training: bool = True) -> torch.Tensor:
         """
         Args:
-            resource_ids: [Batch, N_res], dtype=long, Global ID列表
-            training: 是否训练模式（控制dropout）
+            resource_ids: [Batch, N_res], dtype=long, Resource ID列表
+                         原始值：0=Padding, 1=Local, 2=RSU, 3+=具体邻居ID
         
         Returns:
-            [Batch, N_res, d_model], ID嵌入向量
+            [Batch, N_res, d_model], 类型嵌入向量
         """
+        # [修复] 将所有邻居ID统一映射为类型3（Neighbor）
+        # 这样网络只看到"是邻居"，不会过拟合具体ID
+        type_ids = torch.clamp(resource_ids, max=3)
+        
         # 嵌入
-        id_emb = self.id_embedding(resource_ids)  # [B, N_res, d_model]
+        id_emb = self.id_embedding(type_ids)  # [B, N_res, d_model]
         
         # Dropout（仅训练时）
         if training and self.training:
@@ -262,13 +304,13 @@ class ResourceFeatureEncoder(nn.Module):
     """
     资源节点特征编码器
     
-    融合物理特征和ID特征
+    融合物理特征和类型特征
     """
     
-    def __init__(self, max_vehicle_id: int, d_model: int = 128, id_dropout: float = 0.2):
+    def __init__(self, max_vehicle_id: int = None, d_model: int = 128, id_dropout: float = 0.2):
         """
         Args:
-            max_vehicle_id: 最大车辆ID
+            max_vehicle_id: (已废弃，保留为兼容性参数)
             d_model: 嵌入维度
             id_dropout: ID嵌入的Dropout率
         """
@@ -278,8 +320,8 @@ class ResourceFeatureEncoder(nn.Module):
         # 物理特征投影
         self.feature_proj = nn.Linear(Cfg.RESOURCE_RAW_DIM, d_model)
         
-        # ID编码器
-        self.id_encoder = ResourceIDEncoder(max_vehicle_id, d_model, id_dropout)
+        # [修复] ID编码器：不再接收max_vehicle_id
+        self.id_encoder = ResourceIDEncoder(d_model, id_dropout)
         
         # Layer Normalization
         self.layer_norm = nn.LayerNorm(d_model)
