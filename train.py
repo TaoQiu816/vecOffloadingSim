@@ -1285,16 +1285,14 @@ def main():
             service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
             idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
             
-            # 打印表头（每10或20个episode，根据LOG_INTERVAL）
-            log_interval = getattr(TC, 'LOG_INTERVAL', 10)
-            if episode == 1 or episode % log_interval == 1:
-                print("\n" + "="*200)
-                print(f"| {'Ep':>5} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'Deadlock':>8} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
-                print("="*200)
+            # 打印表头（每个episode都打印，但只在episode 1或每20个episode打印表头）
+            if episode == 1 or episode % 20 == 1:
+                print("\n" + "="*220)
+                print(f"| {'Ep':>5} | {'Time(s)':>8} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'Deadlock':>8} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
+                print("="*220)
             
-            # 打印数据行（每LOG_INTERVAL个episode）
-            if episode % log_interval == 0 or episode == 1:
-                print(f"| {episode:5d} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadlock_count:8d} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
+            # 打印数据行（每个episode都打印）
+            print(f"| {episode:5d} | {duration:8.2f} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadlock_count:8d} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
