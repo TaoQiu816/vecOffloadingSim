@@ -18,15 +18,15 @@ models/*.pth
 
 # 数据文件
 data/
-*.csv
+#*.csv
 *.jsonl
-*.json
+#*.json
 
 # 图表
-plots/
-*.png
-*.jpg
-*.pdf
+#plots/
+#*.png
+#*.jpg
+#*.pdf
 
 # IDE
 .vscode/
