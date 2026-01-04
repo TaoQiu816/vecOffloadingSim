@@ -1131,6 +1131,10 @@ class VecOffloadingEnv(gym.Env):
         # [P2性能统计] 初始化W_prev（在车辆生成后）
         self._p2_W_prev = self._get_total_W_remaining()
         
+        # [Episode统计] 初始化episode级统计
+        self._last_episode_metrics = {}
+        self._decision_counts = {'local': 0, 'rsu': 0, 'v2v': 0}
+        
         return self._get_obs(), {}
 
     # =====================================================================
@@ -1527,6 +1531,10 @@ class VecOffloadingEnv(gym.Env):
     def step(self, actions):
         self.steps += 1
         self._episode_steps += 1
+        
+        # 初始化决策统计（如果不存在）
+        if not hasattr(self, '_decision_counts'):
+            self._decision_counts = {'local': 0, 'rsu': 0, 'v2v': 0}
 
 
         snapshot_time = self.time  # 奖励时间轴：步前时间
@@ -1586,6 +1594,15 @@ class VecOffloadingEnv(gym.Env):
             else:
                 v.illegal_action = False
                 v.illegal_reason = None
+            
+            # 统计决策分布
+            target = plan.get("planned_target", 'Local')
+            if target == 'Local' or target == 0:
+                self._decision_counts['local'] += 1
+            elif target == 'RSU' or target == 1:
+                self._decision_counts['rsu'] += 1
+            else:
+                self._decision_counts['v2v'] += 1
         
         # Phase 1: Commit决策（写入exec_locations + 创建INPUT队列）
         self._phase1_commit_decisions(commit_plans)
@@ -3202,4 +3219,80 @@ class VecOffloadingEnv(gym.Env):
             audit_info['rsu_queue_len'] = np.mean(rsu_active_counts) if rsu_active_counts else 0
         
         return audit_info
+    
+    def _log_episode_stats(self, terminated, truncated):
+        """
+        记录episode统计信息到JSONL文件
+        
+        Args:
+            terminated: 是否自然终止（所有任务完成）
+            truncated: 是否被截断（时间限制）
+        """
+        if not hasattr(self, '_reward_stats'):
+            return
+        
+        # 计算episode级统计
+        episode_metrics = {}
+        
+        # 基本信息
+        episode_metrics['episode_steps'] = self._episode_steps
+        episode_metrics['terminated'] = terminated
+        episode_metrics['truncated'] = truncated
+        episode_metrics['seed'] = self.config.SEED if hasattr(self.config, 'SEED') else None
+        episode_metrics['episode_time_seconds'] = self.time
+        
+        # 成功率统计
+        episode_vehicle_count = len(self.vehicles)
+        success_count = sum([1 for v in self.vehicles if v.task_dag.is_finished])
+        episode_metrics['episode_vehicle_count'] = episode_vehicle_count
+        episode_metrics['success_rate_end'] = success_count / max(episode_vehicle_count, 1)
+        episode_metrics['task_success_rate'] = success_count / max(episode_vehicle_count, 1)
+        
+        # 子任务成功率
+        total_subtasks = 0
+        completed_subtasks = 0
+        for v in self.vehicles:
+            total_subtasks += v.task_dag.num_subtasks
+            completed_subtasks += np.sum(v.task_dag.status == 3)
+        episode_metrics['total_subtasks'] = total_subtasks
+        episode_metrics['subtask_success_rate'] = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
+        
+        # Deadline miss率
+        deadline_miss_count = sum([1 for v in self.vehicles if hasattr(v.task_dag, 'deadline_missed') and v.task_dag.deadline_missed])
+        episode_metrics['deadline_miss_rate'] = deadline_miss_count / max(episode_vehicle_count, 1)
+        
+        # 决策分布
+        if hasattr(self, '_decision_counts'):
+            total_decisions = sum(self._decision_counts.values()) if self._decision_counts else 1
+            episode_metrics['decision_frac_local'] = self._decision_counts.get('local', 0) / total_decisions
+            episode_metrics['decision_frac_rsu'] = self._decision_counts.get('rsu', 0) / total_decisions
+            episode_metrics['decision_frac_v2v'] = self._decision_counts.get('v2v', 0) / total_decisions
+        
+        # 从reward_stats提取统计信息
+        metrics_dict = {}
+        for name, bucket in self._reward_stats.metrics.items():
+            if bucket.count > 0:
+                metrics_dict[name] = {
+                    'mean': bucket.sum / bucket.count,
+                    'p95': bucket.get_percentile(0.95) if hasattr(bucket, 'get_percentile') else None,
+                    'count': bucket.count
+                }
+        
+        # 保存到实例变量（供train.py使用）
+        self._last_episode_metrics = episode_metrics.copy()
+        
+        # 写入JSONL文件
+        jsonl_path = os.environ.get('REWARD_JSONL_PATH')
+        if jsonl_path:
+            try:
+                with open(jsonl_path, 'a', encoding='utf-8') as f:
+                    import json
+                    record = {
+                        'episode': getattr(self, 'episode_count', 0),
+                        'metrics': metrics_dict,
+                        **episode_metrics
+                    }
+                    f.write(json.dumps(record, ensure_ascii=True) + '\n')
+            except Exception as e:
+                pass  # 静默失败，不影响训练
     
