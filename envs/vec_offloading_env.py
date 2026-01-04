@@ -3247,6 +3247,7 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['episode_vehicle_count'] = episode_vehicle_count
         episode_metrics['success_rate_end'] = success_count / max(episode_vehicle_count, 1)
         episode_metrics['task_success_rate'] = success_count / max(episode_vehicle_count, 1)
+        episode_metrics['vehicle_success_rate'] = success_count / max(episode_vehicle_count, 1)
         
         # 子任务成功率
         total_subtasks = 0
@@ -3260,6 +3261,7 @@ class VecOffloadingEnv(gym.Env):
         # Deadline miss率
         deadline_miss_count = sum([1 for v in self.vehicles if hasattr(v.task_dag, 'deadline_missed') and v.task_dag.deadline_missed])
         episode_metrics['deadline_miss_rate'] = deadline_miss_count / max(episode_vehicle_count, 1)
+        episode_metrics['audit_deadline_misses'] = deadline_miss_count
         
         # 决策分布
         if hasattr(self, '_decision_counts'):
@@ -3267,6 +3269,39 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics['decision_frac_local'] = self._decision_counts.get('local', 0) / total_decisions
             episode_metrics['decision_frac_rsu'] = self._decision_counts.get('rsu', 0) / total_decisions
             episode_metrics['decision_frac_v2v'] = self._decision_counts.get('v2v', 0) / total_decisions
+        
+        # [P2性能统计] 服务率和空闲率
+        if hasattr(self, '_p2_active_time') and hasattr(self, '_p2_idle_time'):
+            total_time = self._p2_active_time + self._p2_idle_time
+            if total_time > 0:
+                episode_metrics['idle_fraction'] = self._p2_idle_time / total_time
+                if self._p2_active_time > 0 and hasattr(self, '_p2_deltaW_active'):
+                    episode_metrics['service_rate_when_active'] = self._p2_deltaW_active / self._p2_active_time
+                else:
+                    episode_metrics['service_rate_when_active'] = 0.0
+            else:
+                episode_metrics['idle_fraction'] = 0.0
+                episode_metrics['service_rate_when_active'] = 0.0
+        else:
+            episode_metrics['idle_fraction'] = 0.0
+            episode_metrics['service_rate_when_active'] = 0.0
+        
+        # 死锁统计
+        deadlock_count = sum([1 for v in self.vehicles if hasattr(v, 'is_deadlocked') and v.is_deadlocked])
+        episode_metrics['deadlock_vehicle_count'] = deadlock_count
+        
+        # 传输任务统计（从队列中统计）
+        tx_created_count = 0
+        same_node_no_tx_count = 0
+        for v in self.vehicles:
+            if hasattr(v, 'exec_locations'):
+                for i, loc in enumerate(v.exec_locations):
+                    if loc is not None and loc != 'Local' and loc != v.id:
+                        tx_created_count += 1
+                    elif loc == v.id or loc == 'Local':
+                        same_node_no_tx_count += 1
+        episode_metrics['tx_tasks_created_count'] = tx_created_count
+        episode_metrics['same_node_no_tx_count'] = same_node_no_tx_count
         
         # 从reward_stats提取统计信息
         metrics_dict = {}
