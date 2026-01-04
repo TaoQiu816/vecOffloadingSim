@@ -117,7 +117,7 @@ class DagCompletionHandler:
         dag = vehicle.task_dag
         
         # [完成位置落地] 从exec_locations读取位置码写入task_locations
-        exec_loc = vehicle.task_dag.exec_locations[subtask_id]
+        exec_loc = vehicle.exec_locations[subtask_id]
         dag.task_locations[subtask_id] = exec_loc
         
         # 调用DAG的_mark_done（只做拓扑依赖递减，不直接推进EDGE）
@@ -155,7 +155,7 @@ class DagCompletionHandler:
         dag = vehicle.task_dag
         
         # 条件1: exec_locations已确定
-        if vehicle.task_dag.exec_locations[subtask_id] is None:
+        if vehicle.exec_locations[subtask_id] is None:
             return None
         
         # 条件2: input_ready
@@ -184,7 +184,7 @@ class DagCompletionHandler:
             return None
         
         # 所有条件满足，创建ComputeJob并入队
-        exec_loc = vehicle.task_dag.exec_locations[subtask_id]
+        exec_loc = vehicle.exec_locations[subtask_id]
         task_comp = dag.total_comp[subtask_id]
         
         # 确定执行节点和处理器

@@ -1112,7 +1112,7 @@ class VecOffloadingEnv(gym.Env):
             v.last_action_target = 'Local'
             v.subtask_reward_buffer = 0.0
             # exec_locations应该引用task_dag的，而不是创建新列表
-            # v.task_dag.exec_locations = [None] * v.task_dag.num_subtasks  # 错误：创建了新对象
+            # v.exec_locations = [None] * v.task_dag.num_subtasks  # 错误：创建了新对象
             # 正确做法：不需要设置，直接使用v.task_dag.exec_locations
 
             self.vehicles.append(v)
@@ -1262,7 +1262,7 @@ class VecOffloadingEnv(gym.Env):
             # 扫描所有待传边
             for child_id, parents_dict in list(dag.inter_task_transfers.items()):
                 # 获取child执行位置（必须已确定）
-                child_exec_loc = v.task_dag.exec_locations[child_id] if child_id < len(v.task_dag.exec_locations) else None
+                child_exec_loc = v.exec_locations[child_id] if child_id < len(v.exec_locations) else None
                 
                 if child_exec_loc is None:
                     # [硬断言护栏] child未分配，绝不创建/推进/清零
@@ -1886,8 +1886,8 @@ class VecOffloadingEnv(gym.Env):
 
             if hasattr(v, 'exec_locations'):
                 for i in range(num_tasks):
-                    if v.task_dag.exec_locations[i] is not None:
-                        task_locations[i] = v.task_dag.exec_locations[i]
+                    if v.exec_locations[i] is not None:
+                        task_locations[i] = v.exec_locations[i]
 
             for i in range(num_tasks):
                 if task_locations[i] is None:
@@ -2387,9 +2387,9 @@ class VecOffloadingEnv(gym.Env):
             # 0: Unscheduled, 1: Local, 2: RSU, 3+: Neighbor vehicle ID
             padded_location = np.zeros(MAX_NODES, dtype=np.int32)
             for t_idx in range(num_nodes):
-                # 优先从v.task_dag.exec_locations获取（Vehicle属性），其次是v.task_dag.task_locations
-                if hasattr(v, 'exec_locations') and v.task_dag.exec_locations[t_idx] is not None:
-                    loc = v.task_dag.exec_locations[t_idx]
+                # 优先从v.exec_locations获取（Vehicle属性），其次是v.task_dag.task_locations
+                if hasattr(v, 'exec_locations') and v.exec_locations[t_idx] is not None:
+                    loc = v.exec_locations[t_idx]
                 elif hasattr(v.task_dag, 'task_locations') and v.task_dag.task_locations[t_idx] is not None:
                     loc = v.task_dag.task_locations[t_idx]
                 else:
@@ -3297,7 +3297,7 @@ class VecOffloadingEnv(gym.Env):
         same_node_no_tx_count = 0
         for v in self.vehicles:
             if hasattr(v, 'exec_locations'):
-                for i, loc in enumerate(v.task_dag.exec_locations):
+                for i, loc in enumerate(v.exec_locations):
                     if loc is not None and loc != 'Local' and loc != v.id:
                         tx_created_count += 1
                     elif loc == v.id or loc == 'Local':

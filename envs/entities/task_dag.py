@@ -286,7 +286,8 @@ class DAGTask:
 
         # [Phase1职责] 写入执行位置（权威事实源）
         self.exec_locations[subtask_id] = target
-        self.status[subtask_id] = 2  # READY -> RUNNING
+        # 注意：不在这里改变status，让入队逻辑负责状态转换
+        # status会在实际入队/开始执行时由相应的handler更新
         return True
 
     def step_progress(self, subtask_id, comp_speed, comm_speed, dt):
