@@ -88,7 +88,7 @@ class SystemConfig:
                             # 影响: 精度与计算开销权衡，0.05s保证 v_max * DT << R_rsu
                             # Impact: Accuracy vs. computation tradeoff; 0.05s ensures v_max * DT << R_rsu
     
-    MAX_STEPS = 400         # Episode最大步数 - Max steps per episode (延长至20s)
+    MAX_STEPS = 200         # Episode最大步数 - Max steps per episode (延长至20s)
                             # 影响: Episode总时长 = MAX_STEPS * DT = 20秒 (适应处理器共享降速)
                             # Impact: Total episode duration = MAX_STEPS * DT = 20s (accommodates processor sharing)
     

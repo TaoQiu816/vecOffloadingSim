@@ -243,13 +243,13 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 5000     # 总训练Episodes - Total training episodes
+    MAX_EPISODES = 100     # 总训练Episodes - Total training episodes
                             # 影响: 控制训练总量，5000个Episodes约需数小时到数天（取决于硬件）
                             # Impact: Controls total training volume; 5000 episodes take hours to days (hardware-dependent)
                             # 推荐范围: 1000-10000 (1000 for quick experiments, 10000 for production)
                             # Recommended range: 1000-10000
     
-    MAX_STEPS = 400         # 每个Episode最大步数 - Max steps per episode
+    MAX_STEPS = 200        # 每个Episode最大步数 - Max steps per episode
                             # 影响: 必须与 SystemConfig.MAX_STEPS 一致
                             #       MAX_STEPS * DT = Episode总时长 (400 * 0.05s = 20s)
                             # Impact: Must match SystemConfig.MAX_STEPS
