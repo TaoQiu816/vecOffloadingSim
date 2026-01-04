@@ -43,12 +43,12 @@ class Vehicle:
         
         # [保留] 旧的FIFO队列系统（用于向后兼容和容量检查）
         self.task_queue = FIFOQueue(
-            max_buffer_size=Cfg.VEHICLE_QUEUE_LIMIT,  # 向后兼容
+            max_buffer_size=20,  # 默认任务数上限
             max_load_cycles=Cfg.VEHICLE_QUEUE_CYCLES_LIMIT  # 基于计算量的限制
         )
         # 保持向后兼容的属性
         self.task_queue_len = 0
-        self.max_queue_size = Cfg.VEHICLE_QUEUE_LIMIT
+        self.max_queue_size = 20
 
         # --- 任务状态 ---
         self.task_dag = None  # 车辆的 DAG 任务

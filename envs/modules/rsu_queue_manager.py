@@ -32,7 +32,7 @@ class RSUQueueManager:
             queue_limit_per_processor: 每个处理器的队列上限，如果为None则使用配置值
         """
         self.num_processors = num_processors if num_processors is not None else getattr(Cfg, 'RSU_NUM_PROCESSORS', 4)
-        queue_limit = queue_limit_per_processor if queue_limit_per_processor is not None else Cfg.RSU_QUEUE_LIMIT
+        queue_limit = queue_limit_per_processor if queue_limit_per_processor is not None else 100
         # 每个处理器的队列上限：总限制除以处理器数量（任务个数，向后兼容）
         self.queue_limit_per_processor = queue_limit // self.num_processors
         

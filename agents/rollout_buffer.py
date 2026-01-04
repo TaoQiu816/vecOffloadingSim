@@ -67,7 +67,8 @@ class RolloutBuffer:
         
     def add(self, obs_list: List[Dict], actions: List[Dict], 
             rewards: List[float], values: np.ndarray, 
-            log_probs: np.ndarray, done: bool):
+            log_probs: np.ndarray, done: bool, 
+            terminated: bool = None, truncated: bool = None):
         """
         添加一步数据
         
@@ -77,7 +78,9 @@ class RolloutBuffer:
             rewards: 奖励列表
             values: 状态价值 (numpy数组或tensor)
             log_probs: 动作log概率 (numpy数组或tensor)
-            done: 是否结束
+            done: 是否结束（向后兼容）
+            terminated: 是否真正终局（任务完成/失败）
+            truncated: 是否时间截断
         """
         self.obs_list_buffer.append(obs_list)
         self.actions_buffer.append(actions)
@@ -97,7 +100,22 @@ class RolloutBuffer:
             
         self.values_buffer.append(values.astype(np.float32).flatten())
         self.log_probs_buffer.append(log_probs.astype(np.float32).flatten())
-        self.dones_buffer.append(done)
+        
+        # [修复] 分离terminated和truncated
+        # 如果提供了terminated/truncated，使用它们；否则向后兼容使用done
+        if terminated is not None or truncated is not None:
+            self.dones_buffer.append({
+                'done': done,
+                'terminated': terminated if terminated is not None else done,
+                'truncated': truncated if truncated is not None else False
+            })
+        else:
+            # 向后兼容：done作为terminated
+            self.dones_buffer.append({
+                'done': done,
+                'terminated': done,
+                'truncated': False
+            })
     
     def compute_returns_and_advantages(self, last_value: np.ndarray):
         """
@@ -149,7 +167,16 @@ class RolloutBuffer:
                 # 获取当前时间步的数据
                 reward = self.rewards_buffer[t][n]
                 value = self.values_buffer[t][n]
-                done = self.dones_buffer[t]
+                done_info = self.dones_buffer[t]
+                
+                # [修复] 使用terminated而不是done来决定是否bootstrap
+                # terminated=True: 真正的终局，不bootstrap (mask=0)
+                # truncated=True: 时间截断，应该bootstrap (mask=1)
+                if isinstance(done_info, dict):
+                    terminated = done_info['terminated']
+                else:
+                    # 向后兼容：done作为terminated
+                    terminated = done_info
                 
                 # 获取下一步的value
                 if t == T - 1:
@@ -158,14 +185,14 @@ class RolloutBuffer:
                         next_value = last_value[n]
                     else:
                         next_value = 0.0
-                    next_non_terminal = 1.0 - float(done)
+                    next_non_terminal = 1.0 - float(terminated)
                 else:
                     N_next = len(self.values_buffer[t + 1])
                     if n < N_next:
                         next_value = self.values_buffer[t + 1][n]
                     else:
                         next_value = 0.0
-                    next_non_terminal = 1.0 - float(done)
+                    next_non_terminal = 1.0 - float(terminated)
                 
                 # TD error
                 delta = reward + self.gamma * next_value * next_non_terminal - value

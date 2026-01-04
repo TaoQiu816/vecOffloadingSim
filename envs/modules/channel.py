@@ -53,7 +53,7 @@ class ChannelModel:
                 dist = np.linalg.norm(v.pos - rsu_pos)
 
                 # 信道增益: 只有路径损耗，无衰落（LoS链路）
-                h_bar = self._path_loss(dist, Cfg.ALPHA_V2I)
+                h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2I)
 
                 # 接收功率
                 p_tx = Cfg.dbm2watt(v.tx_power_dbm)
@@ -92,7 +92,7 @@ class ChannelModel:
             sig_dists = np.linalg.norm(tx_positions - rx_positions, axis=1)
             # V2V 使用瑞利衰落（每个step重新采样）
             # 大尺度路径损耗
-            h_bar_sig = self._path_loss(sig_dists, Cfg.ALPHA_V2V)
+            h_bar_sig = self._path_loss(sig_dists, Cfg.PL_ALPHA_V2V)
             # 小尺度瑞利衰落（每次重新采样）
             h_rayleigh = self._rayleigh_fading(n_pairs)
             # 信号功率 = P_tx * h_bar * |h_rayleigh|^2
@@ -103,7 +103,7 @@ class ChannelModel:
             dist_mat = np.linalg.norm(rx_positions[:, None, :] - tx_positions[None, :, :], axis=2)
 
             # 路径损耗矩阵（干扰只考虑大尺度路径损耗，无衰落）
-            h_bar_interference = self._path_loss(dist_mat, Cfg.ALPHA_V2V)
+            h_bar_interference = self._path_loss(dist_mat, Cfg.PL_ALPHA_V2V)
 
             # 干扰功率矩阵: P_tx[j] * h_bar[i, j]（只有大尺度路径损耗）
             int_power_mat = tx_powers[None, :] * h_bar_interference
@@ -127,7 +127,7 @@ class ChannelModel:
 
         return rates
 
-    def compute_one_rate(self, vehicle, target_pos, link_type='V2I', curr_time=None, active_tx_vehicles=None, v2i_user_count=None):
+    def compute_one_rate(self, vehicle, target_pos, link_type='V2I', curr_time=None, active_tx_vehicles=None, v2i_user_count=None, power_dbm_override=None):
         """
         [单体预估] 计算假设场景下的速率
         用于 Observation 特征生成和 CFT 估算。
@@ -135,9 +135,11 @@ class ChannelModel:
         改进点:
         - 支持传入活跃发射车辆列表，实现动态干扰估算
         - 当无法获取活跃发射列表时，使用保守估计
+        - [新增] power_dbm_override: 允许显式覆盖发射功率（用于EDGE传输使用固定最大功率）
         """
         dist = np.linalg.norm(vehicle.pos - target_pos)
-        p_tx = Cfg.dbm2watt(vehicle.tx_power_dbm)
+        # [功率口径] 优先使用覆盖功率（EDGE用），否则使用vehicle属性（INPUT用）
+        p_tx = Cfg.dbm2watt(power_dbm_override if power_dbm_override is not None else vehicle.tx_power_dbm)
 
         if link_type == 'V2I':
             # V2I: 带宽竞争模型，无衰落
@@ -149,7 +151,7 @@ class ChannelModel:
                 est_users = max(Cfg.NUM_VEHICLES // 5, 1)
             bandwidth = Cfg.BW_V2I / est_users
             noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.ALPHA_V2I)
+            h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2I)
             # V2I只有路径损耗，无衰落
             sinr = (p_tx * h_bar) / noise_w
             rate = bandwidth * np.log2(1 + sinr)
@@ -157,7 +159,7 @@ class ChannelModel:
             # V2V: 包含瑞利衰落，全干扰模型
             bandwidth = Cfg.BW_V2V
             noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.ALPHA_V2V)
+            h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
             
             # 计算干扰（只考虑大尺度路径损耗）
             if active_tx_vehicles is not None and len(active_tx_vehicles) > 0:
@@ -220,7 +222,7 @@ class ChannelModel:
         valid_powers = interferer_powers[valid_mask]
         
         # 向量化计算路径损耗和干扰功率
-        h_bar = self._path_loss(valid_distances, Cfg.ALPHA_V2V)  # [M], M为有效干扰源数
+        h_bar = self._path_loss(valid_distances, Cfg.PL_ALPHA_V2V)  # [M], M为有效干扰源数
         interference_powers = valid_powers * h_bar  # [M]
         
         # 求和得到总干扰
@@ -250,7 +252,7 @@ class ChannelModel:
         # V2V可靠性计算
         dist = np.linalg.norm(vehicle.pos - target_pos)
         p_tx = Cfg.dbm2watt(vehicle.tx_power_dbm)
-        h_bar = self._path_loss(dist, Cfg.ALPHA_V2V)
+        h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
         
         # 计算干扰（期望值E[I]）
         if active_tx_vehicles is not None and len(active_tx_vehicles) > 0:
@@ -307,7 +309,7 @@ class ChannelModel:
             dist = 1.0
 
         # V2V信号功率：包含大尺度路径损耗和瑞利衰落
-        h_bar = self._path_loss(dist, Cfg.ALPHA_V2V)
+        h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
         h_rayleigh = self._rayleigh_fading(1)[0]
         signal_power = p_tx * h_bar * h_rayleigh
 

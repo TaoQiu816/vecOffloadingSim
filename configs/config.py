@@ -82,7 +82,7 @@ class SystemConfig:
                             # 影响: 城市快速路限速，控制最大拓扑变化速率
                             # Impact: Urban expressway speed limit, controls max topology change rate
     
-    MAX_VELOCITY = VEL_MAX  # 向后兼容 - Backward compatibility
+    MAX_VELOCITY = VEL_MAX  # 最大速度 - Maximum velocity
     
     DT = 0.05               # 仿真时间步长 (s) - Simulation time step
                             # 影响: 精度与计算开销权衡，0.05s保证 v_max * DT << R_rsu
@@ -107,8 +107,8 @@ class SystemConfig:
                             # 影响: V2I通信范围，400m确保全覆盖
                             # Impact: V2I communication range; 400m ensures full coverage
     
-    RSU_POS = np.array([500.0, 500.0])  # 单个RSU默认坐标（已废弃，用于向后兼容）
-                                         # Single RSU default position (deprecated, for backward compatibility)
+    RSU_POS = np.array([500.0, 500.0])  # 默认RSU位置（向后兼容）
+                                         # Default RSU position (backward compatibility)
 
     # =========================================================================
     # 2. 通信参数 (Communication Model)
@@ -158,6 +158,10 @@ class SystemConfig:
                                 # 影响: 能耗优化范围上限
                                 # Impact: Energy optimization upper bound
     
+    NUM_POWER_LEVELS = 4        # 功率离散等级数 - Number of discrete power levels
+                                # 影响: 动作空间维度，将[MIN,MAX]均匀离散化
+                                # Impact: Action space dimension; uniformly discretizes [MIN,MAX]
+    
     # -------------------------------------------------------------------------
     # 2.4 路径损耗模型 (Path Loss Model - Log-Distance)
     # 公式: PL(d) = PL_ALPHA + 10 * PL_BETA * log10(d/d_0)
@@ -189,10 +193,6 @@ class SystemConfig:
     SNR_MIN_DB = -10.0      # 最低可检测SNR (dB) - Minimum detectable SNR
     SNR_MAX_DB = 20.0       # 饱和SNR (dB) - Saturation SNR
     SNR_OFFSET_DB = 10.0    # SNR偏移量 (dB) - SNR offset for positive values
-    
-    # 向后兼容参数 (Backward compatibility)
-    ALPHA_V2I = 2.5
-    ALPHA_V2V = 3.0
     RICIAN_K_DB = 6.0
     BETA_0_DB = -30
 
@@ -233,11 +233,6 @@ class SystemConfig:
     RSU_QUEUE_CYCLES_LIMIT = 50.0e9     # RSU队列上限 (cycles) - RSU queue limit
                                         # 影响: 约33个平均任务，RSU高承载能力
                                         # Impact: ~33 average tasks; RSU high capacity
-    
-    # 向后兼容（已废弃，仅用于归一化参考）
-    # Backward compatibility (deprecated, only for normalization reference)
-    VEHICLE_QUEUE_LIMIT = 20
-    RSU_QUEUE_LIMIT = 100
 
     # =========================================================================
     # 4. DAG任务生成参数 (Task Generation)
@@ -371,11 +366,11 @@ class SystemConfig:
     NORM_MAX_RATE_V2I = 50e6    # V2I速率归一化基准 (bps) - V2I rate normalization baseline
     NORM_MAX_RATE_V2V = 20e6    # V2V速率归一化基准 (bps) - V2V rate normalization baseline
     
-    # 动态计算的归一化常量 (Dynamically computed normalization constants)
-    _RSU_MAX_WAIT = RSU_QUEUE_LIMIT * MEAN_COMP_LOAD / F_RSU
-    _VEHICLE_MAX_WAIT = VEHICLE_QUEUE_LIMIT * MEAN_COMP_LOAD / MIN_VEHICLE_CPU_FREQ
-    DYNAMIC_MAX_WAIT_TIME = max(_RSU_MAX_WAIT, _VEHICLE_MAX_WAIT) * 1.2
-    NORM_MAX_WAIT_TIME = DYNAMIC_MAX_WAIT_TIME  # 向后兼容 - Backward compatibility
+    # 动态计算的等待时间归一化常量 (Dynamically computed wait time normalization)
+    # 基于队列上限和处理能力计算最大等待时间
+    _RSU_MAX_WAIT = RSU_QUEUE_CYCLES_LIMIT / F_RSU
+    _VEHICLE_MAX_WAIT = VEHICLE_QUEUE_CYCLES_LIMIT / MIN_VEHICLE_CPU_FREQ
+    NORM_MAX_WAIT_TIME = max(_RSU_MAX_WAIT, _VEHICLE_MAX_WAIT) * 1.2
 
     # =========================================================================
     # 6. 奖励函数参数 (Reward Function - Delta CFT Mode)
@@ -473,16 +468,6 @@ class SystemConfig:
                                     # 影响: 容纳PENALTY_FAILURE(-20)，防止裁剪
                                     # Impact: Accommodates PENALTY_FAILURE(-20); prevents clipping
     
-    # -------------------------------------------------------------------------
-    # 6.7 旧奖励参数（已废弃，保留以兼容旧代码）
-    # Legacy Reward Parameters (deprecated, kept for backward compatibility)
-    # -------------------------------------------------------------------------
-    EFF_WEIGHT = 1.0                # 效率收益权重（已废弃）- Efficiency weight (deprecated)
-    EFF_SCALE = 5.0                 # tanh缩放因子（已废弃）- tanh scale (deprecated)
-    CONG_WEIGHT = 0.5               # 拥塞惩罚权重（已废弃）- Congestion weight (deprecated)
-    CONG_GAMMA = 2.0                # 拥塞敏感度（已废弃）- Congestion sensitivity (deprecated)
-    DELAY_WEIGHT = 1.0              # 时延权重（已废弃）- Delay weight (deprecated)
-    ENERGY_WEIGHT = 0.2             # 能耗权重（已废弃，与DELTA_CFT_ENERGY_WEIGHT同步）- Energy weight (deprecated, sync with DELTA_CFT_ENERGY_WEIGHT)
 
     # =========================================================================
     # 7. 调试与日志参数 (Debug & Logging)

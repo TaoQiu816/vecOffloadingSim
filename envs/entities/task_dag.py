@@ -20,9 +20,15 @@ class DAGTask:
     
     状态定义：
     - 0 = PENDING (等待依赖满足)
-    - 1 = READY (依赖已满足，可调度)
+    - 1 = READY (依赖已满足，"传输就绪"：可以开始处理该子任务的数据传输)
     - 2 = RUNNING (已调度并正在执行)
     - 3 = COMPLETED (执行完成)
+    
+    【重要】传输就绪 vs 计算就绪：
+    - READY(1) = "传输就绪"：前驱完成，拓扑依赖满足，允许开始INPUT/EDGE传输
+    - "计算就绪" ≠ status，而是数据条件：
+      计算就绪 = (input_ready==True) AND (edge_ready==True)
+      即：输入数据与依赖边数据全部到齐，才可入计算队列执行
     """
 
     def __init__(self, task_id, adj, profiles, data_matrix, deadline):
@@ -63,8 +69,19 @@ class DAGTask:
         self.total_data[~entry_mask] = np.maximum(self.total_data[~entry_mask], 0.0)
         self.rem_data = self.total_data.copy()
 
-        # 执行位置跟踪：每个子任务只能分配一次执行位置
-        # 值: 'Local' | 'RSU' | int(车辆ID) | None(未分配)
+        # =====================================================================
+        # [位置字段语义] 双字段设计，职责明确分离
+        # =====================================================================
+        # exec_locations: Phase1决策时写入，表示"执行位置已确定"
+        #   - 值: 'Local' | ('RSU', rsu_id) | int(车辆ID) | None(未分配)
+        #   - 写入时机：assign_task() 被调用时
+        #   - 不可变性：一旦写入不能再改（任务只能调度一次）
+        self.exec_locations = [None] * self.num_subtasks
+        
+        # task_locations: 任务计算完成时写入，表示"最终执行位置落地"
+        #   - 值: 与exec_locations相同格式
+        #   - 写入时机：_mark_done() 被调用时
+        #   - 断言：必须等于exec_locations（完成位置=计划位置）
         self.task_locations = [None] * self.num_subtasks
 
         # 依赖数据传输跟踪
@@ -208,7 +225,9 @@ class DAGTask:
         
         # 处理所有依赖数据传输
         for parent_id, transfer_info in self.inter_task_transfers[subtask_id].items():
-            if transfer_info['rem_data'] > 0:
+            # 兼容新旧字段名
+            rem_key = 'rem_bytes' if 'rem_bytes' in transfer_info else 'rem_data'
+            if transfer_info[rem_key] > 0:
                 # 更新传输速度
                 if transfer_speed > 0:
                     transfer_info['transfer_speed'] = transfer_speed
@@ -216,13 +235,13 @@ class DAGTask:
                 # 计算传输数据量
                 transmitted = transfer_info['transfer_speed'] * dt
                 
-                if transmitted >= transfer_info['rem_data']:
+                if transmitted >= transfer_info[rem_key]:
                     # 传输完成
-                    transfer_info['rem_data'] = 0
+                    transfer_info[rem_key] = 0
                     completed_parents.append(parent_id)
                 else:
                     # 传输未完成
-                    transfer_info['rem_data'] -= transmitted
+                    transfer_info[rem_key] -= transmitted
                     all_transfers_completed = False
             else:
                 completed_parents.append(parent_id)
@@ -244,13 +263,14 @@ class DAGTask:
 
     def assign_task(self, subtask_id, target):
         """
-        将子任务分配给目标执行位置
+        [Phase1决策] 将子任务分配给目标执行位置
         
-        每个子任务只能分配一次，一旦分配就不能再次调度
+        职责：写入exec_locations，表示"执行位置已确定"
+        不可变性：每个子任务只能分配一次，一旦分配就不能再次调度
         
         Args:
             subtask_id: 子任务索引
-            target: 执行位置 ('Local' | 'RSU' | int车辆ID)
+            target: 执行位置 ('Local' | ('RSU', rsu_id) | int车辆ID)
         
         Returns:
             bool: 是否成功分配（False表示任务已分配过或状态不允许）
@@ -258,13 +278,14 @@ class DAGTask:
         # 安全检查：越界、重复分配、状态检查
         if subtask_id < 0 or subtask_id >= self.num_subtasks:
             return False
-        if self.task_locations[subtask_id] is not None:
+        # [硬断言] 防止重复调度
+        if self.exec_locations[subtask_id] is not None:
             return False
         if self.status[subtask_id] != 1:
             return False
 
-        # 记录执行位置并转换状态
-        self.task_locations[subtask_id] = target
+        # [Phase1职责] 写入执行位置（权威事实源）
+        self.exec_locations[subtask_id] = target
         self.status[subtask_id] = 2  # READY -> RUNNING
         return True
 
@@ -323,9 +344,10 @@ class DAGTask:
 
     def _mark_done(self, subtask_id):
         """
-        标记任务完成并解锁后继任务
+        [任务完成] 标记任务完成并解锁后继任务
         
         状态转换: RUNNING(2) -> COMPLETED(3)
+        职责：写入task_locations（完成位置），验证与exec_locations一致
         
         [硬断言] 确保状态转换和依赖计数正确
         """
@@ -340,11 +362,19 @@ class DAGTask:
             f"期望READY(1)或RUNNING(2)或COMPLETED(3)，实际={old_status}"
         )
         
+        # [硬断言] 执行位置必须已确定
+        assert self.exec_locations[subtask_id] is not None, (
+            f"❌ _mark_done位置未定: subtask={subtask_id}, exec_loc=None"
+        )
+        
         # [硬断言] 记录完成前的计数
         before_completed = int(np.sum(self.status == 3))
         
         # 标记完成
         self.status[subtask_id] = 3
+        
+        # [完成位置落地] 写入task_locations（与exec_locations必须一致）
+        self.task_locations[subtask_id] = self.exec_locations[subtask_id]
         
         # [硬断言] 完成计数+1
         after_completed = int(np.sum(self.status == 3))
@@ -374,58 +404,56 @@ class DAGTask:
                 f"❌ _mark_done依赖计数负数: child={child}, in_degree={self.in_degree[child]}"
             )
             
-            # 获取依赖传输的数据量和执行位置
+            # [EDGE传输逻辑] 获取依赖传输的数据量和执行位置
             transfer_data = self.data_matrix[subtask_id, child]
-            parent_location = self.task_locations[subtask_id] if subtask_id < len(self.task_locations) else None
-            child_location = self.task_locations[child] if child < len(self.task_locations) else None
+            # [位置语义] 使用task_locations（完成位置）获取parent，exec_locations获取child（可能未完成）
+            parent_location = self.task_locations[subtask_id]  # 必须非None（parent已完成）
+            child_location = self.exec_locations[child]  # 可能None（child可能未分配）
             
-            # [关键修复] 判断是否需要跨节点传输
-            # 1. 如果两个位置都明确且相同，则同节点
-            # 2. 如果父任务是Local，子任务未分配（None）或也是Local，则视为同节点（Local-only场景）
-            explicit_same = (parent_location is not None and child_location is not None and 
-                           parent_location == child_location)
-            # [关键] Local-only场景：如果父任务在Local执行，子任务未分配或也在Local，则不需要传输
-            local_only_infer = (parent_location == 'Local' and 
-                               (child_location is None or child_location == 'Local'))
+            # [硬断言] parent必须已完成（task_locations已写入）
+            assert parent_location is not None, (
+                f"❌ _mark_done: parent={subtask_id} 完成但task_locations=None"
+            )
             
-            same_location = explicit_same or local_only_infer
+            # [关键修复] 判断是否需要跨节点传输（不允许child_loc None fallback）
+            # 1. child未分配：不创建传输（等待child分配后由Phase2激活）
+            # 2. 两位置相同：不创建传输（瞬时到齐）
+            # 3. 两位置不同：创建传输pending，由Phase2激活
+            if child_location is None:
+                # [等待Phase2] child未分配，不创建传输（避免循环等待）
+                same_location = False  # 标记为"需传输但暂不创建"
+            else:
+                same_location = (parent_location == child_location)
             
-            # [P0硬断言护栏] 同节点绝对禁止创建传输任务
-            # [统计初始化]
-            if not hasattr(self, '_tx_tasks_created_count'):
-                self._tx_tasks_created_count = 0
-            if not hasattr(self, '_same_node_no_tx_count'):
-                self._same_node_no_tx_count = 0
-            
+            # [EDGE传输创建] 根据位置关系决定是否创建pending传输
             if transfer_data > 0:
-                if same_location:
-                    # [修复] 同节点传输：瞬间完成，绝不创建传输任务
-                    # 不需要设置inter_task_transfers和waiting_for_data
-                    self._same_node_no_tx_count += 1
-                else:
-                    # 跨节点传输：需要创建传输任务（由环境层处理）
-                    # [硬断言] 确保不同节点（双重检查，防止逻辑错误）
-                    assert not same_location, (
-                        f"❌ [P0护栏违反] 尝试为同节点创建传输任务: "
-                        f"parent={subtask_id}, child={child}, "
-                        f"parent_loc={parent_location}, child_loc={child_location}, "
-                        f"transfer_data={transfer_data}, same_location={same_location}"
-                    )
-                    
+                if child_location is None:
+                    # [策略A] child未分配：创建pending传输，等待Phase2激活
+                    # inter_task_transfers记录"需要传输的边"，但不入队列
                     if child not in self.inter_task_transfers:
                         self.inter_task_transfers[child] = {}
                     
-                    # 初始化传输状态
                     self.inter_task_transfers[child][subtask_id] = {
-                        'rem_data': transfer_data,
-                        'transfer_speed': 0.0  # 初始为0，由环境在step中设置
+                        'rem_bytes': transfer_data,
+                        'speed': 0.0  # pending状态，未激活
                     }
-                    
-                    # 标记子任务正在等待数据传输
                     self.waiting_for_data[child] = True
                     
-                    # [统计] 记录传输任务创建（用于回归测试）
-                    self._tx_tasks_created_count += 1
+                elif same_location:
+                    # [策略B] 同位置：瞬时到齐，不创建传输
+                    # waiting_for_data保持False（默认）
+                    pass
+                    
+                else:
+                    # [策略C] 不同位置且child已分配：创建pending传输，等待Phase2激活
+                    if child not in self.inter_task_transfers:
+                        self.inter_task_transfers[child] = {}
+                    
+                    self.inter_task_transfers[child][subtask_id] = {
+                        'rem_bytes': transfer_data,
+                        'speed': 0.0  # pending状态，由Phase2激活后推进
+                    }
+                    self.waiting_for_data[child] = True
             
             # 如果依赖全部满足（入度减为0），检查数据传输状态
             if self.in_degree[child] == 0:

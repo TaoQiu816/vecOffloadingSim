@@ -15,6 +15,7 @@ env/
 logs/
 models/*.pth
 *.pth
+.cursor/
 
 # 数据文件
 data/

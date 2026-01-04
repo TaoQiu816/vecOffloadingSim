@@ -86,11 +86,11 @@ class GraphBuilder:
         if link_type == 'V2I':
             B = Cfg.BW_V2I
             P_tx = Cfg.TX_POWER_MAX_DBM
-            alpha = Cfg.ALPHA_V2I
+            alpha = Cfg.PL_ALPHA_V2I
         else:
             B = Cfg.BW_V2V
             P_tx = 20.0
-            alpha = Cfg.ALPHA_V2V
+            alpha = Cfg.PL_ALPHA_V2V
 
         noise_w = Cfg.dbm2watt(Cfg.NOISE_POWER_DBM)
         p_tx_w = Cfg.dbm2watt(P_tx)

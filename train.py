@@ -939,8 +939,9 @@ def main():
             stats["agent_rewards_sum"] += sum(rewards)
             stats["agent_rewards_count"] += len(rewards)
 
-            # 存入Buffer
-            buffer.add(obs_list, actions, rewards, values, log_probs, done)
+            # [修复] 存入Buffer时分离terminated和truncated
+            buffer.add(obs_list, actions, rewards, values, log_probs, done,
+                      terminated=terminated, truncated=truncated)
 
             # 过程统计
             num_agents = len(rewards) if len(rewards) > 0 else 1

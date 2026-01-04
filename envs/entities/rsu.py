@@ -55,7 +55,7 @@ class RSU:
         )
         
         # [保留] 旧的队列管理器（用于向后兼容和容量检查）
-        queue_limit_val = queue_limit if queue_limit is not None else Cfg.RSU_QUEUE_LIMIT
+        queue_limit_val = queue_limit if queue_limit is not None else 100
         self.queue_manager = RSUQueueManager(
             num_processors=self.num_processors,
             queue_limit_per_processor=queue_limit_val
@@ -67,6 +67,38 @@ class RSU:
         # FAT管理：每个处理器独立维护FAT
         # 格式: {processor_id: FAT_value}
         self.fat_processors = {i: 0.0 for i in range(self.num_processors)}
+
+    def _compute_processor_fats(self, current_time=0.0):
+        """
+        计算每个处理器的FAT（基于当前剩余计算量/频率）
+
+        定义：FAT[p] = current_time + (sum(rem_cycles_in_queue) + current_running_rem) / cpu_freq
+        """
+        fats = []
+        for queue in self.queue_manager.processor_queues:
+            load = queue.get_total_load_with_current() if hasattr(queue, "get_total_load_with_current") else queue.get_total_load()
+            fat = current_time + load / max(self.cpu_freq, 1e-9)
+            fats.append(fat)
+        return fats
+
+    def get_earliest_available_processor(self, current_time=None):
+        """
+        返回FAT最小的处理器ID（平局选编号最小）
+
+        Args:
+            current_time: 当前时间，用于FAT基准；默认为0.0
+        """
+        if current_time is None:
+            current_time = 0.0
+        fats = self._compute_processor_fats(current_time=current_time)
+        if not fats:
+            return 0
+        min_fat = min(fats)
+        # tie-break by processor id
+        for pid, fat in enumerate(fats):
+            if abs(fat - min_fat) <= 1e-12:
+                return pid
+        return 0
     
     def is_in_coverage(self, position):
         """
@@ -267,4 +299,3 @@ class RSU:
     
     def __repr__(self):
         return f"RSU(id={self.id}, pos={self.position}, active_tasks={self.get_num_active_tasks()}, queue_len={self.queue_length}/{self.queue_manager.num_processors * self.queue_manager.queue_limit_per_processor})"
-
