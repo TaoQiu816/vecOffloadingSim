@@ -240,11 +240,11 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.1 DAG结构参数 (DAG Structure)
     # -------------------------------------------------------------------------
-    MIN_NODES = 4           # DAG最小节点数 - Min DAG nodes
+    MIN_NODES = 8           # DAG最小节点数 - Min DAG nodes
                             # 影响: 降低依赖链复杂度，从8降到4
                             # Impact: Reduces dependency complexity; decreased from 8 to 4
     
-    MAX_NODES = 6           # DAG最大节点数 - Max DAG nodes
+    MAX_NODES = 12           # DAG最大节点数 - Max DAG nodes
                             # 影响: 极大降低依赖链深度，从12降到6
                             # Impact: Greatly reduces dependency depth; decreased from 12 to 6
     
@@ -320,11 +320,11 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 1.8       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
+    DEADLINE_TIGHTENING_MIN = 0.8       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
                                         # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%（Warmup宽松，先保证可训练）
                                         # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time (Warmup relaxed, ensures trainability)
     
-    DEADLINE_TIGHTENING_MAX = 2.2       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
+    DEADLINE_TIGHTENING_MAX = 1.0       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
                                         # 影响: deadline = γ × (关键路径/本地CPU)，2.5表示本地时间的250%（Warmup阶段，适应处理器共享降速）
                                         # Impact: deadline = γ × (critical_path/local_CPU), 2.5 means 250% of local time (Warmup phase, accommodates processor sharing slowdown)
     
