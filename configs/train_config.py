@@ -85,8 +85,8 @@ class TrainConfig:
     USE_LR_DECAY = True     # 是否启用学习率衰减 - Enable learning rate decay
                             # 影响: 训练后期降低学习率有助于收敛和稳定性
                             # Impact: Reducing LR in late training aids convergence and stability
-    
-    LR_DECAY_STEPS = 500    # 学习率衰减间隔 (Episodes) - Learning rate decay interval
+    ###要改
+    LR_DECAY_STEPS = 100    # 学习率衰减间隔 (Episodes) - Learning rate decay interval
                             # 影响: 每N个Episodes衰减一次，控制衰减频率
                             # Impact: Decay every N episodes; controls decay frequency
                             # 推荐范围: 100-1000 (取决于MAX_EPISODES)
@@ -243,7 +243,7 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 100     # 总训练Episodes - Total training episodes
+    MAX_EPISODES = 200     # 总训练Episodes - Total training episodes
                             # 影响: 控制训练总量，5000个Episodes约需数小时到数天（取决于硬件）
                             # Impact: Controls total training volume; 5000 episodes take hours to days (hardware-dependent)
                             # 推荐范围: 1000-10000 (1000 for quick experiments, 10000 for production)
