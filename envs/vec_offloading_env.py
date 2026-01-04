@@ -798,29 +798,29 @@ class VecOffloadingEnv(gym.Env):
         """
         [P2辅助函数] 计算所有DAG的总剩余计算量（cycles）
         
+        基于FIFO队列系统和DAG状态统计（不再使用active_task_manager）
+        
         Returns:
             float: 总剩余计算量（cycles）
         """
         total_W = 0.0
+        
+        # 1. 队列中的任务（正在执行或等待执行）
+        for veh_id, queue in self.veh_cpu_q.items():
+            for job in queue:
+                total_W += job.rem_cycles
+        
+        for rsu_id, proc_dict in self.rsu_cpu_q.items():
+            for proc_id, queue in proc_dict.items():
+                for job in queue:
+                    total_W += job.rem_cycles
+        
+        # 2. DAG中未分配的任务（status < 2: PENDING或READY，尚未入队）
         for v in self.vehicles:
             dag = v.task_dag
-            # 从active_task_manager获取活跃任务的剩余计算量
-            if hasattr(v, 'active_task_manager'):
-                for task in v.active_task_manager.active_tasks:
-                    total_W += task.rem_comp
-            
-            # 从task_dag获取未完成subtask的剩余计算量
             for i in range(dag.num_subtasks):
-                if dag.status[i] < 3:  # 未完成
-                    # 优先从active_task_manager获取
-                    task_in_active = None
-                    if hasattr(v, 'active_task_manager'):
-                        task_in_active = v.active_task_manager.get_task(v.id, i)
-                    
-                    if task_in_active:
-                        total_W += task_in_active.rem_comp
-                    else:
-                        total_W += dag.total_comp[i]
+                if dag.status[i] < 2:  # PENDING(0) 或 READY(1)，尚未入计算队列
+                    total_W += dag.rem_comp[i]
         
         return total_W
     
@@ -828,19 +828,27 @@ class VecOffloadingEnv(gym.Env):
         """
         [P2辅助函数] 计算所有节点（车辆+RSU）的活跃任务总数
         
+        基于FIFO队列系统统计（不再使用active_task_manager）
+        
         Returns:
-            int: 总活跃任务数
+            int: 总活跃任务数（所有队列中的任务数）
         """
         total_active = 0
-        # 车辆活跃任务
-        for v in self.vehicles:
-            if hasattr(v, 'active_task_manager'):
-                total_active += v.active_task_manager.get_num_active_tasks()
         
-        # RSU活跃任务
-        for rsu in self.rsus:
-            if hasattr(rsu, 'active_task_manager'):
-                total_active += rsu.active_task_manager.get_num_active_tasks()
+        # 车辆CPU队列
+        for veh_id, queue in self.veh_cpu_q.items():
+            total_active += len(queue)
+        
+        # RSU CPU队列
+        for rsu_id, proc_dict in self.rsu_cpu_q.items():
+            for proc_id, queue in proc_dict.items():
+                total_active += len(queue)
+        
+        # 传输队列（INPUT + EDGE）
+        for queue in self.txq_v2i.values():
+            total_active += len(queue)
+        for queue in self.txq_v2v.values():
+            total_active += len(queue)
         
         return total_active
     
@@ -1561,6 +1569,9 @@ class VecOffloadingEnv(gym.Env):
         cft_prev_rem = max(cft_prev_abs - t_prev, 0.0) if cft_prev_abs is not None else 0.0
         if not np.isfinite(cft_prev_rem):
             cft_prev_rem = 0.0
+        
+        # 保存每辆车的CFT（用于per-vehicle奖励计算）
+        vehicle_cfts_prev = self._compute_vehicle_cfts_snapshot(t_prev, vehicle_ids=ids_prev)
 
         step_congestion_cost = 0.0
         active_agents_count = 0
@@ -1597,13 +1608,13 @@ class VecOffloadingEnv(gym.Env):
                 v.illegal_action = False
                 v.illegal_reason = None
             
-            # 统计决策分布
-            target = plan.get("planned_target", 'Local')
-            if target == 'Local' or target == 0:
+            # 统计决策分布（使用planned_kind而不是planned_target）
+            kind = plan.get("planned_kind", "local")
+            if kind == "local":
                 self._decision_counts['local'] += 1
-            elif target == 'RSU' or target == 1:
+            elif kind == "rsu":
                 self._decision_counts['rsu'] += 1
-            else:
+            elif kind == "v2v":
                 self._decision_counts['v2v'] += 1
         
         # Phase 1: Commit决策（写入exec_locations + 创建INPUT队列）
@@ -1657,7 +1668,7 @@ class VecOffloadingEnv(gym.Env):
         dT = float(np.clip(dT_rem, self.config.DELTA_CFT_CLIP_MIN, self.config.DELTA_CFT_CLIP_MAX))
         dT_eff = dT - self.config.DT
         
-        # 计算奖励
+        # 计算奖励（使用per-vehicle CFT）
         for i, v in enumerate(self.vehicles):
             dag = v.task_dag
             target = v.curr_target if v.curr_subtask is not None else None
@@ -1681,6 +1692,19 @@ class VecOffloadingEnv(gym.Env):
             else:
                 t_tx = float(np.clip(t_tx_raw, 0.0, self.config.DT))
             p_max_watt = self._get_p_max_watt(target)
+            
+            # 计算该车辆的CFT变化（per-vehicle reward）
+            cft_v_prev = vehicle_cfts_prev[i] if i < len(vehicle_cfts_prev) else np.nan
+            cft_v_curr = vehicle_cfts[i] if i < len(vehicle_cfts) else np.nan
+            
+            if np.isfinite(cft_v_prev) and np.isfinite(cft_v_curr):
+                cft_v_prev_rem = max(cft_v_prev - t_prev, 0.0)
+                cft_v_curr_rem = max(cft_v_curr - t_curr, 0.0)
+                dT_rem_v = cft_v_prev_rem - cft_v_curr_rem
+            else:
+                # 如果CFT无效，使用全局CFT作为fallback
+                dT_rem_v = dT_rem
+            
             reward_parts = None
             if getattr(v, 'illegal_action', False):
                 r = self.config.REWARD_MIN  # 非法动作给予最小奖励
@@ -1693,7 +1717,7 @@ class VecOffloadingEnv(gym.Env):
                 }
                 hard_triggered = False
                 reward_parts = compute_absolute_reward(
-                    dT_rem, 0.0, power_ratio, self.config.DT, p_max_watt,
+                    dT_rem_v, 0.0, power_ratio, self.config.DT, p_max_watt,
                     self.config.REWARD_MIN, self.config.REWARD_MAX, hard_triggered=True, illegal_action=True
                 )[1]
                 reward_parts["energy_norm"] = 0.0
@@ -1702,7 +1726,7 @@ class VecOffloadingEnv(gym.Env):
                 components = self._compute_cost_components(i, target, task_idx, task_comp)
                 hard_triggered = components.get("hard_triggered", False)
                 base_reward, reward_parts = compute_absolute_reward(
-                    dT_rem, t_tx, power_ratio, self.config.DT, p_max_watt,
+                    dT_rem_v, t_tx, power_ratio, self.config.DT, p_max_watt,
                     self.config.REWARD_MIN, self.config.REWARD_MAX, hard_triggered=hard_triggered, illegal_action=False
                 )
                 if hard_triggered:
@@ -1775,6 +1799,15 @@ class VecOffloadingEnv(gym.Env):
             )
             self._p2_zero_delta_steps = 0  # 重置计数，避免重复警告
 
+        # [记录episode统计] 每步都记录，但只在episode结束时写入文件
+        self._log_episode_stats(terminated, truncated)
+        
+        # [P2/P0新增] 将关键健康指标写入info（供审计脚本使用）
+        if hasattr(self, '_last_episode_metrics'):
+            info['episode_metrics'] = self._last_episode_metrics.copy()
+            # 同时直接在info顶层写入这些字段（向后兼容）
+            info.update(self._last_episode_metrics)
+        
         if terminated or truncated:
             # [Miss Reason分解] 在episode结束时标记失败原因
             for v in self.vehicles:
@@ -1794,43 +1827,6 @@ class VecOffloadingEnv(gym.Env):
                     elif hasattr(v, 'illegal_reason') and v.illegal_reason and 'overflow' in v.illegal_reason.lower():
                         v.task_dag.set_failed(reason='overflow')
                     # 其他未标记的保留（在_log_episode_stats中会归为unfinished或truncated）
-            
-            # [P2性能统计] 在每个step末尾累计统计
-            W_curr = self._get_total_W_remaining()
-            deltaW = max(0.0, self._p2_W_prev - W_curr)  # 防止数值抖动造成负值
-            total_active = self._get_total_active_tasks()
-            
-            if total_active > 0:
-                self._p2_active_time += self.config.DT
-                self._p2_deltaW_active += deltaW
-                # 检测长时间无推进
-                if deltaW < 1e-6:  # 几乎没有推进
-                    self._p2_zero_delta_steps += 1
-                else:
-                    self._p2_zero_delta_steps = 0
-            else:
-                self._p2_idle_time += self.config.DT
-            
-            self._p2_W_prev = W_curr
-            
-            # [一致性检查] 长时间无推进警告
-            if self._p2_zero_delta_steps >= 50 and total_active > 0:
-                import warnings
-                warnings.warn(
-                    f"[P2警告] 连续{self._p2_zero_delta_steps}步活跃任务未推进，"
-                    f"total_active={total_active}, deltaW={deltaW:.2e}",
-                    UserWarning
-                )
-                self._p2_zero_delta_steps = 0  # 重置计数，避免重复警告
-            
-            self._log_episode_stats(terminated, truncated)
-            
-            # [P2/P0新增] 将关键健康指标写入info（供审计脚本使用）
-            # 这些字段在_log_episode_stats中已计算并保存到_last_episode_metrics
-            if hasattr(self, '_last_episode_metrics'):
-                info['episode_metrics'] = self._last_episode_metrics.copy()
-                # 同时直接在info顶层写入这些字段（向后兼容）
-                info.update(self._last_episode_metrics)
 
         return self._get_obs(), rewards, terminated, truncated, info
 
@@ -3318,18 +3314,37 @@ class VecOffloadingEnv(gym.Env):
         # 保存到实例变量（供train.py使用）
         self._last_episode_metrics = episode_metrics.copy()
         
-        # 写入JSONL文件
-        jsonl_path = os.environ.get('REWARD_JSONL_PATH')
-        if jsonl_path:
-            try:
-                with open(jsonl_path, 'a', encoding='utf-8') as f:
+        # 只在episode结束时写入JSONL文件
+        if terminated or truncated:
+            jsonl_path = os.environ.get('REWARD_JSONL_PATH')
+            if jsonl_path:
+                try:
                     import json
+                    
+                    # 转换numpy类型为Python原生类型
+                    def convert_to_native(obj):
+                        if isinstance(obj, dict):
+                            return {k: convert_to_native(v) for k, v in obj.items()}
+                        elif isinstance(obj, (list, tuple)):
+                            return [convert_to_native(v) for v in obj]
+                        elif isinstance(obj, np.integer):
+                            return int(obj)
+                        elif isinstance(obj, np.floating):
+                            return float(obj)
+                        elif isinstance(obj, np.ndarray):
+                            return obj.tolist()
+                        else:
+                            return obj
+                    
                     record = {
                         'episode': getattr(self, 'episode_count', 0),
-                        'metrics': metrics_dict,
-                        **episode_metrics
+                        'metrics': convert_to_native(metrics_dict),
+                        **convert_to_native(episode_metrics)
                     }
-                    f.write(json.dumps(record, ensure_ascii=True) + '\n')
-            except Exception as e:
-                pass  # 静默失败，不影响训练
+                    
+                    with open(jsonl_path, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(record, ensure_ascii=True) + '\n')
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"[JSONL写入失败] {e}", UserWarning)
     

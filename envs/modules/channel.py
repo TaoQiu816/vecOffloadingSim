@@ -151,7 +151,7 @@ class ChannelModel:
                 est_users = max(Cfg.NUM_VEHICLES // 5, 1)
             bandwidth = Cfg.BW_V2I / est_users
             noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2I)
+            h_bar = self._path_loss(dist, Cfg.PL_BETA_V2I)  # 修复：使用BETA（指数）而不是ALPHA（dB）
             # V2I只有路径损耗，无衰落
             sinr = (p_tx * h_bar) / noise_w
             rate = bandwidth * np.log2(1 + sinr)
@@ -159,7 +159,7 @@ class ChannelModel:
             # V2V: 包含瑞利衰落，全干扰模型
             bandwidth = Cfg.BW_V2V
             noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
+            h_bar = self._path_loss(dist, Cfg.PL_BETA_V2V)  # 修复：使用BETA（指数）而不是ALPHA（dB）
             
             # 计算干扰（只考虑大尺度路径损耗）
             if active_tx_vehicles is not None and len(active_tx_vehicles) > 0:
