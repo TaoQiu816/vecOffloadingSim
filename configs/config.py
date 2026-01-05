@@ -329,9 +329,9 @@ class SystemConfig:
                                         # - 'FIXED_RANGE': 直接从固定范围随机 (秒)
     
     # 模式1&2: 基于计算量的deadline (使用γ因子)
-    DEADLINE_TIGHTENING_MIN = 3.0       # γ最小值 [给传输+队列+串行调度留300%余量]
+    DEADLINE_TIGHTENING_MIN = 0.8       # γ最小值 [给传输+队列+串行调度留300%余量]
                                         # deadline = γ × (total_comp / CPU频率)
-    DEADLINE_TIGHTENING_MAX = 4.0       # γ最大值 [确保12车RSU排队可完成]
+    DEADLINE_TIGHTENING_MAX = 1.2       # γ最大值 [确保12车RSU排队可完成]
     
     # 模式3: 固定范围的deadline (秒)
     DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
