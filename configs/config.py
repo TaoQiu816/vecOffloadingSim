@@ -122,9 +122,9 @@ class SystemConfig:
     
     C_LIGHT = 3e8           # 光速 (m/s) - Speed of light
     
-    BW_V2I = 20e6           # V2I带宽 (Hz) - V2I bandwidth (20 MHz)
-                            # 影响: V2I最大速率上限，20MHz为LTE标准带宽
-                            # Impact: V2I max rate limit; 20 MHz is standard LTE bandwidth
+    BW_V2I = 50e6           # V2I带宽 (Hz) - V2I bandwidth (50 MHz) [提升2.5倍支持多车卸载]
+                            # 影响: V2I最大速率上限，50MHz支持12车协同卸载场景
+                            # Impact: V2I max rate limit; 50 MHz supports 12-vehicle collaborative offloading
     
     BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz)
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
@@ -267,29 +267,29 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 0.3e9        # 子任务最小计算量 (cycles) - Min subtask computation (0.3 Gcycles) [降低62%]
-                            # 影响: 本地执行约0.10s @3GHz，轻量负载
-                            # Impact: Local execution ~0.10s @3GHz; light load
+    MIN_COMP = 1.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.1 Gcycles) [参考文献10倍，创造卸载需求]
+                            # 影响: 本地执行约0.05s @2GHz，单任务可完成，多任务需卸载
+                            # Impact: Local execution ~0.05s @2GHz; single task ok, multi-task needs offloading
     
-    MAX_COMP = 1.2e9        # 子任务最大计算量 (cycles) - Max subtask computation (1.2 Gcycles) [降低52%]
-                            # 影响: 本地执行约0.40s @3GHz，中等负载
-                            # Impact: Local execution ~0.40s @3GHz; medium load
+    MAX_COMP = 1.0e9        # 子任务最大计算量 (cycles) - Max subtask computation (1.0 Gcycles) [参考文献10倍]
+                            # 影响: 本地执行约0.50s @2GHz，产生队列压力
+                            # Impact: Local execution ~0.50s @2GHz; creates queueing pressure
     
-    MIN_DATA = 1.0e6        # 子任务最小数据量 (bits) - Min subtask data (1 Mbit)
-                            # 影响: V2I传输约0.017s @60Mbps
-                            # Impact: V2I transmission ~0.017s @60Mbps
+    MIN_DATA = 4.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.4 Mbit ≈ 50KB) [参考文献]
+                            # 影响: V2I传输约0.008s @50Mbps单车独占
+                            # Impact: V2I transmission ~0.008s @50Mbps single user
     
-    MAX_DATA = 4.0e6        # 子任务最大数据量 (bits) - Max subtask data (4 Mbit)
-                            # 影响: V2I传输约0.067s @60Mbps
-                            # Impact: V2I transmission ~0.067s @60Mbps
+    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2 Mbit ≈ 250KB) [参考文献中值]
+                            # 影响: V2I传输约0.040s @50Mbps单车独占
+                            # Impact: V2I transmission ~0.040s @50Mbps single user
     
-    MIN_EDGE_DATA = 0.2e6   # DAG边最小数据量 (bits) - Min edge data (200 Kbit)
-                            # 影响: 依赖传输开销约0.004s
-                            # Impact: Dependency transmission overhead ~0.004s
+    MIN_EDGE_DATA = 8.0e5   # DAG边最小数据量 (bits) - Min edge data (0.8 Mbit ≈ 100KB) [参考文献]
+                            # 影响: 依赖数据传输开销，节点间通信
+                            # Impact: Dependency transmission overhead, inter-node communication
     
-    MAX_EDGE_DATA = 0.6e6   # DAG边最大数据量 (bits) - Max edge data (600 Kbit)
-                            # 影响: 依赖传输开销约0.012s
-                            # Impact: Dependency transmission overhead ~0.012s
+    MAX_EDGE_DATA = 4.0e6   # DAG边最大数据量 (bits) - Max edge data (4 Mbit ≈ 500KB) [参考文献]
+                            # 影响: 依赖数据传输开销，节点间通信
+                            # Impact: Dependency transmission overhead, inter-node communication
     
     MEAN_COMP_LOAD = (0.8e9 + 2.5e9) / 2  # 平均计算负载 (cycles) - Average computation load
                                          # 动态计算：(MIN_COMP + MAX_COMP) / 2 = 1.65e9
@@ -320,11 +320,11 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 0.8       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
+    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
                                         # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%（Warmup宽松，先保证可训练）
                                         # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time (Warmup relaxed, ensures trainability)
     
-    DEADLINE_TIGHTENING_MAX = 1.0       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
+    DEADLINE_TIGHTENING_MAX = 1.5       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
                                         # 影响: deadline = γ × (关键路径/本地CPU)，2.5表示本地时间的250%（Warmup阶段，适应处理器共享降速）
                                         # Impact: deadline = γ × (critical_path/local_CPU), 2.5 means 250% of local time (Warmup phase, accommodates processor sharing slowdown)
     
