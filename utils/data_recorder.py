@@ -376,6 +376,17 @@ class DataRecorder:
 
             # (J) [新增] 智能体个体奖励分布分析
             self.plot_agent_reward_distribution()
+            
+            # (K) [新增] 高级分析图表
+            self.plot_latency_energy_tradeoff(df_train, df_baseline)
+            self.plot_performance_radar(df_train, df_baseline)
+            self.plot_resource_utilization(df_train)
+            self.plot_training_stability(df_train)
+            self.plot_completion_time_distribution(df_train, df_baseline)
+            self.plot_rsu_load_balance(df_train)
+            self.plot_episode_duration_analysis(df_train, df_baseline)
+            self.plot_reward_decomposition(df_train)
+            self.plot_success_rate_comparison(df_train, df_baseline)
 
             print(f"[DataRecorder] All plots generated in: {self.plot_dir}")
 
@@ -433,6 +444,411 @@ class DataRecorder:
 
         except Exception as e:
             print(f"[Warning] Agent distribution plot skipped due to error: {e}")
+    
+    def plot_latency_energy_tradeoff(self, df_train, df_baseline):
+        """绘制时延-能耗权衡图（Pareto前沿分析）"""
+        try:
+            # 检查必要列
+            if 'avg_latency' not in df_train.columns or 'avg_energy' not in df_train.columns:
+                return
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # 训练数据：取最后50个episode
+            df_recent = df_train.tail(50)
+            ax.scatter(df_recent['avg_latency'], df_recent['avg_energy'], 
+                      c=df_recent['episode'], cmap='viridis', s=100, alpha=0.6,
+                      label='MAPPO (Recent 50 Eps)', edgecolors='black', linewidth=0.5)
+            
+            # 添加colorbar
+            cbar = plt.colorbar(ax.collections[0], ax=ax)
+            cbar.set_label('Episode', rotation=270, labelpad=20)
+            
+            # Baseline数据
+            if df_baseline is not None and not df_baseline.empty:
+                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                baseline_markers = {'Random': 'x', 'Local-Only': 's', 'Greedy': '^'}
+                
+                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                    policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                    if not policy_data.empty and 'avg_latency' in policy_data.columns:
+                        avg_lat = policy_data['avg_latency'].mean()
+                        avg_eng = policy_data['avg_energy'].mean()
+                        ax.scatter(avg_lat, avg_eng, 
+                                 marker=baseline_markers.get(policy_name, 'o'),
+                                 s=300, color=baseline_colors.get(policy_name, '#7f8c8d'),
+                                 label=f'{policy_name}', edgecolors='black', linewidth=2,
+                                 zorder=10)
+            
+            ax.set_xlabel('Average Latency (s)', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Average Energy (J)', fontsize=12, fontweight='bold')
+            ax.set_title('Latency-Energy Tradeoff Analysis', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', framealpha=0.9)
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'latency_energy_tradeoff.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Latency-energy tradeoff plot skipped: {e}")
+    
+    def plot_performance_radar(self, df_train, df_baseline):
+        """绘制多维性能雷达图"""
+        try:
+            from math import pi
+            
+            # 准备数据：取最后20个episode的平均值
+            df_recent = df_train.tail(20)
+            
+            metrics = {
+                'Task Success\nRate': df_recent['veh_success_rate'].mean() if 'veh_success_rate' in df_recent.columns else 0,
+                'Subtask Success\nRate': df_recent['subtask_success_rate'].mean() if 'subtask_success_rate' in df_recent.columns else 0,
+                'Avg Reward\n(Normalized)': (df_recent['total_reward'].mean() + 10) / 20 if 'total_reward' in df_recent.columns else 0,  # 归一化到[0,1]
+                'Resource\nUtilization': df_recent['avg_assigned_cpu_ghz'].mean() / 12 if 'avg_assigned_cpu_ghz' in df_recent.columns else 0,  # 假设最大12GHz
+                'Queue\nEfficiency': max(0, 1 - df_recent['avg_rsu_queue'].mean() / 10) if 'avg_rsu_queue' in df_recent.columns else 0,  # 反向指标
+            }
+            
+            # 确保所有值在[0,1]范围内
+            metrics = {k: max(0, min(1, v)) for k, v in metrics.items()}
+            
+            categories = list(metrics.keys())
+            values = list(metrics.values())
+            N = len(categories)
+            
+            # 计算角度
+            angles = [n / float(N) * 2 * pi for n in range(N)]
+            values += values[:1]  # 闭合
+            angles += angles[:1]
+            
+            fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
+            
+            # 绘制MAPPO
+            ax.plot(angles, values, 'o-', linewidth=2, color='#1f77b4', label='MAPPO')
+            ax.fill(angles, values, alpha=0.25, color='#1f77b4')
+            
+            # 绘制Baseline（如果有）
+            if df_baseline is not None and not df_baseline.empty:
+                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                    policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                    if not policy_data.empty:
+                        baseline_values = [
+                            policy_data['veh_success_rate'].mean() if 'veh_success_rate' in policy_data.columns else 0,
+                            policy_data['subtask_success_rate'].mean() if 'subtask_success_rate' in policy_data.columns else 0,
+                            (policy_data['total_reward'].mean() + 10) / 20 if 'total_reward' in policy_data.columns else 0,
+                            policy_data['avg_assigned_cpu_ghz'].mean() / 12 if 'avg_assigned_cpu_ghz' in policy_data.columns else 0,
+                            max(0, 1 - policy_data['avg_rsu_queue'].mean() / 10) if 'avg_rsu_queue' in policy_data.columns else 0,
+                        ]
+                        baseline_values = [max(0, min(1, v)) for v in baseline_values]
+                        baseline_values += baseline_values[:1]
+                        ax.plot(angles, baseline_values, 'o--', linewidth=1.5, 
+                               color=baseline_colors.get(policy_name), label=policy_name, alpha=0.7)
+            
+            ax.set_xticks(angles[:-1])
+            ax.set_xticklabels(categories, size=10)
+            ax.set_ylim(0, 1)
+            ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+            ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], size=9)
+            ax.set_title('Multi-Dimensional Performance Comparison', fontsize=14, fontweight='bold', pad=20)
+            ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+            ax.grid(True)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'performance_radar.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Performance radar plot skipped: {e}")
+    
+    def plot_resource_utilization(self, df_train):
+        """绘制资源利用率时序图"""
+        try:
+            fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+            
+            episodes = df_train['episode']
+            window = 20
+            
+            # CPU利用率
+            if 'avg_assigned_cpu_ghz' in df_train.columns:
+                ax = axes[0]
+                ax.plot(episodes, df_train['avg_assigned_cpu_ghz'], alpha=0.3, color='steelblue')
+                ax.plot(episodes, df_train['avg_assigned_cpu_ghz'].rolling(window, min_periods=1).mean(),
+                       linewidth=2, color='darkblue', label='CPU Utilization')
+                ax.set_ylabel('CPU (GHz)', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+                ax.set_title('Resource Utilization Over Training', fontsize=14, fontweight='bold')
+            
+            # RSU队列长度
+            if 'avg_rsu_queue' in df_train.columns:
+                ax = axes[1]
+                ax.plot(episodes, df_train['avg_rsu_queue'], alpha=0.3, color='orange')
+                ax.plot(episodes, df_train['avg_rsu_queue'].rolling(window, min_periods=1).mean(),
+                       linewidth=2, color='darkorange', label='RSU Queue Length')
+                ax.set_ylabel('Queue Length', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+            
+            # Vehicle队列长度
+            if 'avg_veh_queue' in df_train.columns:
+                ax = axes[2]
+                ax.plot(episodes, df_train['avg_veh_queue'], alpha=0.3, color='green')
+                ax.plot(episodes, df_train['avg_veh_queue'].rolling(window, min_periods=1).mean(),
+                       linewidth=2, color='darkgreen', label='Vehicle Queue Length')
+                ax.set_xlabel('Episode', fontweight='bold')
+                ax.set_ylabel('Queue Length', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'resource_utilization.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Resource utilization plot skipped: {e}")
+    
+    def plot_training_stability(self, df_train):
+        """绘制训练稳定性指标（方差、波动率）"""
+        try:
+            fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+            
+            window = 50
+            
+            # Reward标准差（滚动窗口）
+            if 'total_reward' in df_train.columns:
+                ax = axes[0]
+                reward_std = df_train['total_reward'].rolling(window, min_periods=1).std()
+                ax.plot(df_train['episode'], reward_std, linewidth=2, color='purple', label='Reward Std Dev')
+                ax.set_ylabel('Reward Std Dev', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+                ax.set_title('Training Stability Analysis', fontsize=14, fontweight='bold')
+            
+            # Success Rate方差
+            if 'veh_success_rate' in df_train.columns:
+                ax = axes[1]
+                sr_std = df_train['veh_success_rate'].rolling(window, min_periods=1).std()
+                ax.plot(df_train['episode'], sr_std, linewidth=2, color='teal', label='Success Rate Std Dev')
+                ax.set_xlabel('Episode', fontweight='bold')
+                ax.set_ylabel('Success Rate Std Dev', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'training_stability.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Training stability plot skipped: {e}")
+    
+    def plot_completion_time_distribution(self, df_train, df_baseline):
+        """绘制任务完成时间分布（CDF）"""
+        try:
+            if 'avg_completion_time' not in df_train.columns:
+                return
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # MAPPO的CDF（最后50个episode）
+            df_recent = df_train.tail(50)
+            completion_times = df_recent['avg_completion_time'].dropna().sort_values()
+            cdf = np.arange(1, len(completion_times) + 1) / len(completion_times)
+            ax.plot(completion_times, cdf, linewidth=2.5, color='#1f77b4', label='MAPPO', marker='o', markersize=3)
+            
+            # Baseline的CDF
+            if df_baseline is not None and not df_baseline.empty:
+                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                
+                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                    policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                    if not policy_data.empty and 'avg_completion_time' in policy_data.columns:
+                        times = policy_data['avg_completion_time'].dropna().sort_values()
+                        cdf_bl = np.arange(1, len(times) + 1) / len(times)
+                        ax.plot(times, cdf_bl, linewidth=2, 
+                               color=baseline_colors.get(policy_name),
+                               linestyle=baseline_styles.get(policy_name),
+                               label=policy_name, marker='s', markersize=3, alpha=0.8)
+            
+            ax.set_xlabel('Task Completion Time (s)', fontsize=12, fontweight='bold')
+            ax.set_ylabel('CDF', fontsize=12, fontweight='bold')
+            ax.set_title('Task Completion Time Distribution (CDF)', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', framealpha=0.9)
+            ax.grid(True, linestyle='--', alpha=0.5)
+            ax.set_ylim([0, 1])
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'completion_time_cdf.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Completion time CDF plot skipped: {e}")
+    
+    def plot_rsu_load_balance(self, df_train):
+        """绘制RSU负载均衡分析"""
+        try:
+            # 使用avg_queue_len列（实际可用的列）
+            if 'avg_queue_len' not in df_train.columns:
+                return
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            window = 20
+            episodes = df_train['episode']
+            queue_smooth = df_train['avg_queue_len'].rolling(window, min_periods=1).mean()
+            
+            ax.fill_between(episodes, 0, queue_smooth, alpha=0.3, color='orange', label='Avg Queue Length')
+            ax.plot(episodes, queue_smooth, linewidth=2, color='darkorange')
+            
+            # 添加负载阈值线
+            ax.axhline(y=5, color='red', linestyle='--', linewidth=1.5, label='High Load Threshold', alpha=0.7)
+            ax.axhline(y=2, color='green', linestyle='--', linewidth=1.5, label='Low Load Threshold', alpha=0.7)
+            
+            ax.set_xlabel('Episode', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Average Queue Length', fontsize=12, fontweight='bold')
+            ax.set_title('Queue Load Balance Analysis', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', framealpha=0.9)
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'queue_load_balance.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Queue load balance plot skipped: {e}")
+    
+    def plot_episode_duration_analysis(self, df_train, df_baseline):
+        """绘制Episode时长分析"""
+        try:
+            if 'duration' not in df_train.columns:
+                return
+            
+            fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+            
+            # 时长时序图
+            ax = axes[0]
+            episodes = df_train['episode']
+            window = 20
+            ax.plot(episodes, df_train['duration'], alpha=0.3, color='steelblue', label='Raw')
+            ax.plot(episodes, df_train['duration'].rolling(window, min_periods=1).mean(),
+                   linewidth=2, color='darkblue', label=f'Smoothed ({window}-ep)')
+            ax.set_ylabel('Episode Duration (s)', fontweight='bold')
+            ax.set_title('Episode Duration Analysis', fontsize=14, fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5)
+            
+            # 时长分布直方图
+            ax = axes[1]
+            ax.hist(df_train['duration'], bins=30, color='steelblue', alpha=0.7, edgecolor='black')
+            ax.axvline(df_train['duration'].mean(), color='red', linestyle='--', linewidth=2, 
+                      label=f'Mean: {df_train["duration"].mean():.2f}s')
+            ax.axvline(df_train['duration'].median(), color='green', linestyle='--', linewidth=2,
+                      label=f'Median: {df_train["duration"].median():.2f}s')
+            ax.set_xlabel('Duration (s)', fontweight='bold')
+            ax.set_ylabel('Frequency', fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5, axis='y')
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'episode_duration.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Episode duration plot skipped: {e}")
+    
+    def plot_reward_decomposition(self, df_train):
+        """绘制Reward组成分解（与其他指标的相关性）"""
+        try:
+            if 'total_reward' not in df_train.columns:
+                return
+            
+            fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+            
+            # Reward vs Success Rate
+            if 'veh_success_rate' in df_train.columns:
+                ax = axes[0, 0]
+                scatter = ax.scatter(df_train['veh_success_rate'] * 100, df_train['total_reward'],
+                                   c=df_train['episode'], cmap='viridis', s=50, alpha=0.6)
+                ax.set_xlabel('Vehicle Success Rate (%)', fontweight='bold')
+                ax.set_ylabel('Total Reward', fontweight='bold')
+                ax.set_title('Reward vs Success Rate', fontweight='bold')
+                plt.colorbar(scatter, ax=ax, label='Episode')
+                ax.grid(True, alpha=0.3)
+            
+            # Reward vs Decision Distribution
+            if 'decision_frac_rsu' in df_train.columns:
+                ax = axes[0, 1]
+                scatter = ax.scatter(df_train['decision_frac_rsu'] * 100, df_train['total_reward'],
+                                   c=df_train['episode'], cmap='plasma', s=50, alpha=0.6)
+                ax.set_xlabel('RSU Offloading Ratio (%)', fontweight='bold')
+                ax.set_ylabel('Total Reward', fontweight='bold')
+                ax.set_title('Reward vs RSU Usage', fontweight='bold')
+                plt.colorbar(scatter, ax=ax, label='Episode')
+                ax.grid(True, alpha=0.3)
+            
+            # Reward vs Queue Length
+            if 'avg_queue_len' in df_train.columns:
+                ax = axes[1, 0]
+                scatter = ax.scatter(df_train['avg_queue_len'], df_train['total_reward'],
+                                   c=df_train['episode'], cmap='coolwarm', s=50, alpha=0.6)
+                ax.set_xlabel('Average Queue Length', fontweight='bold')
+                ax.set_ylabel('Total Reward', fontweight='bold')
+                ax.set_title('Reward vs Queue Congestion', fontweight='bold')
+                plt.colorbar(scatter, ax=ax, label='Episode')
+                ax.grid(True, alpha=0.3)
+            
+            # Reward vs CPU Allocation
+            if 'avg_assigned_cpu_ghz' in df_train.columns:
+                ax = axes[1, 1]
+                scatter = ax.scatter(df_train['avg_assigned_cpu_ghz'], df_train['total_reward'],
+                                   c=df_train['episode'], cmap='viridis', s=50, alpha=0.6)
+                ax.set_xlabel('Avg Assigned CPU (GHz)', fontweight='bold')
+                ax.set_ylabel('Total Reward', fontweight='bold')
+                ax.set_title('Reward vs Resource Allocation', fontweight='bold')
+                plt.colorbar(scatter, ax=ax, label='Episode')
+                ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'reward_decomposition.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Reward decomposition plot skipped: {e}")
+    
+    def plot_success_rate_comparison(self, df_train, df_baseline):
+        """绘制多维成功率对比（任务/子任务/V2V）"""
+        try:
+            fig, ax = plt.subplots(figsize=(12, 7))
+            
+            episodes = df_train['episode']
+            window = 20
+            
+            # Task Success Rate
+            if 'task_success_rate' in df_train.columns:
+                task_sr_smooth = df_train['task_success_rate'].rolling(window, min_periods=1).mean() * 100
+                ax.plot(episodes, task_sr_smooth, linewidth=2.5, color='#1f77b4', 
+                       label='Task Success Rate', marker='o', markersize=2, markevery=10)
+            
+            # Subtask Success Rate
+            if 'subtask_success_rate' in df_train.columns:
+                subtask_sr_smooth = df_train['subtask_success_rate'].rolling(window, min_periods=1).mean() * 100
+                ax.plot(episodes, subtask_sr_smooth, linewidth=2.5, color='#ff7f0e',
+                       label='Subtask Success Rate', marker='s', markersize=2, markevery=10)
+            
+            # V2V Subtask Success Rate
+            if 'v2v_subtask_success_rate' in df_train.columns:
+                v2v_sr_smooth = df_train['v2v_subtask_success_rate'].rolling(window, min_periods=1).mean() * 100
+                ax.plot(episodes, v2v_sr_smooth, linewidth=2.5, color='#2ca02c',
+                       label='V2V Subtask Success Rate', marker='^', markersize=2, markevery=10)
+            
+            # 添加目标线
+            ax.axhline(y=80, color='red', linestyle='--', linewidth=1.5, alpha=0.5, label='Target (80%)')
+            
+            ax.set_xlabel('Episode', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Success Rate (%)', fontsize=12, fontweight='bold')
+            ax.set_title('Multi-Level Success Rate Comparison', fontsize=14, fontweight='bold')
+            ax.legend(loc='best', framealpha=0.9, fontsize=10)
+            ax.grid(True, linestyle='--', alpha=0.5)
+            ax.set_ylim([0, 105])
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'success_rate_multilevel.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as e:
+            print(f"[Warning] Success rate comparison plot skipped: {e}")
 
     def close(self):
         """

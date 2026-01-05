@@ -85,12 +85,12 @@ class TrainConfig:
     USE_LR_DECAY = True     # 是否启用学习率衰减 - Enable learning rate decay
                             # 影响: 训练后期降低学习率有助于收敛和稳定性
                             # Impact: Reducing LR in late training aids convergence and stability
-    ###要改
-    LR_DECAY_STEPS = 100    # 学习率衰减间隔 (Episodes) - Learning rate decay interval
-                            # 影响: 每N个Episodes衰减一次，控制衰减频率
-                            # Impact: Decay every N episodes; controls decay frequency
-                            # 推荐范围: 100-1000 (取决于MAX_EPISODES)
-                            # Recommended range: 100-1000 (depends on MAX_EPISODES)
+    
+    LR_DECAY_STEPS = 100    # 学习率衰减间隔 (Episodes) - Learning rate decay interval [适应短期训练]
+                            # 影响: 每N个Episodes衰减一次，短期训练使用较快衰减
+                            # Impact: Decay every N episodes; faster decay for short-term training
+                            # 推荐范围: 50-100 (短期), 100-200 (长期)
+                            # Recommended range: 50-100 (short-term), 100-200 (long-term)
     
     LR_DECAY_RATE = 0.92    # 学习率衰减率 - Learning rate decay rate
                             # 影响: 指数衰减系数 (new_lr = lr * decay_rate)
@@ -155,25 +155,25 @@ class TrainConfig:
                             # 推荐范围: 3-10 (5 for better sample utilization)
                             # Recommended range: 3-10 (5 for better sample utilization)
     
-    MINI_BATCH_SIZE = 128   # 小批次大小 - Mini-batch size for SGD updates (MINIBATCHES = 4, 每批128样本)
+    MINI_BATCH_SIZE = 256   # 小批次大小 - Mini-batch size for SGD updates [增至256提高稳定性]
                             # 影响: 梯度估计的方差和计算效率
                             #       - 较大: 梯度稳定，但内存占用高
                             #       - 较小: 增加随机性，适应动态图结构
                             # Impact: Variance of gradient estimation and computational efficiency
                             #       - Larger: Stable gradients, but higher memory usage
                             #       - Smaller: Increases stochasticity, adapts to dynamic graphs
-                            # 推荐范围: 64-256 (128 for stable gradients)
-                            # Recommended range: 64-256 (128 for stable gradients)
+                            # 推荐范围: 64-256 (256 for better stability)
+                            # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.01     # 熵正则化系数 - Entropy coefficient for exploration
+    ENTROPY_COEF = 0.005    # 熵正则化系数 - Entropy coefficient for exploration [降至0.005]
                             # 影响: 增加动作探索性，应对动态环境
-                            #       - 过大: 策略过于随机，难以收敛
+                            #       - 过大: 策略过于随机，难以收敛（之前0.01导致entropy持续增长）
                             #       - 过小: 策略过早收敛到局部最优
                             # Impact: Increases action exploration for dynamic environments
                             #       - Too large: Policy too random, hard to converge
                             #       - Too small: Policy converges prematurely to local optimum
-                            # 推荐范围: 0.01-0.05 (0.03 for enhanced exploration)
-                            # Recommended range: 0.01-0.05 (0.03 for enhanced exploration)
+                            # 推荐范围: 0.005-0.02 (0.005 for controlled exploration)
+                            # Recommended range: 0.005-0.02
 
     VF_COEF = 0.5           # 价值函数损失系数 - Value function loss coefficient
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
@@ -201,53 +201,55 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 5.0    # RSU的Logit偏置 - Logit bias for RSU action
-                            # 影响: 在softmax前给RSU logit加上偏置，大幅提升选择概率以对抗11个邻居的概率淹没
-                            #       提升至5.0以强制探索RSU，防止策略崩溃到V2V
-                            # Impact: Adds bias to RSU logit before softmax, drastically boosts selection to counter neighbor swamping
-                            #       Reduced to 2.0 to allow V2V exploration; 8.0 suppresses V2V to <0.2%
-                            # 推荐范围: 1.0-3.0 (平衡探索与利用)
-                            # Recommended range: 1.0-3.0 (balances exploration and exploitation)
+    LOGIT_BIAS_RSU = 2.0    # RSU的Logit偏置 - Logit bias for RSU action [降至2.0]
+                            # 影响: 在softmax前给RSU logit加上偏置，适度提升选择概率
+                            #       之前5.0导致100% RSU，降至2.0平衡探索
+                            # Impact: Adds bias to RSU logit before softmax, moderately boosts selection
+                            #       Previous 5.0 caused 100% RSU; reduced to 2.0 for balanced exploration
+                            # 推荐范围: 1.0-3.0 (2.0 balances RSU/Local/V2V)
+                            # Recommended range: 1.0-3.0
     
-    LOGIT_BIAS_LOCAL = 2.0  # Local的Logit偏置 - Logit bias for Local action
-                            # 影响: 在softmax前给Local logit加上偏置，中等提升选择概率
-                            #       提升至2.0以增加Local探索，配合Deadline放宽策略
-                            # Impact: Adds bias to Local logit before softmax, moderately boosts selection
-                            #       Reduced to 1.0 to encourage offloading; Local still ~15-20% initial prob
-                            # 推荐范围: 0.5-2.0 (轻微偏置即可)
-                            # Recommended range: 0.5-2.0 (light bias sufficient)
+    LOGIT_BIAS_LOCAL = 1.5  # Local的Logit偏置 - Logit bias for Local action [降至1.5]
+                            # 影响: 在softmax前给Local logit加上偏置，轻度提升选择概率
+                            #       降至1.5使本地/RSU/V2V更平衡
+                            # Impact: Adds bias to Local logit before softmax, lightly boosts selection
+                            #       Reduced to 1.5 for better Local/RSU/V2V balance
+                            # 推荐范围: 1.0-2.0 (1.5 for moderate preference)
+                            # Recommended range: 1.0-2.0
     
     # -------------------------------------------------------------------------
-    # Bias退火参数 (Bias Annealing)
+    # Bias退火参数 (Bias Annealing) [适应短期训练]
     # -------------------------------------------------------------------------
-    BIAS_DECAY_EVERY_EP = 100  # 每N个episode退火一次 - Decay bias every N episodes
-                               # 影响: 控制退火频率，100表示每100个episode降低一次bias
-                               # Impact: Controls decay frequency; 100 means decay every 100 episodes
+    BIAS_DECAY_EVERY_EP = 100  # 每N个episode退火一次 - Decay bias every N episodes [适应短期]
+                               # 影响: 控制退火频率，短期训练使用较快退火
+                               # Impact: Controls decay frequency; faster decay for short-term training
     
-    BIAS_DECAY_RSU = 1.0       # RSU bias每次退火减少量 - RSU bias decay amount per step
-                               # 影响: 每次退火时LOGIT_BIAS_RSU减少的量
-                               # Impact: Amount to reduce LOGIT_BIAS_RSU per decay step
+    BIAS_DECAY_RSU = 0.5       # RSU bias每次退火减少量 - RSU bias decay amount per step [降至0.5]
+                               # 影响: 每次退火时LOGIT_BIAS_RSU减少的量，更缓慢的衰减
+                               # Impact: Amount to reduce LOGIT_BIAS_RSU per decay step, slower decay
     
-    BIAS_DECAY_LOCAL = 0.5     # Local bias每次退火减少量 - Local bias decay amount per step
-                               # 影响: 每次退火时LOGIT_BIAS_LOCAL减少的量
-                               # Impact: Amount to reduce LOGIT_BIAS_LOCAL per decay step
+    BIAS_DECAY_LOCAL = 0.3     # Local bias每次退火减少量 - Local bias decay amount per step [降至0.3]
+                               # 影响: 每次退火时LOGIT_BIAS_LOCAL减少的量，更缓慢的衰减
+                               # Impact: Amount to reduce LOGIT_BIAS_LOCAL per decay step, slower decay
     
-    BIAS_MIN_RSU = 0.0         # RSU bias最小值 - Minimum RSU bias
-                               # 影响: LOGIT_BIAS_RSU不会低于此值
-                               # Impact: LOGIT_BIAS_RSU will not go below this value
+    BIAS_MIN_RSU = 0.5         # RSU bias最小值 - Minimum RSU bias [设为0.5]
+                               # 影响: LOGIT_BIAS_RSU不会低于此值，保持RSU探索
+                               # Impact: LOGIT_BIAS_RSU will not go below this value, maintains RSU exploration
     
-    BIAS_MIN_LOCAL = 0.0       # Local bias最小值 - Minimum Local bias
-                               # 影响: LOGIT_BIAS_LOCAL不会低于此值
-                               # Impact: LOGIT_BIAS_LOCAL will not go below this value
+    BIAS_MIN_LOCAL = 0.5       # Local bias最小值 - Minimum Local bias [设为0.5]
+                               # 影响: LOGIT_BIAS_LOCAL不会低于此值，保持Local探索
+                               # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 200     # 总训练Episodes - Total training episodes
-                            # 影响: 控制训练总量，5000个Episodes约需数小时到数天（取决于硬件）
-                            # Impact: Controls total training volume; 5000 episodes take hours to days (hardware-dependent)
-                            # 推荐范围: 1000-10000 (1000 for quick experiments, 10000 for production)
-                            # Recommended range: 1000-10000
+    MAX_EPISODES = 300     # 总训练Episodes - Total training episodes [短期验证训练]
+                            # 影响: 短期验证性训练，快速验证配置有效性
+                            # Impact: Short-term validation training; quickly verify configuration effectiveness
+                            # 验证目标: Task Success Rate > 0%, Decision分布合理, Entropy收敛
+                            # Validation goals: Task Success Rate > 0%, balanced decisions, entropy converges
+                            # 推荐范围: 300-500 (验证), 1000-3000 (完整训练)
+                            # Recommended range: 300-500 (validation), 1000-3000 (full training)
     
     MAX_STEPS = 200        # 每个Episode最大步数 - Max steps per episode
                             # 影响: 必须与 SystemConfig.MAX_STEPS 一致
@@ -256,25 +258,25 @@ class TrainConfig:
                             #       MAX_STEPS * DT = Total episode duration (400 * 0.05s = 20s)
 
     # -------------------------------------------------------------------------
-    # 评估与保存 (Evaluation and Checkpointing)
+    # 评估与保存 (Evaluation and Checkpointing) [适应短期验证训练]
     # -------------------------------------------------------------------------
     LOG_INTERVAL = 10       # 日志打印间隔 (Episodes) - Log printing interval
                             # 影响: 每N个Episodes打印一次训练日志到终端
                             # Impact: Prints training log to terminal every N episodes
-                            # 推荐范围: 1-50 (1 for debugging, 50 for production)
-                            # Recommended range: 1-50
+                            # 推荐范围: 5-10 (验证训练频繁监控)
+                            # Recommended range: 5-10 (frequent monitoring for validation)
     
-    SAVE_INTERVAL = 100     # 模型保存间隔 (Episodes) - Model checkpoint interval
-                            # 影响: 每N个Episodes保存一次模型检查点，影响磁盘占用
-                            # Impact: Saves model checkpoint every N episodes; affects disk usage
-                            # 推荐范围: 50-500 (取决于MAX_EPISODES和磁盘空间)
-                            # Recommended range: 50-500 (depends on MAX_EPISODES and disk space)
+    SAVE_INTERVAL = 100     # 模型保存间隔 (Episodes) - Model checkpoint interval [适应短期]
+                            # 影响: 每N个Episodes保存一次模型检查点
+                            # Impact: Saves model checkpoint every N episodes
+                            # 推荐范围: 50-100 (短期), 100-200 (长期)
+                            # Recommended range: 50-100 (short-term), 100-200 (long-term)
     
-    EVAL_INTERVAL = 50      # 评估间隔 (Episodes) - Evaluation interval
-                            # 影响: 每N个Episodes进行一次验证，评估训练进度
-                            # Impact: Evaluates training progress every N episodes
-                            # 推荐范围: 10-100
-                            # Recommended range: 10-100
+    EVAL_INTERVAL = 25      # 评估间隔 (Episodes) - Evaluation interval [增加评估频率]
+                            # 影响: 每N个Episodes进行一次验证，短期训练更频繁评估
+                            # Impact: Evaluates training progress every N episodes; more frequent for validation
+                            # 推荐范围: 20-50 (短期), 50-100 (长期)
+                            # Recommended range: 20-50 (short-term), 50-100 (long-term)
 
     DEVICE_NAME = "cuda"    # 训练设备 - Training device
                             # 选项: "cuda" (GPU), "cpu", "mps" (Apple Silicon)
