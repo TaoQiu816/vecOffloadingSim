@@ -275,13 +275,13 @@ class SystemConfig:
                             # 影响: 本地执行约0.10s @2GHz，最坏2.4s可完成
                             # Impact: Local execution ~0.10s @2GHz; worst case 2.4s completable
     
-    MIN_DATA = 2.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.2 Mbit ≈ 25KB) [降低50%减少传输瓶颈]
-                            # 影响: V2I传输约0.004s @50Mbps单车独占
-                            # Impact: V2I transmission ~0.004s @50Mbps single user
+    MIN_DATA = 6.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.6 Mbit ≈ 75KB) [满足环境断言>10ms]
+                            # 影响: V2I传输约0.012s @50Mbps单车独占
+                            # Impact: V2I transmission ~0.012s @50Mbps single user
     
-    MAX_DATA = 1.0e6        # 子任务最大数据量 (bits) - Max subtask data (1 Mbit ≈ 125KB) [降低50%]
-                            # 影响: V2I传输约0.020s @50Mbps单车独占，12车1.44s
-                            # Impact: V2I transmission ~0.020s @50Mbps single user, 12 vehicles 1.44s
+    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2 Mbit ≈ 250KB) [参考文献中值]
+                            # 影响: V2I传输约0.040s @50Mbps单车独占，12车4.8s
+                            # Impact: V2I transmission ~0.040s @50Mbps single user, 12 vehicles 4.8s
     
     MIN_EDGE_DATA = 8.0e5   # DAG边最小数据量 (bits) - Min edge data (0.8 Mbit ≈ 100KB) [参考文献]
                             # 影响: 依赖数据传输开销，节点间通信
