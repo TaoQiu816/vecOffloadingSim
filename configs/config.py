@@ -122,9 +122,9 @@ class SystemConfig:
     
     C_LIGHT = 3e8           # 光速 (m/s) - Speed of light
     
-    BW_V2I = 50e6           # V2I带宽 (Hz) - V2I bandwidth (50 MHz) [提升2.5倍支持多车卸载]
-                            # 影响: V2I最大速率上限，50MHz支持12车协同卸载场景
-                            # Impact: V2I max rate limit; 50 MHz supports 12-vehicle collaborative offloading
+    BW_V2I = 100e6          # V2I带宽 (Hz) - V2I bandwidth (100 MHz) [提升到100MHz减少12车队列拥塞]
+                            # 影响: V2I最大速率上限，100MHz使12车可在deadline内完成
+                            # Impact: V2I max rate limit; 100 MHz enables 12 vehicles to finish within deadline
     
     BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz)
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
@@ -320,13 +320,13 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 2.0       # γ最小值（无量纲系数！）- γ minimum value [放宽至2.0]
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time
+    DEADLINE_TIGHTENING_MIN = 4.0       # γ最小值（无量纲系数！）- γ minimum value [放宽至4.0给队列等待留时间]
+                                        # 影响: deadline = γ × (total_comp/median_CPU)，4.0给传输+队列留100%余量
+                                        # Impact: deadline = γ × (total_comp/median_CPU), 4.0 gives 100% buffer for transmission+queue
     
-    DEADLINE_TIGHTENING_MAX = 3.0       # γ最大值（无量纲系数！）- γ maximum value [放宽至3.0]
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，3.0表示本地时间的300%，确保任务可完成
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 3.0 means 300% of local time, ensures task completability
+    DEADLINE_TIGHTENING_MAX = 6.0       # γ最大值（无量纲系数！）- γ maximum value [放宽至6.0确保12车竞争可完成]
+                                        # 影响: deadline = γ × (total_comp/median_CPU)，6.0确保12车RSU排队仍可完成
+                                        # Impact: deadline = γ × (total_comp/median_CPU), 6.0 ensures 12-vehicle RSU queueing completes
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
