@@ -275,13 +275,13 @@ class SystemConfig:
                             # 影响: 本地执行约0.10s @2GHz，最坏2.4s可完成
                             # Impact: Local execution ~0.10s @2GHz; worst case 2.4s completable
     
-    MIN_DATA = 6.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.6 Mbit ≈ 75KB) [满足环境断言>10ms]
-                            # 影响: V2I传输约0.012s @50Mbps单车独占
-                            # Impact: V2I transmission ~0.012s @50Mbps single user
+    MIN_DATA = 1.2e6        # 子任务最小数据量 (bits) - Min subtask data (1.2 Mbit ≈ 150KB) [满足>10ms @100Mbps]
+                            # 影响: V2I传输约0.012s @100Mbps单车独占
+                            # Impact: V2I transmission ~0.012s @100Mbps single user
     
-    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2 Mbit ≈ 250KB) [参考文献中值]
-                            # 影响: V2I传输约0.040s @50Mbps单车独占，12车4.8s
-                            # Impact: V2I transmission ~0.040s @50Mbps single user, 12 vehicles 4.8s
+    MAX_DATA = 3.0e6        # 子任务最大数据量 (bits) - Max subtask data (3 Mbit ≈ 375KB) [参考文献上限]
+                            # 影响: V2I传输约0.030s @100Mbps单车独占，12车3.6s
+                            # Impact: V2I transmission ~0.030s @100Mbps single user, 12 vehicles 3.6s
     
     MIN_EDGE_DATA = 8.0e5   # DAG边最小数据量 (bits) - Min edge data (0.8 Mbit ≈ 100KB) [参考文献]
                             # 影响: 依赖数据传输开销，节点间通信
@@ -320,13 +320,13 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 4.0       # γ最小值（无量纲系数！）- γ minimum value [放宽至4.0给队列等待留时间]
+    DEADLINE_TIGHTENING_MIN = 4.0       # γ最小值（无量纲系数！）- γ minimum value [给传输+队列留100%余量]
                                         # 影响: deadline = γ × (total_comp/median_CPU)，4.0给传输+队列留100%余量
                                         # Impact: deadline = γ × (total_comp/median_CPU), 4.0 gives 100% buffer for transmission+queue
     
-    DEADLINE_TIGHTENING_MAX = 6.0       # γ最大值（无量纲系数！）- γ maximum value [放宽至6.0确保12车竞争可完成]
-                                        # 影响: deadline = γ × (total_comp/median_CPU)，6.0确保12车RSU排队仍可完成
-                                        # Impact: deadline = γ × (total_comp/median_CPU), 6.0 ensures 12-vehicle RSU queueing completes
+    DEADLINE_TIGHTENING_MAX = 7.0       # γ最大值（无量纲系数！）- γ maximum value [确保12车@100Mbps排队可完成]
+                                        # 影响: deadline = γ × (total_comp/median_CPU)，7.0确保12车RSU排队(3.62s)可完成
+                                        # Impact: deadline = γ × (total_comp/median_CPU), 7.0 ensures 12-vehicle RSU queueing completes
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
