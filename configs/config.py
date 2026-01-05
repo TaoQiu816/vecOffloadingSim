@@ -267,21 +267,21 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 1.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.1 Gcycles) [参考文献10倍，创造卸载需求]
-                            # 影响: 本地执行约0.05s @2GHz，单任务可完成，多任务需卸载
-                            # Impact: Local execution ~0.05s @2GHz; single task ok, multi-task needs offloading
+    MIN_COMP = 2.0e7        # 子任务最小计算量 (cycles) - Min subtask computation (0.02 Gcycles) [参考文献2倍，本地可行]
+                            # 影响: 本地执行约0.01s @2GHz，确保本地执行可行
+                            # Impact: Local execution ~0.01s @2GHz; ensures local execution feasible
     
-    MAX_COMP = 1.0e9        # 子任务最大计算量 (cycles) - Max subtask computation (1.0 Gcycles) [参考文献10倍]
-                            # 影响: 本地执行约0.50s @2GHz，产生队列压力
-                            # Impact: Local execution ~0.50s @2GHz; creates queueing pressure
+    MAX_COMP = 2.0e8        # 子任务最大计算量 (cycles) - Max subtask computation (0.2 Gcycles) [参考文献2倍]
+                            # 影响: 本地执行约0.10s @2GHz，最坏2.4s可完成
+                            # Impact: Local execution ~0.10s @2GHz; worst case 2.4s completable
     
-    MIN_DATA = 4.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.4 Mbit ≈ 50KB) [参考文献]
-                            # 影响: V2I传输约0.008s @50Mbps单车独占
-                            # Impact: V2I transmission ~0.008s @50Mbps single user
+    MIN_DATA = 2.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.2 Mbit ≈ 25KB) [降低50%减少传输瓶颈]
+                            # 影响: V2I传输约0.004s @50Mbps单车独占
+                            # Impact: V2I transmission ~0.004s @50Mbps single user
     
-    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2 Mbit ≈ 250KB) [参考文献中值]
-                            # 影响: V2I传输约0.040s @50Mbps单车独占
-                            # Impact: V2I transmission ~0.040s @50Mbps single user
+    MAX_DATA = 1.0e6        # 子任务最大数据量 (bits) - Max subtask data (1 Mbit ≈ 125KB) [降低50%]
+                            # 影响: V2I传输约0.020s @50Mbps单车独占，12车1.44s
+                            # Impact: V2I transmission ~0.020s @50Mbps single user, 12 vehicles 1.44s
     
     MIN_EDGE_DATA = 8.0e5   # DAG边最小数据量 (bits) - Min edge data (0.8 Mbit ≈ 100KB) [参考文献]
                             # 影响: 依赖数据传输开销，节点间通信
@@ -320,13 +320,13 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值（无量纲系数！）- γ minimum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%（Warmup宽松，先保证可训练）
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time (Warmup relaxed, ensures trainability)
+    DEADLINE_TIGHTENING_MIN = 2.0       # γ最小值（无量纲系数！）- γ minimum value [放宽至2.0]
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.0表示本地时间的200%
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.0 means 200% of local time
     
-    DEADLINE_TIGHTENING_MAX = 1.5       # γ最大值（无量纲系数！）- γ maximum value (dimensionless coefficient!)
-                                        # 影响: deadline = γ × (关键路径/本地CPU)，2.5表示本地时间的250%（Warmup阶段，适应处理器共享降速）
-                                        # Impact: deadline = γ × (critical_path/local_CPU), 2.5 means 250% of local time (Warmup phase, accommodates processor sharing slowdown)
+    DEADLINE_TIGHTENING_MAX = 3.0       # γ最大值（无量纲系数！）- γ maximum value [放宽至3.0]
+                                        # 影响: deadline = γ × (关键路径/本地CPU)，3.0表示本地时间的300%，确保任务可完成
+                                        # Impact: deadline = γ × (critical_path/local_CPU), 3.0 means 300% of local time, ensures task completability
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
