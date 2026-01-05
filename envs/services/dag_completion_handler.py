@@ -100,7 +100,8 @@ class DagCompletionHandler:
         return created_jobs
     
     def on_compute_done(self, job: ComputeJob, vehicle: Vehicle, 
-                        time_now: float, debug_trace: bool = False) -> Dict[str, Any]:
+                        time_now: float, veh_cpu_q: Dict = None, rsu_cpu_q: Dict = None, 
+                        rsus: List = None, debug_trace: bool = False) -> Dict[str, Any]:
         """
         计算完成后的处理。
         
@@ -108,6 +109,9 @@ class DagCompletionHandler:
             job: 完成的ComputeJob
             vehicle: 任务所属车辆
             time_now: 当前时间
+            veh_cpu_q: 车辆计算队列（用于入队新解锁节点）
+            rsu_cpu_q: RSU计算队列（用于入队新解锁节点）
+            rsus: RSU列表（用于入队新解锁节点）
             debug_trace: 是否记录trace事件
             
         Returns:
@@ -120,8 +124,19 @@ class DagCompletionHandler:
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]
         dag.task_locations[subtask_id] = exec_loc
         
-        # 调用DAG的_mark_done（只做拓扑依赖递减，不直接推进EDGE）
+        # 调用DAG的_mark_done（解锁后续节点：PENDING→READY）
         dag._mark_done(subtask_id)
+        
+        # 【关键修复】尝试将新解锁的READY节点入队
+        if veh_cpu_q is not None and rsu_cpu_q is not None and rsus is not None:
+            # 找到所有READY且已分配的节点
+            for child_id in range(dag.num_subtasks):
+                if (dag.status[child_id] == 1 and  # READY
+                    dag.exec_locations[child_id] is not None):  # 已分配
+                    # 尝试入队（会检查input/edge数据是否到齐）
+                    self._try_enqueue_compute_if_ready(
+                        vehicle, child_id, time_now, veh_cpu_q, rsu_cpu_q, rsus
+                    )
         
         # 返回事件信息
         return {

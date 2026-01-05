@@ -436,7 +436,7 @@ class DAGTask:
                     
                     self.inter_task_transfers[child][subtask_id] = {
                         'rem_bytes': transfer_data,
-                        'speed': 0.0  # pending状态，未激活
+                        'transfer_speed': 0.0  # pending状态，未激活
                     }
                     self.waiting_for_data[child] = True
                     
@@ -452,7 +452,7 @@ class DAGTask:
                     
                     self.inter_task_transfers[child][subtask_id] = {
                         'rem_bytes': transfer_data,
-                        'speed': 0.0  # pending状态，由Phase2激活后推进
+                        'transfer_speed': 0.0  # pending状态，由Phase2激活后推进
                     }
                     self.waiting_for_data[child] = True
             
@@ -461,9 +461,12 @@ class DAGTask:
                 # [修复] 同节点传输已完成，不需要检查传输
                 has_pending_transfers = (child in self.inter_task_transfers and 
                                        len(self.inter_task_transfers[child]) > 0)
+                child_unassigned = (child_location is None)
                 
-                if not has_pending_transfers:
-                    # 所有依赖满足且传输完成，解锁为READY
+                # [关键修复] child未分配时，即使有pending传输也应变READY（让Agent有机会调度）
+                # 传输会在Phase2中激活（当child被分配后）
+                if not has_pending_transfers or child_unassigned:
+                    # 所有依赖满足且（传输完成 或 child未分配），解锁为READY
                     if self.status[child] == 0:  # PENDING
                         self.status[child] = 1  # PENDING -> READY
                         unlocked_ready_count += 1

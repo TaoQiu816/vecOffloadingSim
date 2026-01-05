@@ -420,7 +420,8 @@ def evaluate_single_baseline_episode(env, policy_name):
 
     # 成功率统计（与训练循环一致）
     episode_vehicle_count = len(env.vehicles)
-    success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
+    success_count = sum([1 for v in env.vehicles 
+                         if v.task_dag.is_finished and not v.task_dag.is_failed])
     veh_success_rate = success_count / max(episode_vehicle_count, 1)
     task_success_rate = success_count / max(episode_vehicle_count, 1)
     
@@ -1045,9 +1046,12 @@ def main():
         frac_v2v = (stats['neighbor_cnt'] / total_decisions)
 
         # 成功率统计（存储为0-1，展示时再乘100）
+        # [关键修复] 成功 = 完成且未超时失败
         episode_vehicle_count = len(env.vehicles)
         episode_task_count = episode_vehicle_count
-        success_count = sum([1 for v in env.vehicles if v.task_dag.is_finished])
+        
+        success_count = sum([1 for v in env.vehicles 
+                             if v.task_dag.is_finished and not v.task_dag.is_failed])
         veh_success_rate = success_count / max(episode_vehicle_count, 1)
         task_success_rate = success_count / max(episode_vehicle_count, 1)
 
@@ -1286,14 +1290,17 @@ def main():
             service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
             idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
             
+            # 计算仿真时间
+            sim_time = total_steps * Cfg.DT
+            
             # 打印表头（每个episode都打印，但只在episode 1或每20个episode打印表头）
             if episode == 1 or episode % 20 == 1:
-                print("\n" + "="*220)
-                print(f"| {'Ep':>5} | {'Time(s)':>8} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'Deadlock':>8} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
-                print("="*220)
+                print("\n" + "="*235)
+                print(f"| {'Ep':>5} | {'Wall(s)':>8} | {'Sim(s)':>7} | {'Steps':>5} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
+                print("="*235)
             
             # 打印数据行（每个episode都打印）
-            print(f"| {episode:5d} | {duration:8.2f} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadlock_count:8d} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
+            print(f"| {episode:5d} | {duration:8.2f} | {sim_time:7.2f} | {total_steps:5d} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))

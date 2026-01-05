@@ -1103,6 +1103,8 @@ class VecOffloadingEnv(gym.Env):
 
             n_node = np.random.randint(self.config.MIN_NODES, self.config.MAX_NODES + 1)
             adj, prof, data, ddl, extra = self.dag_gen.generate(n_node, veh_f=v.cpu_freq)
+            
+            
             v.task_dag = DAGTask(0, adj, prof, data, ddl)
             v.task_dag.deadline_gamma = extra.get("deadline_gamma")
             v.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
@@ -1202,13 +1204,46 @@ class VecOffloadingEnv(gym.Env):
                 if hasattr(v.task_dag, 'input_ready'):
                     v.task_dag.input_ready[subtask_idx] = True
                 
+                # [关键修复] 清除同位置parent的pending EDGE传输
+                # 因为parent完成时child还没分配，创建了pending传输
+                # 现在child分配为Local，应该清除同位置（Local）parent的pending传输
+                if hasattr(v.task_dag, 'inter_task_transfers') and subtask_idx in v.task_dag.inter_task_transfers:
+                    to_remove = []
+                    for parent_id, transfer_info in v.task_dag.inter_task_transfers[subtask_idx].items():
+                        parent_loc = v.task_dag.task_locations[parent_id]
+                        if parent_loc == 'Local':  # 同位置：parent和child都在Local
+                            to_remove.append(parent_id)
+                    for parent_id in to_remove:
+                        del v.task_dag.inter_task_transfers[subtask_idx][parent_id]
+                    # 如果没有pending传输了，清理字典
+                    if len(v.task_dag.inter_task_transfers[subtask_idx]) == 0:
+                        del v.task_dag.inter_task_transfers[subtask_idx]
+                        v.task_dag.waiting_for_data[subtask_idx] = False
+                
                 # [Local路径] 立即尝试入计算队列（使用handler）
-                self._dag_handler._try_enqueue_compute_if_ready(
+                job = self._dag_handler._try_enqueue_compute_if_ready(
                     v, subtask_idx, self.time, self.veh_cpu_q, self.rsu_cpu_q, self.rsus
                 )
             
             else:
                 # [卸载路径] 创建INPUT TransferJob
+                # [关键修复] 先清除同位置parent的pending EDGE传输
+                # （与Local路径逻辑相同：parent完成时child还没分配，创建了pending传输；
+                #  现在child分配后，应该清除同位置parent的pending传输）
+                if hasattr(v.task_dag, 'inter_task_transfers') and subtask_idx in v.task_dag.inter_task_transfers:
+                    to_remove = []
+                    for parent_id, transfer_info in v.task_dag.inter_task_transfers[subtask_idx].items():
+                        parent_loc = v.task_dag.task_locations[parent_id]
+                        # 判断same_location: parent和child的位置编码相同
+                        if parent_loc == actual_target:  # 同位置：parent和child都在同一位置（RSU或V2V peer）
+                            to_remove.append(parent_id)
+                    for parent_id in to_remove:
+                        del v.task_dag.inter_task_transfers[subtask_idx][parent_id]
+                    # 如果没有pending传输了，清理字典
+                    if len(v.task_dag.inter_task_transfers[subtask_idx]) == 0:
+                        del v.task_dag.inter_task_transfers[subtask_idx]
+                        v.task_dag.waiting_for_data[subtask_idx] = False
+                
                 # 确定src/dst节点
                 src_node = ("VEH", v.id)
                 if isinstance(actual_target, tuple) and actual_target[0] == 'RSU':
@@ -1512,11 +1547,16 @@ class VecOffloadingEnv(gym.Env):
             self.CPU_cycles_local[veh_id] = self.CPU_cycles_local.get(veh_id, 0.0) + cycles
         for rsu_id, cycles in cpu_result.cycles_done_rsu_record.items():
             self.CPU_cycles_rsu_record[rsu_id] = self.CPU_cycles_rsu_record.get(rsu_id, 0.0) + cycles
-        # 使用DAG完成处理器处理计算完成
+        # 使用DAG完成处理器处理计算完成（传递队列引用以便入队新解锁节点）
         for job in cpu_result.completed_jobs:
             v = self._get_vehicle_by_id(job.owner_vehicle_id)
             if v is not None:
-                self._dag_handler.on_compute_done(job, v, self.time)
+                self._dag_handler.on_compute_done(
+                    job, v, self.time, 
+                    veh_cpu_q=self.veh_cpu_q,
+                    rsu_cpu_q=self.rsu_cpu_q,
+                    rsus=self.rsus
+                )
     
     # 兼容旧调用：委托到 cpu_service，用于测试/内部调用
     def _finalize_compute(self, job):
@@ -3015,6 +3055,7 @@ class VecOffloadingEnv(gym.Env):
             elapsed = self.time - dag.start_time
             deadline_abs = dag.start_time + dag.deadline
             
+            
             # [Deadline检查计数] 每次检查都计数（不依赖logger）
             self._audit_deadline_checks += 1
             
@@ -3046,6 +3087,8 @@ class VecOffloadingEnv(gym.Env):
                 
                 overtime_ratio = (elapsed - dag.deadline) / dag.deadline
                 r_timeout = -self.config.TIMEOUT_PENALTY_WEIGHT * np.tanh(self.config.TIMEOUT_STEEPNESS * overtime_ratio)
+                
+                
                 dag.set_failed(reason='deadline')
                 
                 # [硬断言] 验证时间单位一致性
@@ -3241,13 +3284,18 @@ class VecOffloadingEnv(gym.Env):
         
         # 成功率统计
         episode_vehicle_count = len(self.vehicles)
-        success_count = sum([1 for v in self.vehicles if v.task_dag.is_finished])
+        # [关键修复] 成功 = 完成且未超时失败
+        success_count = sum([1 for v in self.vehicles 
+                             if v.task_dag.is_finished and not v.task_dag.is_failed])
         episode_metrics['episode_vehicle_count'] = episode_vehicle_count
         episode_metrics['success_rate_end'] = success_count / max(episode_vehicle_count, 1)
         episode_metrics['task_success_rate'] = success_count / max(episode_vehicle_count, 1)
         episode_metrics['vehicle_success_rate'] = success_count / max(episode_vehicle_count, 1)
         
         # 子任务成功率
+        # [语义说明] Subtask SR = 完成的subtask数 / 总subtask数
+        # 注意：即使任务超时，完成的subtask也计入（反映实际执行进度）
+        # Task SR反映deadline约束，Subtask SR反映执行完整性
         total_subtasks = 0
         completed_subtasks = 0
         for v in self.vehicles:
@@ -3257,7 +3305,9 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['subtask_success_rate'] = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
         
         # Deadline miss率
-        deadline_miss_count = sum([1 for v in self.vehicles if hasattr(v.task_dag, 'deadline_missed') and v.task_dag.deadline_missed])
+        # [关键修复] 使用is_failed标志而不是不存在的deadline_missed属性
+        deadline_miss_count = sum([1 for v in self.vehicles 
+                                   if v.task_dag.is_failed and v.task_dag.fail_reason == 'deadline'])
         episode_metrics['deadline_miss_rate'] = deadline_miss_count / max(episode_vehicle_count, 1)
         episode_metrics['audit_deadline_misses'] = deadline_miss_count
         
@@ -3288,11 +3338,12 @@ class VecOffloadingEnv(gym.Env):
         deadlock_count = sum([1 for v in self.vehicles if hasattr(v, 'is_deadlocked') and v.is_deadlocked])
         episode_metrics['deadlock_vehicle_count'] = deadlock_count
         
-        # 传输任务统计（从队列中统计）
+        # 传输任务统计（从DAG的exec_locations统计）
+        # [关键修复] 检查task_dag而不是vehicle是否有exec_locations属性
         tx_created_count = 0
         same_node_no_tx_count = 0
         for v in self.vehicles:
-            if hasattr(v, 'exec_locations'):
+            if hasattr(v.task_dag, 'exec_locations'):
                 for i, loc in enumerate(v.task_dag.exec_locations):
                     if loc is not None and loc != 'Local' and loc != v.id:
                         tx_created_count += 1

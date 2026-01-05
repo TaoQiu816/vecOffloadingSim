@@ -151,24 +151,25 @@ class DAGGenerator:
 
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
-        计算相对截止时间（基于总计算量和CPU中位数）
+        计算相对截止时间（支持3种模式）
         
-        新公式: T_deadline = γ × total_cycles / f_median + slack_seconds
-        - total_cycles: DAG总计算量 (Cycles) = sum(comp_i)
-        - f_median: 车辆CPU频率中位数 = (MIN_VEHICLE_CPU_FREQ + MAX_VEHICLE_CPU_FREQ) / 2
-        - γ: 截止时间因子（松紧因子），范围 [gamma_min, gamma_max]
-        - slack_seconds: 固定松弛时间
+        模式1 (TOTAL_MEDIAN): deadline = γ × (total_comp / f_median)
+          - total_comp: 所有子任务计算量之和
+          - f_median: (F_MIN + F_MAX) / 2 平均算力
+          - γ: 松紧因子 [DEADLINE_TIGHTENING_MIN, DEADLINE_TIGHTENING_MAX]
         
-        设计原则:
-        - 使用总计算量而非关键路径，更符合实际负载
-        - 使用CPU中位数作为基准，平衡最优和最差情况
-        - γ > 1.0 放宽Deadline，允许通信开销和队列等待
+        模式2 (TOTAL_LOCAL): deadline = γ × (total_comp / f_local)
+          - f_local: 任务所属车辆的实际CPU频率
+          - 考虑车辆本地队列时间（队列在仿真执行时自动计入）
+        
+        模式3 (FIXED_RANGE): deadline ∈ [DEADLINE_FIXED_MIN, DEADLINE_FIXED_MAX]
+          - 直接从固定范围随机，与计算量无关
         
         Args:
             n: 节点数
             adj: 邻接矩阵
             profiles: 节点属性列表
-            f_base: 本地CPU频率(Hz)，仅用于兼容性，实际使用中位数
+            f_base: 本地CPU频率(Hz)，仅模式2使用
         
         Returns:
             tuple: (deadline_seconds, gamma, total_cycles, base_time)
@@ -180,29 +181,52 @@ class DAGGenerator:
         if total_cycles <= 0 or not np.isfinite(total_cycles):
             total_cycles = Cfg.MEAN_COMP_LOAD * n
         
-        # 使用CPU频率中位数作为基准
-        f_median = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+        # 获取deadline模式
+        mode = getattr(Cfg, 'DEADLINE_MODE', 'TOTAL_MEDIAN')
         
-        # 基准时间 = 总计算量 / CPU中位数
-        base_time = total_cycles / f_median
+        if mode == 'FIXED_RANGE':
+            # 模式3: 固定范围直接随机
+            d_min = getattr(Cfg, 'DEADLINE_FIXED_MIN', 2.0)
+            d_max = getattr(Cfg, 'DEADLINE_FIXED_MAX', 5.0)
+            deadline = np.random.uniform(d_min, d_max)
+            gamma = deadline / (total_cycles / Cfg.MIN_VEHICLE_CPU_FREQ)  # 反推gamma（仅供记录）
+            base_time = total_cycles / Cfg.MIN_VEHICLE_CPU_FREQ
+            
+        elif mode == 'TOTAL_LOCAL':
+            # 模式2: 使用本地CPU频率
+            if f_base is None or f_base <= 0:
+                f_base = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+            base_time = total_cycles / f_base
+            
+            gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 4.0)
+            gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 7.0)
+            gamma_min = max(0.1, gamma_min)
+            gamma_max = max(gamma_min, gamma_max)
+            gamma = np.random.uniform(gamma_min, gamma_max)
+            
+            slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
+            deadline = gamma * base_time + slack
+            
+        else:  # 'TOTAL_MEDIAN' (默认)
+            # 模式1: 使用平均算力（中位数）
+            f_median = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+            base_time = total_cycles / f_median
+            
+            gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 4.0)
+            gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 7.0)
+            gamma_min = max(0.1, gamma_min)
+            gamma_max = max(gamma_min, gamma_max)
+            gamma = np.random.uniform(gamma_min, gamma_max)
+            
+            slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
+            deadline = gamma * base_time + slack
         
+        # 安全检查
         if not np.isfinite(base_time) or base_time <= 0:
-            base_time = Cfg.MIN_COMP / f_median
-
-        # 获取截止时间因子范围
-        gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 1.8)
-        gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 2.2)
-        gamma_min = max(0.1, gamma_min)
-        gamma_max = max(gamma_min, gamma_max)
-        gamma = np.random.uniform(gamma_min, gamma_max)
-        slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
-
-        # 计算截止时间
-        deadline = gamma * base_time + slack
+            base_time = Cfg.MIN_COMP / Cfg.MIN_VEHICLE_CPU_FREQ
         
-        # 安全检查：确保deadline是有效的正数
         if not np.isfinite(deadline) or deadline <= 0:
-            deadline = 0.1 + slack
+            deadline = 0.1
         else:
             deadline = max(deadline, 0.1)
 

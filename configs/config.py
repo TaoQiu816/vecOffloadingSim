@@ -320,13 +320,22 @@ class SystemConfig:
     3. 卸载必要性: 通过设置γ<1可显式强迫卸载
        Offloading necessity: Setting γ<1 explicitly forces offloading
     """
-    DEADLINE_TIGHTENING_MIN = 4.0       # γ最小值（无量纲系数！）- γ minimum value [给传输+队列留100%余量]
-                                        # 影响: deadline = γ × (total_comp/median_CPU)，4.0给传输+队列留100%余量
-                                        # Impact: deadline = γ × (total_comp/median_CPU), 4.0 gives 100% buffer for transmission+queue
+    # -------------------------------------------------------------------------
+    # Deadline计算模式选择
+    # -------------------------------------------------------------------------
+    DEADLINE_MODE = 'TOTAL_MEDIAN'      # 选择deadline计算模式:
+                                        # - 'TOTAL_MEDIAN': total_comp / f_median (平均算力，推荐)
+                                        # - 'TOTAL_LOCAL': total_comp / f_local (本地算力)
+                                        # - 'FIXED_RANGE': 直接从固定范围随机 (秒)
     
-    DEADLINE_TIGHTENING_MAX = 7.0       # γ最大值（无量纲系数！）- γ maximum value [确保12车@100Mbps排队可完成]
-                                        # 影响: deadline = γ × (total_comp/median_CPU)，7.0确保12车RSU排队(3.62s)可完成
-                                        # Impact: deadline = γ × (total_comp/median_CPU), 7.0 ensures 12-vehicle RSU queueing completes
+    # 模式1&2: 基于计算量的deadline (使用γ因子)
+    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值 [给传输+队列+串行调度留300%余量]
+                                        # deadline = γ × (total_comp / CPU频率)
+    DEADLINE_TIGHTENING_MAX = 1.2       # γ最大值 [确保12车RSU排队可完成]
+    
+    # 模式3: 固定范围的deadline (秒)
+    DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
+    DEADLINE_FIXED_MAX = 5.0            # 最大deadline (秒)
     
     DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
