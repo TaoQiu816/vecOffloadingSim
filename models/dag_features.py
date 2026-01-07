@@ -5,6 +5,7 @@ DAG拓扑特征计算模块
 - 计算前向层级（Forward Level）：从入口节点到当前节点的最大跳数
 - 计算后向层级（Backward Level）：从当前节点到出口节点的最大跳数
 - 计算最短路径距离矩阵：任意两点之间的最短路径跳数
+- 计算Rank（GA-DRL启发）：用于注意力偏置的节点重要性先验
 """
 
 import numpy as np
@@ -191,4 +192,147 @@ def normalize_distance_matrix(dist_matrix: np.ndarray, max_nodes: int) -> np.nda
     normalized = np.nan_to_num(normalized, nan=max_nodes, posinf=max_nodes, neginf=max_nodes)
     
     return normalized.astype(int)
+
+
+def compute_rank(adj_matrix: np.ndarray,
+                 comp_array: np.ndarray,
+                 data_matrix: np.ndarray,
+                 mean_cpu_freq: float = 2.0e9,
+                 mean_rate: float = 20e6,
+                 exec_cost_mode: str = 'mean_cpu',
+                 comm_cost_mode: str = 'mean_rate') -> np.ndarray:
+    """
+    计算DAG节点的Rank值（GA-DRL启发的邻居重要性先验）
+
+    【Rank定义与语义】
+    递推公式: rank[i] = max_{j in preds[i]}( rank[j] + exec_cost(j) + comm_cost(j,i) )
+    入口节点: rank = 0
+    语义: rank越小 => 越靠近DAG入口 => 优先级越高 => 注意力偏置越大
+
+    【与调度优先级的区别】
+    - 调度优先级(L_bwd)：用于决定调度顺序，基于后向层级
+    - Rank：用于注意力偏置，基于前向累积代价，强调关键路径上的瓶颈节点
+
+    Args:
+        adj_matrix: 邻接矩阵 (NxN), adj[i][j]=1 表示 i -> j
+        comp_array: 节点计算量数组 [N], 单位cycles
+        data_matrix: 边数据量矩阵 (NxN), 单位bits
+        mean_cpu_freq: 平均CPU频率 (Hz), 用于static模式
+        mean_rate: 平均通信速率 (bps), 用于static模式
+        exec_cost_mode: exec_cost估计方式
+            - 'mean_cpu': comp / mean_cpu_freq（推荐）
+            - 'cycles': 直接使用comp cycles（需要后续归一化）
+        comm_cost_mode: comm_cost估计方式
+            - 'mean_rate': edge_data / mean_rate（推荐）
+            - 'zero': 忽略通信开销
+
+    Returns:
+        np.ndarray: [N], 每个节点的rank值（未归一化）
+                   rank越小表示越重要（越靠近入口）
+    """
+    N = adj_matrix.shape[0]
+    rank = np.zeros(N, dtype=np.float64)
+
+    # 计算exec_cost（节点计算代价）
+    if exec_cost_mode == 'mean_cpu':
+        exec_cost = comp_array / max(mean_cpu_freq, 1e-6)  # 秒
+    elif exec_cost_mode == 'cycles':
+        exec_cost = comp_array / 1e9  # 归一化到Gcycles
+    else:
+        exec_cost = comp_array / max(mean_cpu_freq, 1e-6)
+
+    # 计算入度（找前驱）
+    in_degree = np.sum(adj_matrix, axis=0)
+
+    # 拓扑排序 + 递推计算rank
+    # 使用Kahn算法的变体
+    from collections import deque
+
+    # 初始化：入口节点（入度为0）的rank为0
+    remaining_in_degree = in_degree.copy()
+    queue = deque()
+
+    for i in range(N):
+        if remaining_in_degree[i] == 0:
+            queue.append(i)
+            rank[i] = 0.0
+
+    # 拓扑遍历
+    while queue:
+        current = queue.popleft()
+
+        # 找到current的所有后继节点
+        successors = np.where(adj_matrix[current] > 0)[0]
+
+        for succ in successors:
+            # 计算从current到succ的边通信代价
+            if comm_cost_mode == 'mean_rate':
+                edge_data = data_matrix[current, succ] if data_matrix is not None else 0
+                comm_cost = edge_data / max(mean_rate, 1e-6)  # 秒
+            else:
+                comm_cost = 0.0
+
+            # 递推公式: rank[succ] = max(..., rank[current] + exec_cost[current] + comm_cost)
+            new_rank = rank[current] + exec_cost[current] + comm_cost
+            rank[succ] = max(rank[succ], new_rank)
+
+            # 减少后继的剩余入度
+            remaining_in_degree[succ] -= 1
+
+            # 如果后继的所有前驱都处理完，加入队列
+            if remaining_in_degree[succ] == 0:
+                queue.append(succ)
+
+    return rank
+
+
+def normalize_rank(rank: np.ndarray,
+                   mode: str = 'minmax',
+                   valid_mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    对Rank值进行归一化
+
+    Args:
+        rank: 原始rank数组 [N]
+        mode: 归一化方式
+            - 'minmax': (rank - min) / (max - min + eps) -> [0,1]
+            - 'zscore': (rank - mean) / (std + eps)
+            - 'none': 不归一化
+        valid_mask: 有效节点掩码 [N], True表示有效节点
+                   仅对有效节点计算统计量
+
+    Returns:
+        np.ndarray: 归一化后的rank值 [N]
+    """
+    if mode == 'none':
+        return rank.copy()
+
+    if valid_mask is not None:
+        valid_rank = rank[valid_mask]
+    else:
+        valid_rank = rank
+
+    if len(valid_rank) == 0:
+        return rank.copy()
+
+    if mode == 'minmax':
+        r_min = np.min(valid_rank)
+        r_max = np.max(valid_rank)
+        eps = 1e-8
+        if r_max - r_min < eps:
+            # 所有值相同，返回0
+            normalized = np.zeros_like(rank)
+        else:
+            normalized = (rank - r_min) / (r_max - r_min + eps)
+
+    elif mode == 'zscore':
+        r_mean = np.mean(valid_rank)
+        r_std = np.std(valid_rank)
+        eps = 1e-8
+        normalized = (rank - r_mean) / (r_std + eps)
+
+    else:
+        normalized = rank.copy()
+
+    return normalized
 

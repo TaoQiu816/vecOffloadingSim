@@ -64,3 +64,6 @@ docs/build/
 
 # 忽略所有目录下的 step_log.csv 文件
 **/step_log.csv
+
+# Claude生成的审查报告（不同步到git）
+docs/claude-reports/

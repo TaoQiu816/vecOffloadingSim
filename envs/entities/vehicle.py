@@ -1,14 +1,22 @@
 import numpy as np
 from configs.config import SystemConfig as Cfg
 from envs.modules.queue_system import FIFOQueue
-from envs.modules.active_task_manager import ActiveTaskManager, ActiveTask
 
 
 class Vehicle:
+    """
+    [车辆实体类]
+    维护车辆的物理状态 (位置、速度) 和资源状态 (队列容量)。
+
+    [P36修复] 队列架构简化：
+    - 移除 active_task_manager (处理器共享模型)
+    - 保留 FIFOQueue 仅用于容量检查
+    - 实际任务执行由环境的 CpuQueueService 处理
+    """
+
     def __init__(self, v_id, pos):
         """
-        [车辆实体类]
-        维护车辆的物理状态 (位置、速度) 和资源状态 (队列)。
+        初始化车辆实体
 
         Args:
             v_id (int): 车辆唯一 ID
@@ -28,7 +36,7 @@ class Vehicle:
         else:
             # 向后兼容：均匀分布
             speed = np.random.uniform(Cfg.VEL_MIN, Cfg.VEL_MAX)
-        
+
         # 道路模型：速度方向固定为X轴正方向（沿道路方向）
         # vel = [v_x, v_y]，其中v_x = speed, v_y = 0
         self.vel = np.array([speed, 0.0])
@@ -36,19 +44,17 @@ class Vehicle:
         # --- CPU 频率初始化 ---
         # 异构算力：从配置范围中随机采样
         self.cpu_freq = np.random.uniform(Cfg.MIN_VEHICLE_CPU_FREQ, Cfg.MAX_VEHICLE_CPU_FREQ)
-        
-        # --- 资源约束 (Unified Processor Sharing) ---
-        # [新增] 活跃任务管理器：统一管理本地和V2V接收的任务
-        self.active_task_manager = ActiveTaskManager(num_processors=1, cpu_freq=self.cpu_freq)
-        
-        # [保留] 旧的FIFO队列系统（用于向后兼容和容量检查）
-        self.task_queue = FIFOQueue(
-            max_buffer_size=20,  # 默认任务数上限
+
+        # --- 资源约束 (FIFO队列容量检查) ---
+        # [P36] 保留FIFOQueue仅用于容量检查和延迟估计
+        # 实际任务执行由环境层的veh_cpu_q处理
+        self.capacity_tracker = FIFOQueue(
+            max_buffer_size=Cfg.MAX_VEH_QUEUE_SIZE,  # 使用配置参数
             max_load_cycles=Cfg.VEHICLE_QUEUE_CYCLES_LIMIT  # 基于计算量的限制
         )
         # 保持向后兼容的属性
         self.task_queue_len = 0
-        self.max_queue_size = 20
+        self.max_queue_size = Cfg.MAX_VEH_QUEUE_SIZE
 
         # --- 任务状态 ---
         self.task_dag = None  # 车辆的 DAG 任务
@@ -64,13 +70,13 @@ class Vehicle:
         self.tx_power_dbm = Cfg.TX_POWER_MIN_DBM  # 发射功率 (受 RL 动作控制)
         self.last_target = None  # 记录上一次动作 (用于日志或调试)
 
-        # [新增] FAT (Earliest Available Time) 管理
+        # [保留] FAT (Earliest Available Time) 管理
         # 处理器FAT：本地CPU的最早可用时间
         self.fat_processor = 0.0
         # 上传信道FAT：车辆上传信道的最早可用时间（V2I和V2V共享）
         self.fat_uplink = 0.0
 
-        # [新增] 活跃数据传输跟踪
+        # [保留] 活跃数据传输跟踪
         # 格式: [{'child_id': int, 'parent_id': int, 'rem_data': float, 'speed': float}, ...]
         self.active_transfers = []
 
@@ -78,99 +84,57 @@ class Vehicle:
         """
         判断队列是否已满（基于计算量）
         用于Env中的Action Masking
-        
+
         Args:
             new_task_cycles: 要添加的新任务计算量（用于检查加入后是否溢出）
         """
-        return self.task_queue.is_full(new_task_cycles=new_task_cycles)
-    
+        return self.capacity_tracker.is_full(new_task_cycles=new_task_cycles)
+
+    def sync_capacity_from_queue(self, cpu_queue):
+        """
+        [P36] 从环境的CPU队列同步容量跟踪器
+
+        Args:
+            cpu_queue: deque[ComputeJob] - 环境维护的实际FIFO队列
+        """
+        self.capacity_tracker.clear()
+        for job in cpu_queue:
+            self.capacity_tracker.enqueue(job.rem_cycles)
+        self.task_queue_len = self.capacity_tracker.get_queue_length()
+
     def update_queue_sync(self):
         """同步队列长度属性（用于向后兼容）"""
-        self.task_queue_len = self.task_queue.get_queue_length()
-    
+        self.task_queue_len = self.capacity_tracker.get_queue_length()
+
     def reset_fat(self):
         """重置FAT为初始值（在reset()时调用）"""
         self.fat_processor = 0.0
         self.fat_uplink = 0.0
 
-    def step(self, dt: float, global_step_id: int = -1) -> list:
-        """
-        [统一处理器共享物理模型]
-        推进车辆CPU上所有活跃任务的执行（本地+V2V接收）
-        
-        处理器共享逻辑：
-        - 所有活跃任务平等共享CPU资源
-        - effective_speed = cpu_freq / max(1, num_active_tasks)
-        - 每个任务推进: effective_speed * dt 的计算量
-        
-        Args:
-            dt: 时间步长 (秒)
-            global_step_id: 全局step编号（用于双重推进检测）
-            
-        Returns:
-            list: 本step完成的ActiveTask列表
-        """
-        return self.active_task_manager.step(dt, global_step_id=global_step_id)
-    
-    def add_active_task(self, owner_id: int, subtask_id: int, task_type: str, 
-                       total_comp: float, current_time: float = 0.0,
-                       # [关键] 准入验证参数（必须由调用方提供）
-                       is_dag_ready: bool = True,
-                       is_data_ready: bool = True,
-                       task_status: str = 'READY') -> bool:
-        """
-        添加活跃任务到处理器（含完整准入验证）
-        
-        [硬断言] 准入条件（由ActiveTask强制执行）：
-        1. task_status in ['READY', 'RUNNING']
-        2. is_dag_ready=True（DAG依赖已满足）
-        3. is_data_ready=True（数据传输已完成，针对v2v/v2i）
-        4. total_comp > 0
-        
-        Args:
-            owner_id: 任务所属车辆ID
-            subtask_id: 子任务ID
-            task_type: 'local' 或 'v2v' 或 'v2i'
-            total_comp: 总计算量 (cycles)
-            current_time: 当前时间戳
-            is_dag_ready: DAG依赖是否已满足
-            is_data_ready: 数据是否已传输完成
-            task_status: 任务状态（'READY'或'RUNNING'）
-            
-        Returns:
-            bool: 是否成功添加
-            
-        Raises:
-            AssertionError: 准入条件不满足时触发
-        """
-        task = ActiveTask(owner_id, subtask_id, task_type, total_comp, current_time,
-                         is_dag_ready=is_dag_ready,
-                         is_data_ready=is_data_ready,
-                         task_status=task_status)
-        return self.active_task_manager.add_task(task)
-    
-    def remove_active_task(self, owner_id: int, subtask_id: int):
-        """移除指定的活跃任务"""
-        return self.active_task_manager.remove_task(owner_id, subtask_id)
-    
-    def get_active_task(self, owner_id: int, subtask_id: int):
-        """获取指定的活跃任务（不移除）"""
-        return self.active_task_manager.get_task(owner_id, subtask_id)
-    
-    def get_num_active_tasks(self) -> int:
-        """获取活跃任务数量"""
-        return self.active_task_manager.get_num_active_tasks()
-    
+    def reset_capacity_tracker(self):
+        """重置容量跟踪器（在reset()时调用）"""
+        self.capacity_tracker.clear()
+        self.task_queue_len = 0
+
     def get_estimated_delay(self) -> float:
         """
-        获取基于处理器共享模型的估计延迟（新版）
-        
-        使用ActiveTaskManager计算当前负载下的平均剩余时间。
-        
+        获取基于FIFO队列的估计延迟
+
+        计算公式: total_remaining_cycles / cpu_freq
+
         Returns:
             float: 估计延迟（秒）
         """
-        return self.active_task_manager.get_estimated_delay()
+        return self.capacity_tracker.get_estimated_wait_time(self.cpu_freq)
+
+    def get_queue_load(self) -> float:
+        """
+        获取当前队列负载（总剩余计算量）
+
+        Returns:
+            float: 剩余计算量 (cycles)
+        """
+        return self.capacity_tracker.get_total_load()
     
     def update_pos(self, dt, map_size):
         """

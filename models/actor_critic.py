@@ -50,6 +50,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 from configs.config import SystemConfig as Cfg
+from configs.constants import MASK_VALUE
 
 
 class CrossAttentionWithPhysicsBias(nn.Module):
@@ -147,7 +148,8 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         if key_padding_mask is not None:
             # [B, N_res] -> [B, 1, 1, N_res]
             mask = key_padding_mask.unsqueeze(1).unsqueeze(2)
-            attn_scores = attn_scores.masked_fill(mask, float('-inf'))
+            # [P33修复] 使用统一的MASK_VALUE常量
+            attn_scores = attn_scores.masked_fill(mask, MASK_VALUE)
         
         # 5. Softmax + Dropout
         attn_weights = F.softmax(attn_scores, dim=-1)
@@ -251,8 +253,9 @@ class ActorHead(nn.Module):
         target_logits = self.target_mlp(concat_all).squeeze(-1)
         
         # 应用action_mask（将不可选动作设为极小值）
+        # [P33修复] 使用统一的MASK_VALUE常量
         if action_mask is not None:
-            target_logits = target_logits.masked_fill(~action_mask, -1e9)
+            target_logits = target_logits.masked_fill(~action_mask, MASK_VALUE)
         
         # 2. Power Head：Beta分布参数
         raw_alpha = self.alpha_head(h_fused)  # [B, 1]
@@ -307,7 +310,8 @@ class CriticHead(nn.Module):
         # 应用task_mask
         if task_mask is not None:
             mask = task_mask.unsqueeze(-1)  # [B, N, 1]
-            attn_scores = attn_scores.masked_fill(~mask, float('-inf'))
+            # [P33修复] 使用统一的MASK_VALUE常量
+            attn_scores = attn_scores.masked_fill(~mask, MASK_VALUE)
         
         # Softmax归一化
         attn_weights = F.softmax(attn_scores, dim=1)  # [B, N, 1]
@@ -377,7 +381,8 @@ class SimplifiedCriticHead(nn.Module):
         dag_attn_scores = self.dag_attention_weight(dag_features)  # [B, N_dag, 1]
         if task_mask is not None:
             mask = task_mask.unsqueeze(-1)
-            dag_attn_scores = dag_attn_scores.masked_fill(~mask, float('-inf'))
+            # [P33修复] 使用统一的MASK_VALUE常量
+            dag_attn_scores = dag_attn_scores.masked_fill(~mask, MASK_VALUE)
         dag_attn_weights = F.softmax(dag_attn_scores, dim=1)
         # 处理全-inf行导致的NaN（当整行都被mask时）
         dag_attn_weights = torch.nan_to_num(dag_attn_weights, nan=0.0)

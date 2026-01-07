@@ -1,5 +1,5 @@
 """
-计算队列推进服务（纯逻辑，行为等同于原 env._serve_cpu_queue/_phase4_serve_compute_queues）。
+计算队列推进服务（纯逻辑，行为等同于原 env._serve_cpu_queue/_phase4_advance_cpu_queues）。
 
 职责：
 - 车辆/RSU 计算队列 FIFO + work-conserving 推进

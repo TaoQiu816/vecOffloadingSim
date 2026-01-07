@@ -229,10 +229,14 @@ class SystemConfig:
     VEHICLE_QUEUE_CYCLES_LIMIT = 5.0e9  # 车辆队列上限 (cycles) - Vehicle queue limit
                                         # 影响: 约3个平均任务，严格限制防止车辆队列过载
                                         # Impact: ~3 average tasks; strict limit prevents vehicle queue overload
-    
+
     RSU_QUEUE_CYCLES_LIMIT = 50.0e9     # RSU队列上限 (cycles) - RSU queue limit
                                         # 影响: 约33个平均任务，RSU高承载能力
                                         # Impact: ~33 average tasks; RSU high capacity
+
+    MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
+                                        # 影响: 限制车辆本地任务数，防止内存溢出
+                                        # Impact: Limits local task count per vehicle; prevents memory overflow
 
     # =========================================================================
     # 4. DAG任务生成参数 (Task Generation)

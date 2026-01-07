@@ -63,6 +63,22 @@ class TrainConfig:
                             # 推荐范围: 2-6 (2 for simple tasks, 6 for complex dependencies)
                             # Recommended range: 2-6
 
+    D_FF = 512              # 前馈层维度 - Feed-forward layer dimension
+                            # 影响: Transformer FFN的隐藏层大小，通常是EMBED_DIM的4倍
+                            # Impact: Transformer FFN hidden size; typically 4x EMBED_DIM
+                            # 推荐范围: 256-1024 (512 for EMBED_DIM=128)
+                            # Recommended range: 256-1024
+
+    DROPOUT = 0.1           # Dropout率 - Dropout rate for regularization
+                            # 影响: 正则化强度，防止过拟合
+                            #       - 过大: 损失模型表达能力
+                            #       - 过小: 可能过拟合
+                            # Impact: Regularization strength; prevents overfitting
+                            #       - Too large: Loses model expressiveness
+                            #       - Too small: May overfit
+                            # 推荐范围: 0.05-0.2 (0.1 is standard)
+                            # Recommended range: 0.05-0.2
+
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
@@ -76,11 +92,13 @@ class TrainConfig:
                             # 推荐范围: 1e-4 ~ 5e-4 (PPO标准)
                             # Recommended range: 1e-4 ~ 5e-4 (PPO standard)
     
-    LR_CRITIC = 1e-3        # Critic学习率 - Critic learning rate
-                            # 影响: 控制价值网络的更新速度，通常比Actor略快以快速拟合值函数
-                            # Impact: Controls value network update speed; typically faster than actor
-                            # 推荐范围: 3e-4 ~ 3e-3
-                            # Recommended range: 3e-4 ~ 3e-3
+    LR_CRITIC = 5e-4        # Critic学习率 - Critic learning rate [P14修复: 从1e-3降至5e-4]
+                            # 影响: 控制价值网络的更新速度，与LR_ACTOR(3e-4)比例约1.67更稳定
+                            # Impact: Controls value network update speed; ratio ~1.67 to LR_ACTOR is more stable
+                            # 修复原因: 原值1e-3是LR_ACTOR的3.3倍，导致Value估计不稳定
+                            # Fix reason: Original 1e-3 was 3.3x LR_ACTOR, causing unstable value estimation
+                            # 推荐范围: 3e-4 ~ 1e-3
+                            # Recommended range: 3e-4 ~ 1e-3
 
     USE_LR_DECAY = True     # 是否启用学习率衰减 - Enable learning rate decay
                             # 影响: 训练后期降低学习率有助于收敛和稳定性
@@ -283,3 +301,89 @@ class TrainConfig:
                             # Options: "cuda" (GPU), "cpu", "mps" (Apple Silicon)
                             # 影响: GPU训练快10-100倍，强烈推荐使用CUDA
                             # Impact: GPU training is 10-100x faster; CUDA strongly recommended
+
+    # =========================================================================
+    # 5. Rank-Guided Attention Bias（GA-DRL启发的邻居重要性先验）
+    # Rank-Guided Attention Bias (GA-DRL inspired neighbor importance prior)
+    # =========================================================================
+    """
+    【设计说明 - 方案A: Rank Bias 增强】
+    作用: 在attention logits中新增rank_prior_bias，作为可控的注意力先验偏置，
+         提升DAG表征质量与跨拓扑泛化能力。
+    不做: 不改Transformer结构、不做稀疏采样删边、不改DRL action/reward/env.step逻辑。
+
+    【数学原理】
+    原始attention: softmax(QK^T + edge_bias + spatial_bias)
+    增强attention: softmax(QK^T + edge_bias + spatial_bias + rank_bias)
+
+    【Rank Bias计算】
+    1. 得到节点先验权重: w_j = softmax(priority_j / tau) 或 softmax(-rank_j / tau)
+    2. 转换为可加bias: rank_bias_{i,j} = kappa * log(w_j + eps)
+    3. 物理意义: attention ∝ exp(logits) * (w_j)^kappa
+       - kappa控制先验强度
+       - 方向一致性: priority大(或rank小) => w大 => bias大 => attention高
+
+    【一致性保证】
+    forward() 与 evaluate_actions() 必须一致使用 rank_bias（通过同一forward实现）
+
+    Reference: GA-DRL Rank-Guided Neighbor Sampling (adapted for attention bias)
+    """
+
+    # -------------------------------------------------------------------------
+    # 5.1 总开关与模式 (Master Switch and Mode)
+    # -------------------------------------------------------------------------
+    USE_RANK_BIAS = True        # 是否启用Rank偏置 - Enable rank attention bias
+                                # 设为False时网络输出应与当前主干完全一致（消融基线）
+                                # Set False for ablation baseline (output identical to current)
+
+    RANK_BIAS_MODE = 'priority' # Rank/Priority来源 - Rank/Priority source
+                                # 'priority': 复用compute_task_priority()的输出（推荐第一版）
+                                # 'gadrl_rank': 使用GA-DRL风格rank递推（第二阶段增强）
+                                # 'priority': Reuse compute_task_priority() output (recommended v1)
+                                # 'gadrl_rank': Use GA-DRL style rank recursion (v2 enhancement)
+
+    RANK_BIAS_COVER = 'all'     # Bias覆盖模式 - Bias coverage mode
+                                # 'all': 对所有i生效，仅依赖key节点j（M1，最稳，推荐）
+                                # 'adj': 只对adj[i,j]==1的位置加bias（M2，更贴DAG结构）
+                                # 'all': Apply to all i, depends only on key j (M1, most stable, recommended)
+                                # 'adj': Only add bias where adj[i,j]==1 (M2, closer to DAG structure)
+
+    # -------------------------------------------------------------------------
+    # 5.2 温度与强度参数 (Temperature and Strength Parameters)
+    # -------------------------------------------------------------------------
+    RANK_BIAS_TAU = 1.0         # Softmax温度参数 - Softmax temperature
+                                # 影响: 控制先验分布的尖锐程度
+                                #       - tau < 1: 分布更尖锐，强区分重要节点
+                                #       - tau > 1: 分布更平滑，弱区分
+                                #       - tau = 1: 标准softmax
+                                # Impact: Controls sharpness of prior distribution
+                                # 推荐范围: 0.5-2.0 (1.0 default)
+
+    RANK_BIAS_KAPPA = 0.5       # Bias强度系数 - Bias strength coefficient
+                                # 影响: rank_bias = kappa * log(w + eps)
+                                #       attention ∝ exp(logits) * (w)^kappa
+                                #       - kappa=0: 无rank先验
+                                #       - kappa=0.5: 温和先验
+                                #       - kappa=1.0: 完全使用先验
+                                # Impact: Controls prior strength
+                                # 推荐范围: 0.1-1.0 (0.5 default, start small)
+
+    # -------------------------------------------------------------------------
+    # 5.3 归一化参数 (Normalization Parameters)
+    # -------------------------------------------------------------------------
+    RANK_NORM = 'minmax'        # Priority/Rank归一化方式 - Normalization method
+                                # 'minmax': (x - min) / (max - min + eps) -> [0,1]
+                                # 'zscore': (x - mean) / (std + eps)
+                                # 'none': 不归一化（不推荐，数值尺度不稳定）
+                                # 'minmax': (recommended) normalized to [0,1]
+                                # 'zscore': z-score normalization
+                                # 'none': No normalization (not recommended)
+
+    # -------------------------------------------------------------------------
+    # 5.4 GA-DRL Rank递推参数（仅当RANK_BIAS_MODE='gadrl_rank'时使用）
+    # GA-DRL Rank Recursion Parameters (only used when RANK_BIAS_MODE='gadrl_rank')
+    # -------------------------------------------------------------------------
+    RANK_MEAN_CPU_FREQ = 2.0e9  # 平均CPU频率(Hz)用于static模式 - Mean CPU freq for static mode
+    RANK_MEAN_RATE = 20e6       # 平均通信速率(bps)用于static模式 - Mean rate for static mode
+    RANK_EXEC_COST_MODE = 'mean_cpu'  # exec_cost估计方式
+    RANK_COMM_COST_MODE = 'mean_rate' # comm_cost估计方式

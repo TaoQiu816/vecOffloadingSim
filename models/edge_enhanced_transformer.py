@@ -52,48 +52,54 @@ class EdgeEnhancedAttention(nn.Module):
                 x: torch.Tensor,
                 edge_bias: Optional[torch.Tensor] = None,
                 spatial_bias: Optional[torch.Tensor] = None,
+                rank_bias: Optional[torch.Tensor] = None,
                 key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: [Batch, N, d_model], 输入特征
             edge_bias: [Batch, num_heads, N, N], 边特征偏置（可选）
             spatial_bias: [Batch, num_heads, N, N], 空间偏置（可选）
+            rank_bias: [Batch, num_heads, N, N], Rank偏置（可选，方案A新增）
             key_padding_mask: [Batch, N], True表示需要mask的位置
-        
+
         Returns:
             [Batch, N, d_model], 注意力输出
         """
         batch_size, seq_len, _ = x.shape
-        
+
         # 1. 计算Q, K, V
         Q = self.W_q(x).view(batch_size, seq_len, self.num_heads, self.d_k)
         K = self.W_k(x).view(batch_size, seq_len, self.num_heads, self.d_k)
         V = self.W_v(x).view(batch_size, seq_len, self.num_heads, self.d_k)
-        
+
         # 转置为 [B, H, N, d_k]
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        
+
         # 2. 计算注意力分数
         # [B, H, N, N]
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
-        
+
         # 3. 添加边特征偏置
         if edge_bias is not None:
             attn_scores = attn_scores + edge_bias
-        
+
         # 4. 添加空间偏置
         if spatial_bias is not None:
             attn_scores = attn_scores + spatial_bias
-        
-        # 5. 应用Padding Mask
+
+        # 5. 添加Rank偏置（方案A新增）
+        if rank_bias is not None:
+            attn_scores = attn_scores + rank_bias
+
+        # 6. 应用Padding Mask
         if key_padding_mask is not None:
             # [B, N] -> [B, 1, 1, N]
             mask = key_padding_mask.unsqueeze(1).unsqueeze(2)
             attn_scores = attn_scores.masked_fill(mask, float('-inf'))
-        
-        # 6. Softmax
+
+        # 7. Softmax
         attn_weights = F.softmax(attn_scores, dim=-1)
         
         # 处理全-inf行导致的NaN（当整行都被mask时）
@@ -191,22 +197,25 @@ class EdgeEnhancedTransformerLayer(nn.Module):
                 x: torch.Tensor,
                 edge_bias: Optional[torch.Tensor] = None,
                 spatial_bias: Optional[torch.Tensor] = None,
+                rank_bias: Optional[torch.Tensor] = None,
                 key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: [Batch, N, d_model]
             edge_bias: [Batch, num_heads, N, N], 边特征偏置
             spatial_bias: [Batch, num_heads, N, N], 空间偏置
+            rank_bias: [Batch, num_heads, N, N], Rank偏置（方案A新增）
             key_padding_mask: [Batch, N], Padding mask
-        
+
         Returns:
             [Batch, N, d_model]
         """
         # 1. Self-Attention + Residual + Norm
         attn_output = self.attention(
-            x, 
+            x,
             edge_bias=edge_bias,
             spatial_bias=spatial_bias,
+            rank_bias=rank_bias,
             key_padding_mask=key_padding_mask
         )
         x = self.norm1(x + self.dropout(attn_output))
@@ -252,20 +261,22 @@ class EdgeEnhancedTransformer(nn.Module):
                 x: torch.Tensor,
                 edge_bias: Optional[torch.Tensor] = None,
                 spatial_bias: Optional[torch.Tensor] = None,
+                rank_bias: Optional[torch.Tensor] = None,
                 key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: [Batch, N, d_model], 输入嵌入
             edge_bias: [Batch, num_heads, N, N], 边特征偏置
             spatial_bias: [Batch, num_heads, N, N], 空间偏置
+            rank_bias: [Batch, num_heads, N, N], Rank偏置（方案A新增）
             key_padding_mask: [Batch, N], Padding mask
-        
+
         Returns:
             [Batch, N, d_model], Transformer输出
         """
         # 逐层处理
         for layer in self.layers:
-            x = layer(x, edge_bias, spatial_bias, key_padding_mask)
-        
+            x = layer(x, edge_bias, spatial_bias, rank_bias, key_padding_mask)
+
         return x
 

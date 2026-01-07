@@ -754,10 +754,23 @@ def main():
     training_stats_csv = os.path.join(logs_dir, "training_stats.csv")
     training_stats_header_written = os.path.exists(training_stats_csv) and os.path.getsize(training_stats_csv) > 0
     training_stats_fields = [
-        "episode", "reward", "task_sr", "subtask_sr", 
-        "task_duration", "completed_tasks", "energy", 
+        # 基本信息
+        "episode", "steps", "wall_time", "sim_time",
+        # 奖励指标（与控制台打印一致）
+        "reward_mean", "reward_total", "reward_p95",
+        # 成功率指标（0-1范围，绘图时转换为百分比）
+        "vehicle_sr", "task_sr", "subtask_sr",
+        # 物理性能指标
+        "task_duration_mean", "task_duration_p95", "completed_tasks",
+        "energy_mean", "deadline_misses",
+        # 卸载决策分布（0-1范围，绘图时转换为百分比）
         "ratio_local", "ratio_rsu", "ratio_v2v",
-        "actor_loss", "critic_loss", "entropy"
+        # 服务指标
+        "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
+        # 训练诊断指标
+        "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
+        # Bias状态
+        "bias_rsu", "bias_local",
     ]
     
     metrics_csv_path = os.path.join(logs_dir, "metrics.csv")
@@ -1000,7 +1013,8 @@ def main():
                     else:
                         stats['assigned_cpu_sum'] += env.vehicles[i].cpu_freq
 
-            stats['rsu_queue_sum'] += sum(q.get_total_load() for q in env.rsus[0].queue_manager.processor_queues) if env.rsus else 0
+            # [P02修复] 使用统一队列查询方法
+            stats['rsu_queue_sum'] += env._get_rsu_queue_load(0) if env.rsus else 0
 
             # 记录详细日志
             for i, act in enumerate(actions):
@@ -1255,15 +1269,11 @@ def main():
 
         # =====================================================================
         # Bias退火逻辑 (Bias Annealing)
+        # [P18修复] 网络从TC直接读取bias值，无需额外同步
         # =====================================================================
         if TC.USE_LOGIT_BIAS and (episode % TC.BIAS_DECAY_EVERY_EP == 0 and episode > 0):
             TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
             TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
-            # 更新agent中的bias（如果agent有引用）
-            if hasattr(agent, 'network') and hasattr(agent.network, 'logit_bias_rsu'):
-                agent.network.logit_bias_rsu = TC.LOGIT_BIAS_RSU
-            if hasattr(agent, 'network') and hasattr(agent.network, 'logit_bias_local'):
-                agent.network.logit_bias_local = TC.LOGIT_BIAS_LOCAL
 
         # =====================================================================
         # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
@@ -1431,22 +1441,55 @@ def main():
         
         # =====================================================================
         # 写入 training_stats.csv (用于 plot_results.py)
+        # 【关键】确保字段与控制台打印一致，便于对照检查
         # =====================================================================
         update_stats = getattr(agent, "last_update_stats", {}) or {}
+
+        # 获取环境统计数据
+        deadline_misses = env_stats.get('audit_deadline_misses', 0) if env_stats else 0
+        tx_created = env_stats.get('tx_tasks_created_count', 0) if env_stats else 0
+        same_node_no_tx = env_stats.get('same_node_no_tx_count', 0) if env_stats else 0
+        service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
+        idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
+
         training_stats_row = {
+            # 基本信息
             "episode": episode,
-            "reward": reward_mean * (env_stats.get("episode_steps", total_steps) if env_stats else total_steps),
-            "task_sr": task_success_rate,
-            "subtask_sr": subtask_success,
-            "task_duration": task_duration_mean if task_duration_mean is not None else 0.0,  # 真实任务完成时间
-            "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,  # 完成任务数
-            "energy": energy_norm_mean if energy_norm_mean is not None else 0.0,
-            "ratio_local": frac_local,
-            "ratio_rsu": frac_rsu,
-            "ratio_v2v": frac_v2v,
+            "steps": total_steps,
+            "wall_time": duration,
+            "sim_time": total_steps * Cfg.DT,
+            # 奖励指标（与控制台打印一致）
+            "reward_mean": reward_mean,  # 每步平均奖励（控制台显示的Reward）
+            "reward_total": ep_reward,   # episode总奖励
+            "reward_p95": reward_p95,
+            # 成功率指标（0-1范围）
+            "vehicle_sr": veh_success_rate,  # V_SR
+            "task_sr": task_success_rate,    # T_SR
+            "subtask_sr": subtask_success,   # S_SR
+            # 物理性能指标
+            "task_duration_mean": task_duration_mean if task_duration_mean is not None else 0.0,
+            "task_duration_p95": task_duration_p95 if task_duration_p95 is not None else 0.0,
+            "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,
+            "energy_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
+            "deadline_misses": deadline_misses,  # D_Miss
+            # 卸载决策分布（0-1范围）
+            "ratio_local": frac_local,  # Local
+            "ratio_rsu": frac_rsu,      # RSU
+            "ratio_v2v": frac_v2v,      # V2V
+            # 服务指标
+            "tx_created": tx_created,             # TX
+            "same_node_no_tx": same_node_no_tx,   # NoTX
+            "service_rate_ghz": service_rate_active / 1e9,  # SvcRate (GHz)
+            "idle_fraction": idle_fraction,       # Idle
+            # 训练诊断指标
             "actor_loss": update_stats.get("policy_loss"),
             "critic_loss": update_stats.get("value_loss"),
             "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
+            "approx_kl": update_stats.get("approx_kl"),
+            "clip_frac": update_stats.get("clip_fraction"),
+            # Bias状态
+            "bias_rsu": TC.LOGIT_BIAS_RSU,
+            "bias_local": TC.LOGIT_BIAS_LOCAL,
         }
         with open(training_stats_csv, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=training_stats_fields, extrasaction="ignore")
@@ -1579,25 +1622,54 @@ def main():
 
         # 定期评估baseline策略（与当前训练方法对比）
         if (not disable_baseline_eval) and (episode % TC.EVAL_INTERVAL == 0 or episode == 1):
+            # baseline统计CSV路径
+            baseline_stats_csv = os.path.join(logs_dir, "baseline_stats.csv")
+            baseline_stats_fields = [
+                "episode", "policy", "reward_mean", "reward_total",
+                "vehicle_sr", "task_sr", "subtask_sr",
+                "ratio_local", "ratio_rsu", "ratio_v2v",
+            ]
+            baseline_header_written = os.path.exists(baseline_stats_csv) and os.path.getsize(baseline_stats_csv) > 0
+
             for policy_name in baseline_policies:
                 baseline_metrics = evaluate_single_baseline_episode(env, policy_name)
                 baseline_metrics['episode'] = episode
                 baseline_metrics['policy'] = policy_name
-                
+
                 # 存储历史记录
                 baseline_history[policy_name].append(baseline_metrics)
-                
+
                 # 记录到TensorBoard
                 if recorder.writer is not None:
-                    recorder.writer.add_scalar(f'Baseline/{policy_name}/total_reward', 
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/total_reward',
                                               baseline_metrics['total_reward'], episode)
-                    recorder.writer.add_scalar(f'Baseline/{policy_name}/veh_success_rate', 
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/veh_success_rate',
                                               baseline_metrics['veh_success_rate'], episode)
-                    recorder.writer.add_scalar(f'Baseline/{policy_name}/subtask_success_rate', 
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/subtask_success_rate',
                                               baseline_metrics['subtask_success_rate'], episode)
-                    recorder.writer.add_scalar(f'Baseline/{policy_name}/v2v_subtask_success_rate', 
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/v2v_subtask_success_rate',
                                               baseline_metrics['v2v_subtask_success_rate'], episode)
-                
+
+                # 保存到baseline_stats.csv（用于绘图对比）
+                baseline_stats_row = {
+                    "episode": episode,
+                    "policy": policy_name,
+                    "reward_mean": baseline_metrics['avg_step_reward'],
+                    "reward_total": baseline_metrics['total_reward'],
+                    "vehicle_sr": baseline_metrics['veh_success_rate'],
+                    "task_sr": baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']),
+                    "subtask_sr": baseline_metrics['subtask_success_rate'],
+                    "ratio_local": baseline_metrics['decision_frac_local'],
+                    "ratio_rsu": baseline_metrics['decision_frac_rsu'],
+                    "ratio_v2v": baseline_metrics['decision_frac_v2v'],
+                }
+                with open(baseline_stats_csv, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=baseline_stats_fields, extrasaction="ignore")
+                    if not baseline_header_written:
+                        writer.writeheader()
+                        baseline_header_written = True
+                    writer.writerow(baseline_stats_row)
+
                 # 记录到CSV（使用log_episode，但添加policy字段）
                 baseline_episode_dict = {
                     "episode": episode,
@@ -1648,10 +1720,15 @@ def main():
     # 训练结束：自动绘图 (Auto Plotting)
     # =========================================================================
     if not disable_auto_plot:
-        # 调用新的 plot_results.py
+        # 1. 使用DataRecorder的新绘图方法绘制完整训练分析图
+        print("\n[Auto Plotting] Generating comprehensive training plots...")
+        baseline_stats_csv = os.path.join(logs_dir, "baseline_stats.csv")
+        recorder.plot_training_stats(training_stats_csv, baseline_stats_csv)
+
+        # 2. 调用plot_results.py生成额外图表
         plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plot_results.py")
         if os.path.exists(training_stats_csv):
-            print("\n[Auto Plotting] Generating plots from training_stats.csv...")
+            print("[Auto Plotting] Generating additional plots from training_stats.csv...")
         try:
             subprocess.run(
                 [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
@@ -1662,11 +1739,15 @@ def main():
             )
             print(f"✓ Plots saved to: {plots_dir}")
         except subprocess.CalledProcessError as e:
-            print(f"⚠ Auto plot failed: {e.stdout}")
+            print(f"⚠ plot_results.py failed: {e.stdout}")
         except Exception as e:
-            print(f"⚠ Auto plot failed: {e}")
-        
-        # 保留原有的绘图脚本调用（兼容性）
+            print(f"⚠ plot_results.py failed: {e}")
+
+        # 3. 调用DataRecorder的auto_plot保持兼容性
+        print("[Auto Plotting] Generating legacy episode_log plots...")
+        recorder.auto_plot(baseline_history=baseline_history)
+
+        # 4. 保留旧的绘图脚本调用（兼容性）
         legacy_plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
         if os.path.exists(legacy_plot_script):
             try:

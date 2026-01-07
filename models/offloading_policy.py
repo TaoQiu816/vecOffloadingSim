@@ -59,12 +59,15 @@ import numpy as np
 from models.dag_embedding import (
     DAGNodeEmbedding,
     EdgeFeatureEncoder,
-    SpatialDistanceEncoder
+    SpatialDistanceEncoder,
+    RankBiasEncoder
 )
 from models.edge_enhanced_transformer import EdgeEnhancedTransformer
 from models.resource_features import ResourceFeatureEncoder
 from models.actor_critic import ActorCriticNetwork
 from configs.config import SystemConfig as Cfg
+from configs.constants import MASK_VALUE
+from configs.train_config import TrainConfig as TC
 
 
 class OffloadingPolicyNetwork(nn.Module):
@@ -78,22 +81,29 @@ class OffloadingPolicyNetwork(nn.Module):
     """
     
     def __init__(self,
-                 d_model: int = 128,
-                 num_heads: int = 4,
-                 num_layers: int = 3,
-                 d_ff: int = 512,
-                 dropout: float = 0.1,
+                 d_model: int = None,
+                 num_heads: int = None,
+                 num_layers: int = None,
+                 d_ff: int = None,
+                 dropout: float = None,
                  continuous_dim: int = 7):
         """
         Args:
-            d_model: 模型维度（默认与 TrainConfig.EMBED_DIM 对齐）
-            num_heads: 注意力头数（默认与 TrainConfig.NUM_HEADS 对齐）
-            num_layers: Transformer层数（默认与 TrainConfig.NUM_LAYERS 对齐）
-            d_ff: 前馈层维度
-            dropout: Dropout率
+            d_model: 模型维度（默认从 TrainConfig.EMBED_DIM 读取）
+            num_heads: 注意力头数（默认从 TrainConfig.NUM_HEADS 读取）
+            num_layers: Transformer层数（默认从 TrainConfig.NUM_LAYERS 读取）
+            d_ff: 前馈层维度（默认从 TrainConfig.D_FF 读取）
+            dropout: Dropout率（默认从 TrainConfig.DROPOUT 读取）
             continuous_dim: 连续特征维度
         """
         super().__init__()
+
+        # 从配置文件读取默认值
+        d_model = d_model if d_model is not None else TC.EMBED_DIM
+        num_heads = num_heads if num_heads is not None else TC.NUM_HEADS
+        num_layers = num_layers if num_layers is not None else TC.NUM_LAYERS
+        d_ff = d_ff if d_ff is not None else TC.D_FF
+        dropout = dropout if dropout is not None else TC.DROPOUT
         
         self.d_model = d_model
         
@@ -103,7 +113,14 @@ class OffloadingPolicyNetwork(nn.Module):
         # 2. 边特征和空间距离编码器
         self.edge_encoder = EdgeFeatureEncoder(num_heads)
         self.spatial_encoder = SpatialDistanceEncoder(num_heads)
-        
+
+        # 2.5 [方案A] Rank偏置编码器（GA-DRL启发的邻居重要性先验）
+        # rank_bias仅用于提升DAG表征质量，不参与调度决策
+        if TC.USE_RANK_BIAS:
+            self.rank_bias_encoder = RankBiasEncoder(num_heads)
+        else:
+            self.rank_bias_encoder = None
+
         # 3. 边增强Transformer
         self.transformer = EdgeEnhancedTransformer(
             num_layers, d_model, num_heads, d_ff, dropout
@@ -149,6 +166,7 @@ class OffloadingPolicyNetwork(nn.Module):
         L_bwd_list = []
         data_matrix_list = []
         delta_list = []
+        priority_list = []  # [方案A] 用于Rank Bias
         
         for obs in obs_list:
             node_x_list.append(obs['node_x'])
@@ -166,6 +184,8 @@ class OffloadingPolicyNetwork(nn.Module):
             L_bwd_list.append(obs['L_bwd'])
             data_matrix_list.append(obs['data_matrix'])
             delta_list.append(obs['Delta'])
+            # [方案A] 提取priority用于Rank Bias
+            priority_list.append(obs.get('priority', np.ones(obs['node_x'].shape[0], dtype=np.float32) * 0.5))
         
         # 转换为Tensor并移到目标设备
         inputs = {
@@ -181,7 +201,8 @@ class OffloadingPolicyNetwork(nn.Module):
             'L_fwd': torch.from_numpy(np.stack(L_fwd_list)).long().to(device),
             'L_bwd': torch.from_numpy(np.stack(L_bwd_list)).long().to(device),
             'data_matrix': torch.from_numpy(np.stack(data_matrix_list)).float().to(device),
-            'delta': torch.from_numpy(np.stack(delta_list)).long().to(device)
+            'delta': torch.from_numpy(np.stack(delta_list)).long().to(device),
+            'priority': torch.from_numpy(np.stack(priority_list)).float().to(device)  # [方案A] Rank Bias用
         }
         
         return inputs
@@ -199,10 +220,14 @@ class OffloadingPolicyNetwork(nn.Module):
                 resource_raw: torch.Tensor,
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
-                task_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                task_mask: Optional[torch.Tensor] = None,
+                priority: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（Beta分布版本）
-        
+
+        【一致性保证】
+        forward() 和 evaluate_actions() 都调用此方法，确保rank_bias使用一致。
+
         Args:
             node_x: [Batch, MAX_NODES, continuous_dim], 连续特征
             adj: [Batch, MAX_NODES, MAX_NODES], 邻接矩阵
@@ -217,7 +242,8 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index: [Batch], 当前选中任务索引
             action_mask: [Batch, N_res], 动作掩码（True=可选）
             task_mask: [Batch, MAX_NODES], 有效节点mask
-        
+            priority: [Batch, MAX_NODES], 节点优先级分数（0-1，越大越重要）[方案A新增]
+
         Returns:
             target_logits: [Batch, N_res]
             alpha: [Batch, 1], Beta分布参数
@@ -226,22 +252,36 @@ class OffloadingPolicyNetwork(nn.Module):
         """
         # 1. DAG节点嵌入
         node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
-        
+
         # 2. 计算边偏置和空间偏置
         edge_bias = self.edge_encoder(data_matrix)
         spatial_bias = self.spatial_encoder(delta)
-        
+
+        # 2.5 [方案A] 计算Rank偏置（可通过配置开关禁用）
+        # rank_bias仅用于提升DAG表征质量，不参与调度决策
+        rank_bias = None
+        if self.rank_bias_encoder is not None and priority is not None:
+            rank_bias = self.rank_bias_encoder(
+                priority=priority,
+                adj=adj,
+                tau=TC.RANK_BIAS_TAU,
+                kappa=TC.RANK_BIAS_KAPPA,
+                cover_mode=TC.RANK_BIAS_COVER,
+                task_mask=task_mask
+            )
+
         # 3. Transformer编码
         # 构造padding mask（从task_mask）
         if task_mask is not None:
             key_padding_mask = ~task_mask  # True表示需要mask
         else:
             key_padding_mask = None
-        
+
         dag_features = self.transformer(
             node_emb,
             edge_bias=edge_bias,
             spatial_bias=spatial_bias,
+            rank_bias=rank_bias,  # [方案A] 传递rank_bias
             key_padding_mask=key_padding_mask
         )
         
@@ -301,13 +341,13 @@ class OffloadingPolicyNetwork(nn.Module):
             resource_raw=inputs['resource_raw'],
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
-            task_mask=inputs['task_mask']
+            task_mask=inputs['task_mask'],
+            priority=inputs['priority']  # [方案A] 传递priority
         )
-        
+
         # 3. Target采样（Categorical分布）
         # [Logit Bias] 解决动作空间不平衡问题：给Local和RSU添加偏置
         # 索引映射：Index 0=Local, Index 1=RSU, Index 2+=Neighbors
-        from configs.train_config import TrainConfig as TC
         if TC.USE_LOGIT_BIAS:
             logit_bias = torch.zeros_like(target_logits)
             logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
@@ -315,16 +355,17 @@ class OffloadingPolicyNetwork(nn.Module):
             target_logits = target_logits + logit_bias
         
         # 应用action_mask，将无效动作的logits设为极小值
+        # [P33修复] 使用统一的MASK_VALUE常量
         action_mask_tensor = inputs['action_mask']
         masked_logits = torch.where(
             action_mask_tensor > 0,
             target_logits,
-            torch.tensor(-1e10, dtype=target_logits.dtype, device=target_logits.device)
+            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
         )
-        
+
         target_probs = F.softmax(masked_logits, dim=-1)
         target_dist = Categorical(target_probs)
-        
+
         if deterministic:
             target_actions = torch.argmax(target_probs, dim=-1)
         else:
@@ -381,13 +422,31 @@ class OffloadingPolicyNetwork(nn.Module):
             data_matrix=inputs['data_matrix'],
             delta=inputs['delta'],
             resource_ids=inputs['resource_ids'],
+            resource_raw=inputs['resource_raw'],  # P38修复: 添加缺失的resource_raw参数
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
-            task_mask=inputs['task_mask']
+            task_mask=inputs['task_mask'],
+            priority=inputs['priority']  # [方案A] 传递priority，确保与采样时一致
         )
-        
+
+        # P39修复: 应用与采样时一致的Logit Bias
+        if TC.USE_LOGIT_BIAS:
+            logit_bias = torch.zeros_like(target_logits)
+            logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
+            logit_bias[:, 1] = TC.LOGIT_BIAS_RSU    # RSU (Index 1)
+            target_logits = target_logits + logit_bias
+
+        # 应用action_mask，将无效动作的logits设为极小值
+        # [P33修复] 使用统一的MASK_VALUE常量
+        action_mask_tensor = inputs['action_mask']
+        masked_logits = torch.where(
+            action_mask_tensor > 0,
+            target_logits,
+            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
+        )
+
         # 3. Target分布评估
-        target_probs = F.softmax(target_logits, dim=-1)
+        target_probs = F.softmax(masked_logits, dim=-1)
         target_dist = Categorical(target_probs)
         log_prob_target = target_dist.log_prob(target_actions)
         entropy_target = target_dist.entropy()

@@ -850,6 +850,226 @@ class DataRecorder:
         except Exception as e:
             print(f"[Warning] Success rate comparison plot skipped: {e}")
 
+    def plot_training_stats(self, training_stats_csv, baseline_csv=None):
+        """
+        从training_stats.csv绘制完整的训练分析图表
+
+        Args:
+            training_stats_csv: 训练统计CSV文件路径
+            baseline_csv: baseline统计CSV文件路径（可选）
+        """
+        if not os.path.exists(training_stats_csv):
+            print(f"[DataRecorder] training_stats.csv not found: {training_stats_csv}")
+            return
+
+        try:
+            df = pd.read_csv(training_stats_csv)
+            if df.empty:
+                return
+
+            # 读取baseline数据（如果存在）
+            df_baseline = None
+            if baseline_csv and os.path.exists(baseline_csv):
+                df_baseline = pd.read_csv(baseline_csv)
+
+            # 设置绘图风格
+            try:
+                plt.style.use('seaborn-v0_8-whitegrid')
+            except OSError:
+                plt.style.use('seaborn-whitegrid')
+            plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial', 'sans-serif']
+            plt.rcParams['axes.unicode_minus'] = False
+
+            window = 20  # 平滑窗口
+            episodes = df['episode']
+
+            # ================================================================
+            # 1. 综合训练曲线（Reward + Success Rate + Baseline对比）
+            # ================================================================
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+            # 1.1 Reward曲线
+            ax = axes[0, 0]
+            if 'reward_mean' in df.columns:
+                ax.plot(episodes, df['reward_mean'], alpha=0.2, color='steelblue')
+                ax.plot(episodes, df['reward_mean'].rolling(window, min_periods=1).mean(),
+                       linewidth=2.5, color='darkblue', label='MAPPO (Mean/Step)')
+            if df_baseline is not None and 'reward_mean' in df_baseline.columns:
+                for policy in ['Random', 'Local-Only', 'Greedy']:
+                    policy_data = df_baseline[df_baseline['policy'] == policy]
+                    if not policy_data.empty:
+                        colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
+                        styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                        ax.plot(policy_data['episode'], policy_data['reward_mean'],
+                               color=colors.get(policy, 'gray'), linestyle=styles.get(policy, '--'),
+                               linewidth=2, label=f'{policy}', marker='o', markersize=3, alpha=0.8)
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Reward (per step)')
+            ax.set_title('Reward Convergence with Baseline Comparison', fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5)
+
+            # 1.2 成功率曲线
+            ax = axes[0, 1]
+            sr_cols = {'vehicle_sr': ('V_SR (DAG)', '#1f77b4'),
+                      'task_sr': ('T_SR', '#ff7f0e'),
+                      'subtask_sr': ('S_SR', '#2ca02c')}
+            for col, (label, color) in sr_cols.items():
+                if col in df.columns:
+                    ax.plot(episodes, df[col].rolling(window, min_periods=1).mean() * 100,
+                           linewidth=2, color=color, label=label)
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Success Rate (%)')
+            ax.set_title('Success Rate Curves', fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5)
+            ax.set_ylim([0, 105])
+
+            # 1.3 卸载决策分布
+            ax = axes[1, 0]
+            if 'ratio_local' in df.columns:
+                ax.stackplot(episodes,
+                            df['ratio_local'].rolling(window, min_periods=1).mean() * 100,
+                            df['ratio_rsu'].rolling(window, min_periods=1).mean() * 100,
+                            df['ratio_v2v'].rolling(window, min_periods=1).mean() * 100,
+                            labels=['Local', 'RSU', 'V2V'],
+                            colors=['#2ca02c', '#1f77b4', '#ff7f0e'],
+                            alpha=0.7)
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Ratio (%)')
+            ax.set_title('Offloading Decision Distribution', fontweight='bold')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.5)
+            ax.set_ylim([0, 100])
+
+            # 1.4 训练诊断（Loss + Entropy）
+            ax = axes[1, 1]
+            ax2 = ax.twinx()
+            if 'actor_loss' in df.columns:
+                valid_loss = df['actor_loss'].dropna()
+                if len(valid_loss) > 0:
+                    ax.plot(df.loc[valid_loss.index, 'episode'], valid_loss,
+                           linewidth=1.5, color='red', alpha=0.7, label='Actor Loss')
+            if 'critic_loss' in df.columns:
+                valid_loss = df['critic_loss'].dropna()
+                if len(valid_loss) > 0:
+                    ax.plot(df.loc[valid_loss.index, 'episode'], valid_loss,
+                           linewidth=1.5, color='blue', alpha=0.7, label='Critic Loss')
+            if 'entropy' in df.columns:
+                valid_ent = df['entropy'].dropna()
+                if len(valid_ent) > 0:
+                    ax2.plot(df.loc[valid_ent.index, 'episode'], valid_ent,
+                            linewidth=2, color='green', label='Entropy')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Loss', color='red')
+            ax2.set_ylabel('Entropy', color='green')
+            ax.set_title('Training Diagnostics', fontweight='bold')
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc='best')
+            ax.grid(True, alpha=0.5)
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'training_overview.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+
+            # ================================================================
+            # 2. 物理性能指标
+            # ================================================================
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+            # 2.1 任务完成时间
+            ax = axes[0, 0]
+            if 'task_duration_mean' in df.columns:
+                ax.plot(episodes, df['task_duration_mean'], alpha=0.3, color='steelblue')
+                ax.plot(episodes, df['task_duration_mean'].rolling(window, min_periods=1).mean(),
+                       linewidth=2.5, color='darkblue', label='Mean Duration')
+            if 'task_duration_p95' in df.columns:
+                ax.plot(episodes, df['task_duration_p95'].rolling(window, min_periods=1).mean(),
+                       linewidth=2, color='orange', linestyle='--', label='P95 Duration')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Task Duration (s)')
+            ax.set_title('Task Completion Time', fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5)
+
+            # 2.2 能耗
+            ax = axes[0, 1]
+            if 'energy_mean' in df.columns:
+                ax.plot(episodes, df['energy_mean'], alpha=0.3, color='red')
+                ax.plot(episodes, df['energy_mean'].rolling(window, min_periods=1).mean(),
+                       linewidth=2.5, color='darkred', label='Energy (Normalized)')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Energy')
+            ax.set_title('Energy Consumption', fontweight='bold')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.5)
+
+            # 2.3 服务率和空闲率
+            ax = axes[1, 0]
+            if 'service_rate_ghz' in df.columns:
+                ax.plot(episodes, df['service_rate_ghz'].rolling(window, min_periods=1).mean(),
+                       linewidth=2.5, color='green', label='Service Rate (GHz)')
+            ax2 = ax.twinx()
+            if 'idle_fraction' in df.columns:
+                ax2.plot(episodes, df['idle_fraction'].rolling(window, min_periods=1).mean() * 100,
+                        linewidth=2, color='orange', linestyle='--', label='Idle Fraction (%)')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Service Rate (GHz)', color='green')
+            ax2.set_ylabel('Idle Fraction (%)', color='orange')
+            ax.set_title('Resource Utilization', fontweight='bold')
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc='best')
+            ax.grid(True, alpha=0.5)
+
+            # 2.4 Deadline Miss和传输统计
+            ax = axes[1, 1]
+            if 'deadline_misses' in df.columns:
+                ax.bar(episodes, df['deadline_misses'], alpha=0.5, color='red', label='Deadline Misses')
+            ax2 = ax.twinx()
+            if 'tx_created' in df.columns:
+                ax2.plot(episodes, df['tx_created'].rolling(window, min_periods=1).mean(),
+                        linewidth=2, color='blue', label='TX Created')
+            if 'same_node_no_tx' in df.columns:
+                ax2.plot(episodes, df['same_node_no_tx'].rolling(window, min_periods=1).mean(),
+                        linewidth=2, color='green', linestyle='--', label='Same Node (No TX)')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Deadline Misses', color='red')
+            ax2.set_ylabel('Count', color='blue')
+            ax.set_title('Deadline and Transmission Statistics', fontweight='bold')
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc='best')
+            ax.grid(True, alpha=0.5)
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.plot_dir, 'physical_metrics.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+
+            # ================================================================
+            # 3. Bias退火曲线
+            # ================================================================
+            if 'bias_rsu' in df.columns and 'bias_local' in df.columns:
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(episodes, df['bias_rsu'], linewidth=2.5, color='blue', label='Bias_RSU')
+                ax.plot(episodes, df['bias_local'], linewidth=2.5, color='green', label='Bias_Local')
+                ax.set_xlabel('Episode')
+                ax.set_ylabel('Bias Value')
+                ax.set_title('Logit Bias Annealing', fontweight='bold')
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.5)
+                plt.tight_layout()
+                plt.savefig(os.path.join(self.plot_dir, 'bias_annealing.png'), dpi=300, bbox_inches='tight')
+                plt.close()
+
+            print(f"[DataRecorder] Training stats plots saved to: {self.plot_dir}")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[Error] Failed to plot training stats: {e}")
+
     def close(self):
         """
         关闭 TensorBoard Writer，确保所有缓冲数据都已写入磁盘。

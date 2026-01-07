@@ -357,35 +357,132 @@ class VecOffloadingEnv(gym.Env):
             f"可能导致任务超时。考虑增加带宽或减少数据量。"
         )
 
+    # =====================================================================
+    # [P02修复] 统一队列查询方法 - 基于veh_cpu_q/rsu_cpu_q唯一事实源
+    # =====================================================================
+
+    def _get_veh_queue_load(self, veh_id: int) -> float:
+        """
+        获取车辆计算队列的总负载（cycles）
+
+        [P02] 直接从veh_cpu_q计算，不使用capacity_tracker
+        """
+        if veh_id not in self.veh_cpu_q:
+            return 0.0
+        return sum(job.rem_cycles for job in self.veh_cpu_q[veh_id])
+
+    def _get_veh_queue_wait_time(self, veh_id: int, cpu_freq: float = None) -> float:
+        """
+        获取车辆计算队列的估计等待时间（秒）
+
+        [P02] 直接从veh_cpu_q计算
+        """
+        if cpu_freq is None:
+            veh = self._get_vehicle_by_id(veh_id)
+            cpu_freq = veh.cpu_freq if veh else self.config.MIN_VEHICLE_CPU_FREQ
+        if cpu_freq <= 0:
+            return 0.0
+        load = self._get_veh_queue_load(veh_id)
+        return load / cpu_freq
+
+    def _get_rsu_queue_load(self, rsu_id: int, processor_id: int = None) -> float:
+        """
+        获取RSU计算队列的总负载（cycles）
+
+        [P02] 直接从rsu_cpu_q计算
+
+        Args:
+            rsu_id: RSU ID
+            processor_id: 处理器ID，如果为None则返回所有处理器总负载
+        """
+        if rsu_id not in self.rsu_cpu_q:
+            return 0.0
+        proc_dict = self.rsu_cpu_q[rsu_id]
+        if processor_id is not None:
+            if processor_id not in proc_dict:
+                return 0.0
+            return sum(job.rem_cycles for job in proc_dict[processor_id])
+        # 所有处理器总负载
+        total = 0.0
+        for queue in proc_dict.values():
+            total += sum(job.rem_cycles for job in queue)
+        return total
+
+    def _get_rsu_queue_wait_time(self, rsu_id: int) -> float:
+        """
+        获取RSU计算队列的估计等待时间（秒）- 取所有处理器中最小值
+
+        [P02] 直接从rsu_cpu_q计算
+        """
+        if rsu_id not in self.rsu_cpu_q or rsu_id >= len(self.rsus):
+            return 0.0
+        rsu = self.rsus[rsu_id]
+        cpu_freq = rsu.cpu_freq
+        if cpu_freq <= 0:
+            return 0.0
+
+        proc_dict = self.rsu_cpu_q[rsu_id]
+        if not proc_dict:
+            return 0.0
+
+        # 返回最小等待时间（FAT最早的处理器）
+        min_wait = float('inf')
+        for proc_id, queue in proc_dict.items():
+            load = sum(job.rem_cycles for job in queue)
+            wait = load / cpu_freq
+            if wait < min_wait:
+                min_wait = wait
+        return min_wait if min_wait < float('inf') else 0.0
+
+    def _is_veh_queue_full(self, veh_id: int, new_task_cycles: float = 0) -> bool:
+        """
+        检查车辆队列是否已满（基于计算量限制）
+
+        [P02] 直接从veh_cpu_q计算
+        """
+        current_load = self._get_veh_queue_load(veh_id)
+        return (current_load + new_task_cycles) > self.config.VEHICLE_QUEUE_CYCLES_LIMIT
+
+    def _is_rsu_queue_full(self, rsu_id: int, new_task_cycles: float = 0) -> bool:
+        """
+        检查RSU队列是否已满（所有处理器都满时返回True）
+
+        [P02] 直接从rsu_cpu_q计算
+        """
+        if rsu_id not in self.rsu_cpu_q or rsu_id >= len(self.rsus):
+            return True
+
+        rsu = self.rsus[rsu_id]
+        proc_dict = self.rsu_cpu_q[rsu_id]
+        per_proc_limit = self.config.RSU_QUEUE_CYCLES_LIMIT / rsu.num_processors
+
+        # 检查是否有任何处理器能接受新任务
+        for proc_id, queue in proc_dict.items():
+            load = sum(job.rem_cycles for job in queue)
+            if (load + new_task_cycles) <= per_proc_limit:
+                return False  # 至少一个处理器有空间
+        return True  # 所有处理器都满
+
     def _get_node_delay(self, node):
         """
-        统一获取节点的延迟估计（处理器共享模型）
-        
+        统一获取节点的延迟估计
+
+        [P02修复] 直接从veh_cpu_q/rsu_cpu_q计算，不依赖capacity_tracker
+
         Args:
             node: Vehicle or RSU实例
         Returns:
-            float: 估计延迟（秒）- 当前负载下的平均剩余执行时间
-        
-        注意：处理器共享模型中，新任务立即开始执行（无等待），
-        但速度会因负载增加而变慢。此函数返回的是当前平均负载延迟。
+            float: 估计延迟（秒）
         """
-        if hasattr(node, 'get_estimated_delay'):
-            # 使用新的处理器共享模型
-            return node.get_estimated_delay()
-        else:
-            # 向后兼容：使用旧的FIFO模型
-            if hasattr(node, 'task_queue'):
-                return node.task_queue.get_estimated_wait_time(node.cpu_freq)
-            return 0.0
+        from envs.entities.vehicle import Vehicle
+        from envs.entities.rsu import RSU
 
-    def _simulate_enqueue_capacity(self, queue_like, task_cycles):
-        if task_cycles is None:
-            return False
-        if getattr(queue_like, "max_load_cycles", None) is not None:
-            current_load = queue_like.get_total_load()
-            return (current_load + task_cycles) <= queue_like.max_load_cycles
-        current_len = queue_like.get_queue_length()
-        return current_len < queue_like.max_buffer_size
+        if isinstance(node, Vehicle):
+            return self._get_veh_queue_wait_time(node.id, node.cpu_freq)
+        elif isinstance(node, RSU):
+            return self._get_rsu_queue_wait_time(node.id)
+        else:
+            return 0.0
 
     def _plan_actions_snapshot(self, actions):
         plans = []
@@ -522,11 +619,18 @@ class VecOffloadingEnv(gym.Env):
                     plan["illegal_reason"] = "rsu_unavailable"
                 continue
             rsu = self.rsus[rsu_id]
-            proc_queues = rsu.queue_manager.processor_queues
-            proc_loads = [q.get_total_load() for q in proc_queues]
-            proc_limits = [q.max_load_cycles for q in proc_queues]
-            proc_sizes = [q.get_queue_length() for q in proc_queues]
-            proc_caps = [q.max_buffer_size for q in proc_queues]
+            # [P02修复] 直接从rsu_cpu_q获取处理器负载，不使用capacity_tracker
+            proc_dict = self.rsu_cpu_q.get(rsu_id, {})
+            num_procs = rsu.num_processors
+            per_proc_limit = self.config.RSU_QUEUE_CYCLES_LIMIT / num_procs
+            proc_loads = []
+            proc_sizes = []
+            for pid in range(num_procs):
+                queue = proc_dict.get(pid, [])
+                proc_loads.append(sum(job.rem_cycles for job in queue))
+                proc_sizes.append(len(queue))
+            proc_limits = [per_proc_limit] * num_procs
+            proc_caps = [100] * num_procs  # 默认队列任务数上限
 
             for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
                 chosen_pid = None
@@ -571,11 +675,11 @@ class VecOffloadingEnv(gym.Env):
                     plan["planned_kind"] = "local"
                     plan["illegal_reason"] = "id_mapping_fail"
                 continue
-            queue = t_veh.task_queue
-            sim_load = queue.get_total_load()
-            sim_len = queue.get_queue_length()
-            limit_cycles = queue.max_load_cycles
-            limit_size = queue.max_buffer_size
+            # [P02修复] 直接从veh_cpu_q获取队列负载，不使用capacity_tracker
+            sim_load = self._get_veh_queue_load(tgt_id)
+            sim_len = len(self.veh_cpu_q.get(tgt_id, []))
+            limit_cycles = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
+            limit_size = 100  # 默认队列任务数上限
 
             for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
                 if limit_cycles is not None:
@@ -703,7 +807,8 @@ class VecOffloadingEnv(gym.Env):
         for rsu in self.rsus:
             if not rsu.is_in_coverage(vehicle.pos):
                 continue
-            if rsu.is_queue_full(new_task_cycles=task_comp):
+            # [P02修复] 使用统一队列查询方法
+            if self._is_rsu_queue_full(rsu.id, task_comp):
                 continue
 
             dist = rsu.get_distance(vehicle.pos)
@@ -852,101 +957,6 @@ class VecOffloadingEnv(gym.Env):
         
         return total_active
     
-    def _handle_task_completion(self, task, compute_node):
-        """
-        处理任务完成事件（新物理引擎回调）
-        
-        连接物理层（ActiveTaskManager）与逻辑层（DAG状态）
-        
-        Args:
-            task: 完成的ActiveTask对象
-            compute_node: 执行节点（Vehicle或RSU）
-        """
-        # 找到任务所属车辆
-        owner_vehicle = self._get_vehicle_by_id(task.owner_id)
-        if owner_vehicle is None:
-            # 车辆可能已离开场景
-            return
-        
-        # [新增] 记录真实任务完成时间（物理指标）
-        # task_duration = 完成时间 - 开始时间
-        task_duration = self.time - task.assigned_time
-        if task_duration > 0:  # 确保是有效的时间
-            self._episode_task_durations.append(task_duration)
-        
-        # 更新DAG状态：标记子任务完成
-        subtask_id = task.subtask_id
-        dag = owner_vehicle.task_dag
-        
-        # [硬断言] 边界检查
-        assert subtask_id >= 0 and subtask_id < len(dag.status), (
-            f"❌ _handle_task_completion边界错误: owner={task.owner_id}, "
-            f"subtask={subtask_id}, dag.num_subtasks={len(dag.status)}"
-        )
-        
-        # [硬断言] 记录完成前的状态和计数
-        before_completed = int(np.sum(dag.status == 3))
-        before_status = int(dag.status[subtask_id])
-        
-        # [关键修复] 在调用_mark_done前，设置task_locations以支持同节点传输判断
-        # 确保_mark_done能正确判断是否需要创建传输任务
-        if subtask_id < len(dag.task_locations):
-            if dag.task_locations[subtask_id] is None:
-                # 根据执行节点推断location
-                if task.task_type == 'local':
-                    dag.task_locations[subtask_id] = 'Local'
-                elif task.task_type == 'v2i':
-                    # 如果是RSU执行，找到RSU的ID
-                    if isinstance(compute_node, RSU):
-                        for rsu_idx, rsu in enumerate(self.rsus):
-                            if rsu is compute_node:
-                                dag.task_locations[subtask_id] = ('RSU', rsu_idx)
-                                break
-                elif task.task_type == 'v2v':
-                    # 如果是V2V接收车辆执行，location是接收车辆ID
-                    if hasattr(compute_node, 'id'):
-                        dag.task_locations[subtask_id] = compute_node.id
-        
-        # 调用_mark_done，它应该返回解锁的READY节点数
-        unlocked_ready_count = dag._mark_done(subtask_id)
-        
-        # [硬断言] 完成计数+1
-        after_completed = int(np.sum(dag.status == 3))
-        assert after_completed == before_completed + 1, (
-            f"❌ _handle_task_completion完成计数错误: owner={task.owner_id}, "
-            f"subtask={subtask_id}, before={before_completed}, after={after_completed}, "
-            f"期望after=before+1"
-        )
-        
-        # [硬断言] 状态转换正确
-        assert dag.status[subtask_id] == 3, (
-            f"❌ _handle_task_completion状态转换错误: owner={task.owner_id}, "
-            f"subtask={subtask_id}, before_status={before_status}, "
-            f"after_status={dag.status[subtask_id]}, 期望COMPLETED(3)"
-        )
-        
-        # [诊断] 记录解锁信息（用于死锁诊断）
-        if not hasattr(dag, '_unlocked_ready_history'):
-            dag._unlocked_ready_history = []
-        dag._unlocked_ready_history.append({
-            'subtask_id': subtask_id,
-            'unlocked_count': unlocked_ready_count,
-            'time': self.time
-        })
-            
-        # [审计] V2V生命周期: dag_completed
-        if task.task_type == 'v2v':
-            self._audit_record_v2v_lifecycle('dag_completed', task.owner_id, subtask_id)
-            self._audit_check_task_state_conflict(task.owner_id, subtask_id, 'COMPLETED', None)
-        
-        # 从计算节点的Active中移除（已由step()自动完成）
-        # 从旧队列中移除（向后兼容）
-        if hasattr(compute_node, 'task_queue'):
-            if compute_node.task_queue.get_queue_length() > 0:
-                compute_node.task_queue.dequeue_one()
-            if hasattr(compute_node, 'update_queue_sync'):
-                compute_node.update_queue_sync()
-
     def _update_rate_norm(self, rate, link_type):
         # 归一化模式已固化为static，此方法保留以兼容接口调用
         # Normalization mode is fixed to static; method kept for interface compatibility
@@ -1111,8 +1121,9 @@ class VecOffloadingEnv(gym.Env):
             v.task_dag.deadline_base_time = extra.get("deadline_base_time")
             v.task_dag.deadline_slack = extra.get("deadline_slack")
             v.task_dag.start_time = 0.0
-            v.task_queue.clear()  # 清空队列
-            v.task_queue_len = 0  # 同步队列长度
+            # [P02修复] veh_cpu_q已在上面清空，capacity_tracker保留用于兼容
+            v.capacity_tracker.clear()
+            v.task_queue_len = 0
             
             # 道路模型：速度已在Vehicle.__init__中设置（截断正态分布，沿X轴正方向）
             # 这里不需要重新设置速度，Vehicle类会自动处理
@@ -1164,7 +1175,7 @@ class VecOffloadingEnv(gym.Env):
         )
         return result is not None
     
-    def _phase1_commit_decisions(self, commit_plans):
+    def _phase1_commit_offload_decisions(self, commit_plans):
         """
         [Phase1: Commit决策]
         
@@ -1390,7 +1401,7 @@ class VecOffloadingEnv(gym.Env):
                         # 标记已激活（防止重复）
                         self.active_edge_keys.add(edge_key)
     
-    def _phase3_serve_communication_queues(self):
+    def _phase3_advance_comm_queues(self):
         """
         [Phase3: 推进通信队列]
         
@@ -1516,7 +1527,7 @@ class VecOffloadingEnv(gym.Env):
                 self.veh_cpu_q, self.rsu_cpu_q, self.rsus
             )
     
-    def _phase4_serve_compute_queues(self):
+    def _phase4_advance_cpu_queues(self):
         """
         [Phase4: 推进计算队列]
         
@@ -1656,21 +1667,49 @@ class VecOffloadingEnv(gym.Env):
                 self._decision_counts['rsu'] += 1
             elif kind == "v2v":
                 self._decision_counts['v2v'] += 1
-        
-        # Phase 1: Commit决策（写入exec_locations + 创建INPUT队列）
-        self._phase1_commit_decisions(commit_plans)
-        
-        # Phase 2: 激活EDGE传输（禁止child_loc None fallback）
-        self._phase2_activate_edge_transfers()
-        
-        # Phase 3: 推进通信队列（并行FIFO + work-conserving）
-        self._phase3_serve_communication_queues()
-        
-        # Phase 4: 推进计算队列（并行FIFO + work-conserving）
-        self._phase4_serve_compute_queues()
-        
+
         # =====================================================================
-        # [时间轴推进] 完成本步所有FIFO推进后，全局时间前进DT
+        # [阶段1: 决策提交] Commit Decisions
+        # 职责: 写入exec_locations + 创建INPUT传输任务
+        # =====================================================================
+        self._phase1_commit_offload_decisions(commit_plans)
+
+        # =====================================================================
+        # [阶段2: 边激活] Activate EDGE Transfers (首次)
+        # 职责: 扫描pending边，为已分配child创建EDGE传输任务
+        # =====================================================================
+        self._phase2_activate_edge_transfers()
+
+        # =====================================================================
+        # [阶段3: 通信服务] Serve Communication Queues
+        # 职责: FIFO并行推进V2I/V2V通信队列 (work-conserving)
+        # =====================================================================
+        self._phase3_advance_comm_queues()
+
+        # =====================================================================
+        # [阶段4: 计算服务] Serve Compute Queues
+        # 职责: FIFO并行推进计算队列 (work-conserving)
+        # 副作用: 任务完成时调用_mark_done()，可能创建新pending边
+        # =====================================================================
+        self._phase4_advance_cpu_queues()
+
+        # =====================================================================
+        # [阶段4.5: 边激活补偿] Activate EDGE Transfers (P01修复)
+        # =====================================================================
+        # 问题背景：
+        #   当任务在阶段4完成时，_mark_done()会为其children创建inter_task_transfers
+        #   但此时阶段2已执行，导致这些EDGE传输要等到下一step才能激活
+        #   造成1个时隙的延迟，累积影响CFT计算准确性
+        #
+        # 修复方案：
+        #   阶段4后再次调用边激活，处理刚创建的pending边
+        #   该函数是幂等的（通过active_edge_keys去重），不会重复创建
+        # =====================================================================
+        self._phase2_activate_edge_transfers()
+
+        # =====================================================================
+        # [阶段5: 时间推进] Time Advance
+        # 职责: 全局时间前进DT
         # =====================================================================
         self.time += self.config.DT
         
@@ -1932,11 +1971,11 @@ class VecOffloadingEnv(gym.Env):
             if v.curr_subtask is not None and 0 <= v.curr_subtask < num_tasks:
                 task_locations[v.curr_subtask] = v.curr_target
 
-            # 使用FIFO队列计算等待时间
-            local_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+            # [P02修复] 使用统一队列查询方法计算等待时间
+            local_wait = self._get_veh_queue_wait_time(v.id, v.cpu_freq)
             # 多RSU场景：使用所有RSU中的最小等待时间
             if len(self.rsus) > 0:
-                rsu_wait_global = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
+                rsu_wait_global = min([self._get_rsu_queue_wait_time(rsu.id) for rsu in self.rsus])
             else:
                 rsu_wait_global = 0.0
 
@@ -1958,7 +1997,8 @@ class VecOffloadingEnv(gym.Env):
                     if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
                         rsu = self.rsus[rsu_id]
                         node_exec_times[i] = rem_comps[i] / rsu.cpu_freq
-                        cpu_fat[i] = rsu.get_estimated_wait_time()
+                        # [P02修复] 使用统一队列查询方法
+                        cpu_fat[i] = self._get_rsu_queue_wait_time(rsu_id)
                     else:
                         # 向后兼容：使用默认RSU频率
                         node_exec_times[i] = rem_comps[i] / self.config.F_RSU
@@ -1968,7 +2008,8 @@ class VecOffloadingEnv(gym.Env):
                     target_veh = self._get_vehicle_by_id(loc)
                     if target_veh is None:
                         target_veh = v
-                    wait_target = target_veh.task_queue.get_estimated_wait_time(target_veh.cpu_freq)
+                    # [P02修复] 使用统一队列查询方法
+                    wait_target = self._get_veh_queue_wait_time(target_veh.id, target_veh.cpu_freq)
                     node_exec_times[i] = rem_comps[i] / target_veh.cpu_freq
                     cpu_fat[i] = wait_target
                     channel_fat[i] = 0.0
@@ -2213,7 +2254,8 @@ class VecOffloadingEnv(gym.Env):
                 if dist > self.config.V2V_RANGE:
                     continue
 
-                if other.is_queue_full(new_task_cycles=task_comp_size):
+                # [P02修复] 使用统一队列查询方法
+                if self._is_veh_queue_full(other.id, task_comp_size):
                     continue
 
                 est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
@@ -2442,6 +2484,14 @@ class VecOffloadingEnv(gym.Env):
                 else:
                     padded_location[t_idx] = 0
 
+            # [Rank Bias用] 填充priority（用于RankBiasEncoder）
+            padded_priority = np.zeros(MAX_NODES, dtype=np.float32)
+            if v.task_dag.priority is not None:
+                padded_priority[:num_nodes] = v.task_dag.priority
+            else:
+                # 如果priority未计算，使用均匀分布作为fallback
+                padded_priority[:num_nodes] = 0.5
+
             obs_list.append({
                 'node_x': padded_node_feats,
                 'self_info': self_info,
@@ -2461,6 +2511,7 @@ class VecOffloadingEnv(gym.Env):
                 'Delta': padded_Delta,
                 'status': padded_status,
                 'location': padded_location,
+                'priority': padded_priority,  # [Rank Bias用] 节点优先级（归一化，越大越重要）
                 'obs_stamp': int(self._episode_steps)
             })
 
@@ -2595,7 +2646,8 @@ class VecOffloadingEnv(gym.Env):
 
         if vehicle_id < len(self.vehicles):
             v = self.vehicles[vehicle_id]
-            wait_time = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+            # [P02修复] 使用统一队列查询方法
+            wait_time = self._get_veh_queue_wait_time(v.id, v.cpu_freq)
             freq = v.cpu_freq
         else:
             freq = self.config.MIN_VEHICLE_CPU_FREQ
@@ -2710,7 +2762,8 @@ class VecOffloadingEnv(gym.Env):
                 # 多RSU场景：使用指定的RSU
                 rsu_id = target[1]
                 if 0 <= rsu_id < len(self.rsus):
-                    wait_time = self.rsus[rsu_id].get_estimated_wait_time()
+                    # [P02修复] 使用统一队列查询方法
+                    wait_time = self._get_rsu_queue_wait_time(rsu_id)
                     freq = self.rsus[rsu_id].cpu_freq
                 else:
                     wait_time = 0.0
@@ -2718,7 +2771,8 @@ class VecOffloadingEnv(gym.Env):
             else:
                 # 单个RSU场景（向后兼容）
                 if len(self.rsus) > 0:
-                    wait_time = min([rsu.get_estimated_wait_time() for rsu in self.rsus])
+                    # [P02修复] 使用统一队列查询方法
+                    wait_time = min([self._get_rsu_queue_wait_time(rsu.id) for rsu in self.rsus])
                 else:
                     wait_time = 0.0
                 freq = self.config.F_RSU
@@ -2727,7 +2781,8 @@ class VecOffloadingEnv(gym.Env):
             target_veh = self._get_vehicle_by_id(target)
             if target_veh is None:
                 return self._calculate_local_execution_time(dag, vehicle_id)
-            wait_time = target_veh.task_queue.get_estimated_wait_time(target_veh.cpu_freq)
+            # [P02修复] 使用统一队列查询方法
+            wait_time = self._get_veh_queue_wait_time(target_veh.id, target_veh.cpu_freq)
             freq = target_veh.cpu_freq
         else:
             # 未知格式，默认本地执行
@@ -2833,7 +2888,8 @@ class VecOffloadingEnv(gym.Env):
         if target == 'Local':
             # 车辆本地队列
             if vehicle_id is not None and vehicle_id < len(self.vehicles):
-                q_curr_load = self.vehicles[vehicle_id].task_queue.get_total_load()
+                # [P02修复] 使用统一队列查询方法
+                q_curr_load = self._get_veh_queue_load(vehicle_id)
                 q_max_load = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
             else:
                 return 0.0
@@ -2843,19 +2899,22 @@ class VecOffloadingEnv(gym.Env):
                 # 多RSU场景：使用指定的RSU队列计算量
                 rsu_id = target[1]
                 if 0 <= rsu_id < len(self.rsus):
-                    q_curr_load = self.rsus[rsu_id].queue_manager.get_total_load()
+                    # [P02修复] 使用统一队列查询方法
+                    q_curr_load = self._get_rsu_queue_load(rsu_id)
                     q_max_load = self.config.RSU_QUEUE_CYCLES_LIMIT
                 else:
                     return 0.0
             else:
                 # 单个RSU场景（向后兼容）：使用所有RSU的总计算量
-                q_curr_load = sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) if len(self.rsus) > 0 else 0
+                # [P02修复] 使用统一队列查询方法
+                q_curr_load = sum([self._get_rsu_queue_load(rsu.id) for rsu in self.rsus]) if len(self.rsus) > 0 else 0
                 q_max_load = self.config.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else self.config.RSU_QUEUE_CYCLES_LIMIT
         elif isinstance(target, int):
             target_veh = self._get_vehicle_by_id(target)
             if target_veh is None:
                 return 0.0
-            q_curr_load = target_veh.task_queue.get_total_load()
+            # [P02修复] 使用统一队列查询方法
+            q_curr_load = self._get_veh_queue_load(target_veh.id)
             q_max_load = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
         else:
             return 0.0
@@ -2949,25 +3008,29 @@ class VecOffloadingEnv(gym.Env):
             q_after_load = 0.0
             q_max_load = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
             if target == 'Local':
-                q_after_load = v.task_queue.get_total_load() + task_comp
+                # [P02修复] 使用统一队列查询方法
+                q_after_load = self._get_veh_queue_load(v.id) + task_comp
                 q_max_load = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
             elif self._is_rsu_location(target):
                 if isinstance(target, tuple) and len(target) == 2:
                     rsu_id = target[1]
                     if 0 <= rsu_id < len(self.rsus):
-                        q_after_load = self.rsus[rsu_id].queue_manager.get_total_load() + task_comp
+                        # [P02修复] 使用统一队列查询方法
+                        q_after_load = self._get_rsu_queue_load(rsu_id) + task_comp
                     else:
                         q_after_load = task_comp
                     q_max_load = self.config.RSU_QUEUE_CYCLES_LIMIT
                 else:
-                    q_after_load = (sum([rsu.queue_manager.get_total_load() for rsu in self.rsus]) + task_comp) if len(self.rsus) > 0 else task_comp
+                    # [P02修复] 使用统一队列查询方法
+                    q_after_load = (sum([self._get_rsu_queue_load(rsu.id) for rsu in self.rsus]) + task_comp) if len(self.rsus) > 0 else task_comp
                     q_max_load = self.config.RSU_QUEUE_CYCLES_LIMIT * len(self.rsus) if len(self.rsus) > 0 else self.config.RSU_QUEUE_CYCLES_LIMIT
             elif isinstance(target, int):
                 target_veh = self._get_vehicle_by_id(target)
                 if target_veh is not None:
-                    q_after_load = target_veh.task_queue.get_total_load() + task_comp
+                    # [P02修复] 使用统一队列查询方法
+                    q_after_load = self._get_veh_queue_load(target_veh.id) + task_comp
                     q_max_load = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
-            
+
             if q_after_load > q_max_load:
                 hard_triggered = True
 
@@ -2995,7 +3058,8 @@ class VecOffloadingEnv(gym.Env):
 
             max_rate = self.config.NORM_MAX_RATE_V2I
             if target == 'Local':
-                queue_wait = v.task_queue.get_estimated_wait_time(v.cpu_freq)
+                # [P02修复] 使用统一队列查询方法
+                queue_wait = self._get_veh_queue_wait_time(v.id, v.cpu_freq)
                 cpu_freq = v.cpu_freq
                 tx_time = 0.0
                 max_rate = self._get_norm_rate('V2I')
@@ -3003,7 +3067,8 @@ class VecOffloadingEnv(gym.Env):
                 rsu_id = self._get_rsu_id_from_location(target)
                 if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
                     rsu = self.rsus[rsu_id]
-                    queue_wait = rsu.get_estimated_wait_time()
+                    # [P02修复] 使用统一队列查询方法
+                    queue_wait = self._get_rsu_queue_wait_time(rsu_id)
                     cpu_freq = rsu.cpu_freq
                     rate = self.channel.compute_one_rate(
                         v, rsu.position, 'V2I', self.time,
@@ -3024,7 +3089,8 @@ class VecOffloadingEnv(gym.Env):
                     cpu_freq = v.cpu_freq
                     tx_time = 0.0
                 else:
-                    queue_wait = t_veh.task_queue.get_estimated_wait_time(t_veh.cpu_freq)
+                    # [P02修复] 使用统一队列查询方法
+                    queue_wait = self._get_veh_queue_wait_time(t_veh.id, t_veh.cpu_freq)
                     cpu_freq = t_veh.cpu_freq
                     rate = self.channel.compute_one_rate(v, t_veh.pos, 'V2V', self.time)
                     rate = max(rate, 1e-6)
@@ -3253,12 +3319,14 @@ class VecOffloadingEnv(gym.Env):
         
         # (4) RSU队列长度
         if self.rsus:
-            rsu_active_counts = []
+            rsu_queue_counts = []
             for rsu in self.rsus:
-                active_len = rsu.get_num_active_tasks() if hasattr(rsu, 'get_num_active_tasks') else 0
-                rsu_active_counts.append(active_len)
-            audit_info['rsu_queue_len'] = np.mean(rsu_active_counts) if rsu_active_counts else 0
-        
+                # [P02修复] 从rsu_cpu_q计算队列长度
+                proc_dict = self.rsu_cpu_q.get(rsu.id, {})
+                queue_len = sum(len(q) for q in proc_dict.values())
+                rsu_queue_counts.append(queue_len)
+            audit_info['rsu_queue_len'] = np.mean(rsu_queue_counts) if rsu_queue_counts else 0
+
         return audit_info
     
     def _log_episode_stats(self, terminated, truncated):

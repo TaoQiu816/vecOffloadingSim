@@ -10,6 +10,7 @@ DAG特征嵌入模块
 import torch
 import torch.nn as nn
 from configs.config import SystemConfig as Cfg
+from configs.constants import MASK_VALUE
 
 
 class LocationEncoder(nn.Module):
@@ -273,7 +274,115 @@ class EdgeFeatureEncoder(nn.Module):
         
         # [修复] 将无连接边的bias设为极小值，物理上切断注意力
         # 广播mask: [B, N, N] -> [B, 1, N, N]
+        # [P33修复] 使用统一的MASK_VALUE常量
         no_edge_mask = no_edge_mask.unsqueeze(1)
-        edge_bias = edge_bias.masked_fill(no_edge_mask, -1e9)
-        
+        edge_bias = edge_bias.masked_fill(no_edge_mask, MASK_VALUE)
+
         return edge_bias
+
+
+class RankBiasEncoder(nn.Module):
+    """
+    Rank偏置编码器（GA-DRL启发的邻居重要性先验 - 方案A）
+
+    【设计说明】
+    作用：在attention logits中新增rank_prior_bias，作为可控的注意力先验偏置，
+         提升DAG表征质量与跨拓扑泛化能力。
+    不做：不参与调度决策、不改变action/reward/队列逻辑。
+
+    【数学原理】
+    1. 得到节点先验权重: w_j = softmax(priority_j / tau)
+    2. 转换为可加bias: rank_bias_{i,j} = kappa * log(w_j + eps)
+    3. 物理意义: attention ∝ exp(logits) * (w_j)^kappa
+       - kappa控制先验强度
+       - 方向一致性: priority大 => w大 => bias大 => attention高
+
+    【覆盖模式】
+    - M1 (cover='all'): rank_bias对所有(i,j)生效，仅依赖key节点j（最稳，推荐）
+    - M2 (cover='adj'): rank_bias只对adj[i,j]==1的位置生效（更贴DAG结构）
+
+    Reference: GA-DRL Rank-Guided Neighbor Sampling (adapted for attention bias)
+    """
+
+    def __init__(self, num_heads: int = 8):
+        """
+        Args:
+            num_heads: 注意力头数，与EdgeEnhancedAttention保持一致
+        """
+        super().__init__()
+        self.num_heads = num_heads
+
+        # Rank偏置投影：将标量偏置扩展到num_heads维
+        # 使用无偏置的线性层，确保零输入产生零输出（M2模式需要）
+        self.rank_proj = nn.Linear(1, num_heads, bias=False)
+
+        # 初始化权重为正值（都是1），保持方向一致性
+        # 这样所有head的行为一致，方向与bias_1d相同
+        nn.init.ones_(self.rank_proj.weight)
+
+    def forward(self,
+                priority: torch.Tensor,
+                adj: torch.Tensor = None,
+                tau: float = 1.0,
+                kappa: float = 0.5,
+                cover_mode: str = 'all',
+                task_mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        将Priority/Rank值转换为注意力偏置
+
+        【重要】方向约定：
+        - 输入priority是"越大越重要"（与compute_task_priority一致）
+        - 如果输入是rank（越小越重要），调用前需要取负或转换
+
+        Args:
+            priority: [Batch, N], 优先级分数（越大越重要，已归一化到[0,1]）
+            adj: [Batch, N, N], 邻接矩阵（cover_mode='adj'时必需）
+            tau: 温度参数，控制softmax尖锐程度
+            kappa: 强度系数，rank_bias = kappa * log(w + eps)
+            cover_mode: 'all'=M1模式(所有位置), 'adj'=M2模式(仅邻接边)
+            task_mask: [Batch, N], 有效节点掩码（True=有效）
+
+        Returns:
+            rank_bias: [Batch, num_heads, N, N], 注意力偏置
+        """
+        batch_size, N = priority.shape
+        device = priority.device
+        eps = 1e-8
+
+        # 1. 计算节点重要性分数（priority越大 => 分数越大）
+        importance_score = priority / max(tau, eps)  # [B, N]
+
+        # 2. 应用task_mask（padding节点不参与softmax）
+        if task_mask is not None:
+            # padding节点设为极小值，softmax后概率趋近0
+            importance_score = importance_score.masked_fill(~task_mask, MASK_VALUE)
+
+        # 3. 对每行应用softmax得到节点先验权重 w_j
+        # w_j = softmax(priority_j / tau)
+        w = torch.softmax(importance_score, dim=-1)  # [B, N]
+
+        # 4. 转换为可加到logits的bias
+        # rank_bias = kappa * log(w + eps)
+        # 物理意义: attention ∝ exp(logits + rank_bias) = exp(logits) * (w)^kappa
+        log_w = torch.log(w + eps)  # [B, N]
+        bias_1d = kappa * log_w  # [B, N]
+
+        # 5. 扩展到[B, N, N]（对所有query i，bias仅依赖key j）
+        # bias_1d: [B, N] -> [B, 1, N] 广播到 [B, N, N]
+        rank_bias_2d = bias_1d.unsqueeze(1).expand(-1, N, -1)  # [B, N, N]
+
+        # 6. 根据cover_mode决定覆盖范围
+        if cover_mode == 'adj' and adj is not None:
+            # M2模式：只对adj[i,j]==1的位置加bias，其他位置精确为0
+            # 使用torch.where确保非邻接位置为0（乘法可能产生微小误差）
+            adj_mask = (adj > 0.5)  # [B, N, N], 二值化
+            rank_bias_2d = torch.where(adj_mask, rank_bias_2d, torch.zeros_like(rank_bias_2d))
+        # M1模式(cover_mode='all')：不改变，bias对所有位置生效
+
+        # 7. 投影到num_heads维
+        # [B, N, N] -> [B, N, N, 1] -> [B, N, N, H] -> [B, H, N, N]
+        rank_bias_2d = rank_bias_2d.unsqueeze(-1)  # [B, N, N, 1]
+        rank_bias = self.rank_proj(rank_bias_2d)  # [B, N, N, H]
+        rank_bias = rank_bias.permute(0, 3, 1, 2)  # [B, H, N, N]
+
+        return rank_bias

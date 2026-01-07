@@ -31,6 +31,7 @@ from typing import List, Dict, Tuple
 from models.offloading_policy import OffloadingPolicyNetwork
 from agents.rollout_buffer import RolloutBuffer
 from configs.train_config import TrainConfig as TC
+from configs.constants import MASK_VALUE
 
 
 class MAPPOAgent:
@@ -179,11 +180,12 @@ class MAPPOAgent:
             target_logits = target_logits + logit_bias
         
         # 应用action_mask
+        # [P33修复] 使用统一的MASK_VALUE常量
         action_mask_tensor = inputs['action_mask']
         masked_logits = torch.where(
             action_mask_tensor > 0,
             target_logits,
-            torch.tensor(-1e10, dtype=target_logits.dtype, device=target_logits.device)
+            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
         )
         
         target_probs = torch.softmax(masked_logits, dim=-1)

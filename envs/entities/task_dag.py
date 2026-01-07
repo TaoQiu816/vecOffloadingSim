@@ -1,7 +1,5 @@
 import numpy as np
 from configs.config import SystemConfig as Cfg
-from models.dag_features import compute_forward_levels, compute_backward_levels, compute_shortest_path_matrix, normalize_distance_matrix
-from configs.config import SystemConfig as Cfg
 
 
 class DAGTask:
@@ -102,18 +100,29 @@ class DAGTask:
         
         # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
         try:
-            from models.dag_features import compute_forward_levels, compute_backward_levels, compute_shortest_path_matrix, normalize_distance_matrix
+            from models.dag_features import (
+                compute_forward_levels, compute_backward_levels,
+                compute_shortest_path_matrix, normalize_distance_matrix
+            )
+
             self.L_fwd = compute_forward_levels(self.adj)
             self.L_bwd = compute_backward_levels(self.adj)
             self.Delta = normalize_distance_matrix(
                 compute_shortest_path_matrix(self.adj, Cfg.MAX_NODES),
                 Cfg.MAX_NODES
             )
+
+            # [Rank Bias用] 计算所有节点的priority（复用compute_all_priorities逻辑）
+            # priority越大 => 优先级越高 => attention偏置越大
+            # 注意：这里直接计算避免方法调用时L_bwd尚未初始化的问题
+            self.priority = self._compute_priority_internal()
+
         except ImportError:
             # 如果导入失败（例如在初始化阶段），延迟计算
             self.L_fwd = None
             self.L_bwd = None
             self.Delta = None
+            self.priority = None
 
     @property
     def is_finished(self):
@@ -131,12 +140,47 @@ class DAGTask:
     def set_failed(self, reason='deadline'):
         """
         标记任务失败
-        
+
         Args:
             reason: 失败原因 ('deadline'/'overflow'/'illegal'/'unfinished')
         """
         self._is_failed = True
         self.fail_reason = reason
+
+    def get_subtask_exec_location(self, subtask_id: int) -> str:
+        """
+        [P03修复] 统一获取子任务执行位置（用于CFT计算）
+
+        优先级:
+        1. task_locations (已完成任务的实际位置)
+        2. exec_locations (已决策但未完成的任务位置)
+        3. 'Local' (未决策任务默认本地)
+
+        这个方法解决了CFT计算依赖不可靠的问题：
+        - task_locations 仅在计算完成时更新
+        - exec_locations 在决策时就写入
+        - 对于未决策的任务，默认假设本地执行
+
+        Args:
+            subtask_id: 子任务索引
+
+        Returns:
+            str: 'Local', ('RSU', rsu_id), 或 int(车辆ID)
+        """
+        # 边界检查
+        if subtask_id < 0 or subtask_id >= self.num_subtasks:
+            return 'Local'
+
+        # 优先使用完成位置（已执行完的任务）
+        if hasattr(self, 'task_locations') and self.task_locations[subtask_id] is not None:
+            return self.task_locations[subtask_id]
+
+        # 其次使用决策位置（已分配但未完成的任务）
+        if hasattr(self, 'exec_locations') and self.exec_locations[subtask_id] is not None:
+            return self.exec_locations[subtask_id]
+
+        # 默认本地执行（未决策的任务）
+        return 'Local'
 
     def get_action_mask(self):
         """
@@ -182,8 +226,62 @@ class DAGTask:
         # 出度（归一化）
         out_deg_norm = self.out_degree[task_id] / Cfg.MAX_NODES
         score_out = w3 * out_deg_norm
-        
+
         return score_bwd + score_comp + score_out
+
+    def _compute_priority_internal(self) -> np.ndarray:
+        """
+        [内部方法] 批量计算所有节点的优先级分数并归一化
+
+        供__init__和compute_all_priorities()复用，避免代码重复。
+
+        【方向约定】
+        priority越大 => 优先级越高 => attention偏置越大
+        （与compute_task_priority()一致）
+
+        Returns:
+            np.ndarray: [N], 归一化后的优先级分数（0-1）
+        """
+        # 确保拓扑特征已计算
+        if self.L_bwd is None:
+            from models.dag_features import compute_backward_levels
+            self.L_bwd = compute_backward_levels(self.adj)
+
+        w1 = Cfg.PRIORITY_W1
+        w2 = Cfg.PRIORITY_W2
+        w3 = Cfg.PRIORITY_W3
+
+        # 批量计算所有节点的优先级
+        # score = W1 * L_bwd + W2 * (comp / NORM_MAX_COMP) + W3 * (out_deg / MAX_NODES)
+        score_bwd = w1 * self.L_bwd  # [N]
+        score_comp = w2 * (self.total_comp / Cfg.NORM_MAX_COMP)  # [N]
+        score_out = w3 * (self.out_degree / Cfg.MAX_NODES)  # [N]
+
+        raw_priority = score_bwd + score_comp + score_out  # [N]
+
+        # 归一化到[0,1]（minmax）
+        p_min = np.min(raw_priority)
+        p_max = np.max(raw_priority)
+        eps = 1e-8
+
+        if p_max - p_min < eps:
+            # 所有值相同，返回均匀分布
+            return np.ones(self.num_subtasks, dtype=np.float32) * 0.5
+        else:
+            return ((raw_priority - p_min) / (p_max - p_min + eps)).astype(np.float32)
+
+    def compute_all_priorities(self) -> np.ndarray:
+        """
+        [Rank Bias用] 计算所有节点的优先级分数并归一化
+
+        【方向约定】
+        priority越大 => 优先级越高 => attention偏置越大
+        （与compute_task_priority()一致）
+
+        Returns:
+            np.ndarray: [N], 归一化后的优先级分数（0-1）
+        """
+        return self._compute_priority_internal()
     
     def get_top_priority_task(self):
         """
@@ -306,9 +404,9 @@ class DAGTask:
         Returns:
             (bool, float): 该子任务是否在本step完成、通信阶段耗时
         """
-        # [P4隔离断言] 旧引擎已被新物理引擎（ActiveTaskManager）替代，不应再调用
+        # [P4隔离断言] 旧引擎已被新物理引擎替代，不应再调用
         assert False, (
-            "❌ [P4隔离] step_progress已被弃用，应使用ActiveTaskManager + _handle_task_completion。"
+            "❌ [P4隔离] step_progress已被弃用，应使用DagCompletionHandler处理任务完成。"
             "如果看到此错误，说明旧引擎代码路径被重新启用，需要修复。"
         )
         

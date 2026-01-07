@@ -1,5 +1,5 @@
 """
-通信队列推进服务（纯逻辑，行为等同于原 env._serve_tx_queue/_phase3_serve_communication_queues）。
+通信队列推进服务（纯逻辑，行为等同于原 env._serve_tx_queue/_phase3_advance_comm_queues）。
 
 职责：
 - 对每个 sender 的 V2I/V2V 队列并行推进，FIFO + work-conserving
