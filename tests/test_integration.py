@@ -46,7 +46,7 @@ def test_environment_reset_step():
     # 验证形状
     assert obs['node_x'].shape == (Cfg.MAX_NODES, 7), \
         f"node_x shape: {obs['node_x'].shape}"
-    assert obs['resource_raw'].shape == (Cfg.MAX_TARGETS, 14), \
+    assert obs['resource_raw'].shape == (Cfg.MAX_TARGETS, Cfg.RESOURCE_RAW_DIM), \
         f"resource_raw shape: {obs['resource_raw'].shape}"
 
     # 执行几步
@@ -100,7 +100,7 @@ def test_network_backward_pass():
         'data_matrix': torch.zeros(batch_size, max_nodes, max_nodes),
         'delta': torch.zeros(batch_size, max_nodes, max_nodes, dtype=torch.long),
         'resource_ids': torch.zeros(batch_size, max_targets, dtype=torch.long),
-        'resource_raw': torch.randn(batch_size, max_targets, 14),
+        'resource_raw': torch.randn(batch_size, max_targets, Cfg.RESOURCE_RAW_DIM),
         'subtask_index': torch.zeros(batch_size, dtype=torch.long),
         'action_mask': torch.ones(batch_size, max_targets, dtype=torch.bool),
         'task_mask': torch.ones(batch_size, max_nodes, dtype=torch.bool),

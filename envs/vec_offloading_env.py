@@ -17,132 +17,9 @@ from envs.audit.trace import TraceCollector
 from envs.audit.stats_collector import StatsCollector
 from utils.dag_generator import DAGGenerator
 from utils.reward_stats import RewardStats, ReservoirSampler
-
-
-# =====================================================================
-# [FIFO队列系统] 数据结构定义
-# =====================================================================
-
-class TransferJob:
-    """
-    [通信任务] 单个传输job（INPUT或EDGE）
-    
-    职责：
-    - 记录传输来源/目标/剩余数据量
-    - 区分INPUT（动作功率）与EDGE（固定最大功率）
-    - 跟踪传输进度与时间戳
-    """
-    def __init__(self, kind, src_node, dst_node, owner_vehicle_id, subtask_id,
-                 rem_bytes, tx_power_dbm, link_type, enqueue_time, parent_task_id=None):
-        """
-        Args:
-            kind: "INPUT" 或 "EDGE"
-            src_node: ("VEH", i) 或 ("RSU", j)
-            dst_node: ("RSU", j) 或 ("VEH", k)
-            owner_vehicle_id: 该DAG属于哪辆车
-            subtask_id: INPUT对应本subtask；EDGE对应child_id
-            rem_bytes: 剩余字节数
-            tx_power_dbm: 发射功率（INPUT=动作映射；EDGE=MAX）
-            link_type: "V2I" 或 "V2V"
-            enqueue_time: 入队时间
-            parent_task_id: EDGE必须有；INPUT为None
-        """
-        self.kind = kind
-        self.src_node = src_node
-        self.dst_node = dst_node
-        self.owner_vehicle_id = owner_vehicle_id
-        self.subtask_id = subtask_id
-        self.parent_task_id = parent_task_id
-        self.rem_bytes = rem_bytes
-        self.tx_power_dbm = tx_power_dbm
-        self.link_type = link_type
-        
-        # 时间戳
-        self.enqueue_time = enqueue_time
-        self.start_time = None
-        self.finish_time = None
-        
-        # 本step统计
-        self.step_time_used = 0.0
-        self.step_bytes_sent = 0.0
-    
-    def get_unique_key(self):
-        """获取唯一键（用于EDGE去重）"""
-        if self.kind == "EDGE":
-            return (self.owner_vehicle_id, self.subtask_id, self.parent_task_id)
-        else:
-            return (self.owner_vehicle_id, self.subtask_id, "INPUT")
-
-
-class ComputeJob:
-    """
-    [计算任务] 单个计算job
-    
-    职责：
-    - 记录计算位置（车辆或RSU的处理器ID）
-    - 跟踪剩余计算量与进度
-    - 支持多处理器并行（RSU）
-    """
-    def __init__(self, owner_vehicle_id, subtask_id, rem_cycles, exec_node,
-                 processor_id, enqueue_time):
-        """
-        Args:
-            owner_vehicle_id: 任务所属车辆ID
-            subtask_id: 子任务ID
-            rem_cycles: 剩余计算量（cycles）
-            exec_node: ("VEH", i) 或 ("RSU", j)
-            processor_id: 车辆恒0；RSU为[0..P-1]
-            enqueue_time: 入队时间
-        """
-        self.owner_vehicle_id = owner_vehicle_id
-        self.subtask_id = subtask_id
-        self.rem_cycles = rem_cycles
-        self.exec_node = exec_node
-        self.processor_id = processor_id
-        
-        # 时间戳
-        self.enqueue_time = enqueue_time
-        self.start_time = None
-        self.finish_time = None
-        
-        # 本step统计
-        self.step_time_used = 0.0
-        self.step_cycles_done = 0.0
-
-
-def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt, reward_min, reward_max, hard_triggered=False, illegal_action=False):
-    """
-    绝对潜在值奖励：仅依赖剩余时间差与动作功率，便于权重外调。
-    
-    能耗计算说明：
-    - 当前实现：E = (p_tx + p_circuit) * dt （传输能耗）
-    - 计算能耗：E_comp = K * f^2 * cycles （未显式计入）
-    - 设计理由：
-      1. 对于单车辆offloading决策，传输能耗是主要因素
-      2. Local执行无传输能耗，只有固定计算能耗
-      3. RSU/V2V执行的远程计算能耗由远程节点承担
-    - 扩展方向：如需系统级能耗优化，可传入comp_cycles和cpu_freq参数
-    """
-    dT_clipped = float(np.clip(float(np.nan_to_num(dT_rem, nan=0.0, posinf=0.0, neginf=0.0)), Cfg.DELTA_CFT_CLIP_MIN, Cfg.DELTA_CFT_CLIP_MAX))
-    dT_eff = dT_clipped - float(dt)
-    t_tx_clipped = float(np.clip(np.nan_to_num(t_tx, nan=0.0, posinf=0.0, neginf=0.0), 0.0, dt))
-    p_watt = float(np.nan_to_num(p_max_watt, nan=0.0, posinf=0.0, neginf=0.0))
-    p_circuit = float(getattr(Cfg, "P_CIRCUIT_WATT", 0.0))
-    p_tx = float(np.nan_to_num(power_ratio, nan=0.0, posinf=0.0, neginf=0.0)) * p_watt
-    # 能耗组成：传输能耗（当前）+ 计算能耗（可扩展）
-    e_step = (p_tx + p_circuit) * float(dt)
-    e_max = max((p_watt + p_circuit) * float(dt), 1e-12)
-    energy_norm = float(np.clip(e_step / e_max, 0.0, 1.0))
-    # 线性组合：时间收益 - 能耗惩罚；权重完全由配置驱动
-    reward = reward_min if (hard_triggered or illegal_action) else (Cfg.DELTA_CFT_SCALE * dT_clipped - Cfg.DELTA_CFT_ENERGY_WEIGHT * energy_norm)
-    reward = float(np.clip(reward, reward_min, reward_max))
-    return reward, {
-        "dT": dT_clipped,
-        "dT_eff": dT_eff,
-        "energy_norm": energy_norm,
-        "t_tx": t_tx_clipped,
-        "dt_used": float(dt),
-    }
+from envs.jobs import TransferJob, ComputeJob
+from envs.rl.reward_functions import compute_absolute_reward
+from envs.services.rsu_selector import RSUSelector
 
 
 class VecOffloadingEnv(gym.Env):
@@ -195,7 +72,9 @@ class VecOffloadingEnv(gym.Env):
         # RSU实体列表（道路模型：等间距线性部署）
         self.rsus = []
         self._init_rsus()
-        
+        # RSU选择器服务
+        self.rsu_selector = RSUSelector(self.rsus, self.channel, self.config)
+
         # CFT计算缓存
         self.last_global_cft = 0.0
         self._cft_cache = None
@@ -508,19 +387,17 @@ class VecOffloadingEnv(gym.Env):
                 plans.append(plan)
                 continue
 
-            # 解析动作：支持字典格式和数组格式
-            # - 字典格式: {"target": idx, "power": ratio}
-            # - 数组格式: [target_idx, power_level] (MultiDiscrete)
+            # [改动C] 动作接口统一为 dict: {"target": int, "power": float in [0,1]}
+            # 移除离散 power_level 分支，Agent 使用 Beta 分布输出连续功率 rho∈[0,1]
             if isinstance(act, dict):
                 target_idx = int(act.get("target", 0))
-                p_norm = np.clip(act.get("power", 1.0), 0.0, 1.0)
+                p_norm = float(np.clip(act.get("power", 1.0), 0.0, 1.0))
             else:
-                # 数组格式：[target_idx, power_level]
+                # 兼容数组格式：[target_idx, power_ratio]，power 直接为连续值
                 act_array = np.asarray(act).flatten()
                 target_idx = int(act_array[0]) if len(act_array) > 0 else 0
-                power_level = int(act_array[1]) if len(act_array) > 1 else 0
-                # 将离散等级映射到[0,1]范围
-                p_norm = power_level / max(self.config.NUM_POWER_LEVELS - 1, 1)
+                # [改动C] power 直接作为连续值 rho∈[0,1]，不再离散化
+                p_norm = float(np.clip(act_array[1], 0.0, 1.0)) if len(act_array) > 1 else 1.0
             
             plan["target_idx"] = target_idx
 
@@ -747,47 +624,20 @@ class VecOffloadingEnv(gym.Env):
                 coverage_range=rsu_range
             )
             self.rsus.append(rsu)
-    
+
     def _get_nearest_rsu(self, position):
-        """
-        获取距离指定位置最近的RSU
-        
-        Args:
-            position: 位置坐标 [x, y]
-        
-        Returns:
-            RSU or None: 最近的RSU，如果不在任何RSU覆盖范围内返回None
-        """
-        if len(self.rsus) == 0:
-            return None
-        
-        nearest_rsu = None
-        min_dist = float('inf')
-        
-        for rsu in self.rsus:
-            if rsu.is_in_coverage(position):
-                dist = rsu.get_distance(position)
-                if dist < min_dist:
-                    min_dist = dist
-                    nearest_rsu = rsu
-        
-        return nearest_rsu
-    
+        """获取距离指定位置最近的RSU（委托给RSUSelector）"""
+        return self.rsu_selector.get_nearest_rsu(position)
+
     def _get_all_rsus_in_range(self, position):
-        """
-        获取覆盖范围内所有RSU
-        
-        Args:
-            position: 位置坐标 [x, y]
-        
-        Returns:
-            list: 覆盖范围内的RSU列表
-        """
-        return [rsu for rsu in self.rsus if rsu.is_in_coverage(position)]
+        """获取覆盖范围内所有RSU（委托给RSUSelector）"""
+        return self.rsu_selector.get_all_rsus_in_range(position)
 
     def _select_best_rsu(self, vehicle, task_comp, task_data):
         """
         选择当前车辆的最佳RSU（确定性规则）
+
+        [改动B] metric 加入 CommWait_total_v2i，反映通信队列 backlog（含 EDGE 挤占）
 
         返回:
             tuple: (rsu_id, v2i_rate, wait_time, dist, contact_time)
@@ -803,6 +653,10 @@ class VecOffloadingEnv(gym.Env):
         best_metric = float('inf')
 
         speed = np.linalg.norm(vehicle.vel)
+
+        # [改动B] 计算 V2I 通信队列等待时间（含 EDGE 挤占效应）
+        comm_wait = self._compute_comm_wait(vehicle.id)
+        comm_wait_v2i = comm_wait['total_v2i']
 
         for rsu in self.rsus:
             if not rsu.is_in_coverage(vehicle.pos):
@@ -821,12 +675,17 @@ class VecOffloadingEnv(gym.Env):
             # [处理器共享] 使用新的延迟估算方法
             wait_time = self._get_node_delay(rsu)
             comp_time = task_comp / max(rsu.cpu_freq, 1e-6)
-            metric = tx_time + wait_time + comp_time
+            # [改动B] T_finish_est = CommWait + CommTx + CPUWait + CPUExec
+            metric = comm_wait_v2i + tx_time + wait_time + comp_time
 
             if speed > 0.1:
                 contact_time = max(0.0, (rsu.coverage_range - dist) / speed)
             else:
                 contact_time = self._max_rsu_contact_time
+
+            # [改动B] 用 T_finish_est 与 contact_time 比较（RSU场景通常 contact 够长，但保留判断）
+            if metric > contact_time and speed > 0.1:
+                continue  # 预计完成时间超过接触时间，剔除
 
             if metric < best_metric:
                 best_metric = metric
@@ -840,49 +699,18 @@ class VecOffloadingEnv(gym.Env):
             return None, 0.0, 0.0, 0.0, 0.0
 
         return best_id, best_rate, best_wait, best_dist, best_contact
-    
+
     def _is_rsu_location(self, loc):
-        """
-        判断位置标识是否是RSU
-        
-        Args:
-            loc: 位置标识（可能是'RSU'、('RSU', rsu_id)或其他）
-        
-        Returns:
-            bool: 如果是RSU位置返回True
-        """
-        return loc == 'RSU' or (isinstance(loc, tuple) and loc[0] == 'RSU')
-    
+        """判断位置标识是否是RSU（委托给RSUSelector）"""
+        return self.rsu_selector.is_rsu_location(loc)
+
     def _get_rsu_id_from_location(self, loc):
-        """
-        从位置标识中提取RSU ID
-        
-        Args:
-            loc: 位置标识
-        
-        Returns:
-            int or None: RSU ID，如果不是RSU则返回None
-        """
-        if loc == 'RSU':
-            # 兼容旧代码：单个RSU场景，返回第一个RSU的ID
-            return 0 if len(self.rsus) > 0 else None
-        elif isinstance(loc, tuple) and loc[0] == 'RSU':
-            return loc[1]
-        return None
-    
+        """从位置标识中提取RSU ID（委托给RSUSelector）"""
+        return self.rsu_selector.get_rsu_id_from_location(loc)
+
     def _get_rsu_position(self, rsu_id):
-        """
-        获取RSU的位置
-        
-        Args:
-            rsu_id: RSU ID
-        
-        Returns:
-            np.array or None: RSU位置，如果ID无效返回None
-        """
-        if 0 <= rsu_id < len(self.rsus):
-            return self.rsus[rsu_id].position
-        return None
+        """获取RSU的位置（委托给RSUSelector）"""
+        return self.rsu_selector.get_rsu_position(rsu_id)
 
     def _get_vehicle_by_id(self, veh_id):
         """
@@ -966,6 +794,113 @@ class VecOffloadingEnv(gym.Env):
         # 归一化模式已固化为static，直接返回静态常量
         # Normalization mode fixed to static; directly return static constants
         return self.config.NORM_MAX_RATE_V2I if link_type == 'V2I' else self.config.NORM_MAX_RATE_V2V
+
+    def _compute_comm_wait(self, vehicle_id: int) -> dict:
+        """
+        [改动A核心] 计算车辆通信队列的等待时间（含 EDGE 挤占效应）
+
+        基于 step 边界快照计算，时隙内状态固定（MDP 语义）。
+        逐 job 计算剩余时间 t_rem = rem_bytes * 8 / R_hat(job)，
+        R_hat 复用现有速率计算函数，保持口径一致。
+
+        Args:
+            vehicle_id: 车辆 ID
+
+        Returns:
+            dict: {
+                'total_v2i': float,  # V2I 队列总等待时间 (s)
+                'edge_v2i': float,   # V2I 队列中 EDGE 类型等待时间 (s)
+                'total_v2v': float,  # V2V 队列总等待时间 (s)
+                'edge_v2v': float,   # V2V 队列中 EDGE 类型等待时间 (s)
+            }
+        """
+        result = {
+            'total_v2i': 0.0,
+            'edge_v2i': 0.0,
+            'total_v2v': 0.0,
+            'edge_v2v': 0.0,
+        }
+
+        src_node = ("VEH", vehicle_id)
+        src_veh = self._get_vehicle_by_id(vehicle_id)
+        if src_veh is None:
+            return result
+
+        v2i_user_count = self._estimate_v2i_users()
+
+        # =====================================================================
+        # V2I 队列：txq_v2i[src_node]
+        # =====================================================================
+        if src_node in self.txq_v2i:
+            for job in self.txq_v2i[src_node]:
+                # 计算 R_hat(job)：复用 channel.compute_one_rate
+                # 获取目标位置
+                if job.dst_node[0] == "RSU":
+                    rsu_id = job.dst_node[1]
+                    if 0 <= rsu_id < len(self.rsus):
+                        dst_pos = self.rsus[rsu_id].position
+                    else:
+                        dst_pos = self.config.RSU_POS
+                elif job.dst_node[0] == "VEH":
+                    dst_veh = self._get_vehicle_by_id(job.dst_node[1])
+                    if dst_veh is not None:
+                        dst_pos = dst_veh.pos
+                    else:
+                        continue  # 目标车辆不存在，跳过
+                else:
+                    continue
+
+                # 计算速率（使用 job 的功率）
+                rate = self.channel.compute_one_rate(
+                    src_veh, dst_pos, 'V2I', self.time,
+                    v2i_user_count=v2i_user_count,
+                    power_dbm_override=job.tx_power_dbm
+                )
+                rate = max(rate, 1e-6)
+
+                # 计算剩余时间
+                t_rem = (job.rem_bytes * 8) / rate  # rem_bytes 是 bits
+                result['total_v2i'] += t_rem
+
+                if job.kind == "EDGE":
+                    result['edge_v2i'] += t_rem
+
+        # =====================================================================
+        # V2V 队列：txq_v2v[src_node]
+        # =====================================================================
+        if src_node in self.txq_v2v:
+            for job in self.txq_v2v[src_node]:
+                # 获取目标位置
+                if job.dst_node[0] == "VEH":
+                    dst_veh = self._get_vehicle_by_id(job.dst_node[1])
+                    if dst_veh is not None:
+                        dst_pos = dst_veh.pos
+                    else:
+                        continue  # 目标车辆不存在，跳过
+                elif job.dst_node[0] == "RSU":
+                    rsu_id = job.dst_node[1]
+                    if 0 <= rsu_id < len(self.rsus):
+                        dst_pos = self.rsus[rsu_id].position
+                    else:
+                        dst_pos = self.config.RSU_POS
+                else:
+                    continue
+
+                # 计算速率（使用 job 的功率）
+                rate = self.channel.compute_one_rate(
+                    src_veh, dst_pos, 'V2V', self.time,
+                    power_dbm_override=job.tx_power_dbm
+                )
+                rate = max(rate, 1e-6)
+
+                # 计算剩余时间
+                t_rem = (job.rem_bytes * 8) / rate  # rem_bytes 是 bits
+                result['total_v2v'] += t_rem
+
+                if job.kind == "EDGE":
+                    result['edge_v2v'] += t_rem
+
+        return result
 
     def _power_ratio_from_dbm(self, power_dbm):
         p_min = getattr(Cfg, "TX_POWER_MIN_DBM", power_dbm)
@@ -2247,6 +2182,10 @@ class VecOffloadingEnv(gym.Env):
             neighbors_array = np.zeros((self.config.MAX_NEIGHBORS, neighbor_dim), dtype=np.float32)
             candidate_info = []
 
+            # [改动B] 在候选筛选前计算 CommWait，用于 T_finish_est
+            comm_wait_for_mask = self._compute_comm_wait(v.id)
+            comm_wait_v2v_for_mask = comm_wait_for_mask['total_v2v']
+
             for j, other in enumerate(self.vehicles):
                 if v.id == other.id:
                     continue
@@ -2258,13 +2197,21 @@ class VecOffloadingEnv(gym.Env):
                 if self._is_veh_queue_full(other.id, task_comp_size):
                     continue
 
-                est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
-                est_v2v_rate = max(est_v2v_rate, 1e-6)
-                trans_time = task_data_size / est_v2v_rate if task_data_size > 0 else 0.0
+                # [改动B] 使用最大功率计算传输时间（最乐观估计）
+                est_v2v_rate_max_power = self.channel.compute_one_rate(
+                    v, other.pos, 'V2V', self.time,
+                    power_dbm_override=self.config.TX_POWER_MAX_DBM
+                )
+                est_v2v_rate_max_power = max(est_v2v_rate_max_power, 1e-6)
+                trans_time_max_power = task_data_size / est_v2v_rate_max_power if task_data_size > 0 else 0.0
+
                 # [处理器共享] 使用新的延迟估算方法
                 queue_wait_time = self._get_node_delay(other)
                 comp_time = task_comp_size / max(other.cpu_freq, 1e-6)
-                total_task_time = (trans_time + queue_wait_time + comp_time) * 1.2
+
+                # [改动B] T_finish_est = CommWait + CommTx + CPUWait + CPUExec
+                # 使用最大功率（最乐观）做可行性判断
+                t_finish_est = comm_wait_v2v_for_mask + trans_time_max_power + queue_wait_time + comp_time
 
                 rel_vel = other.vel - v.vel
                 pos_diff = other.pos - v.pos
@@ -2278,8 +2225,14 @@ class VecOffloadingEnv(gym.Env):
                     else:
                         time_to_break = self._max_v2v_contact_time
 
-                if total_task_time > time_to_break:
+                # [改动B] 使用 T_finish_est 与 contact_time 比较
+                if t_finish_est > time_to_break:
                     continue
+
+                # 保存用于排序和显示的 rate（使用默认功率）
+                est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
+                est_v2v_rate = max(est_v2v_rate, 1e-6)
+                trans_time = task_data_size / est_v2v_rate if task_data_size > 0 else 0.0
 
                 rel_pos = (other.pos - v.pos) * self._inv_v2v_range
                 candidate_info.append({
@@ -2291,7 +2244,7 @@ class VecOffloadingEnv(gym.Env):
                     'cpu_freq': other.cpu_freq,
                     'rate': est_v2v_rate,
                     'contact_time': max(time_to_break, 0.0),
-                    'total_time': total_task_time
+                    'total_time': t_finish_est  # [改动B] 使用 T_finish_est 排序
                 })
 
             candidate_info.sort(key=lambda x: (x['total_time'], x['dist']))
@@ -2355,6 +2308,20 @@ class VecOffloadingEnv(gym.Env):
             self._last_candidates[v.id] = candidate_ids
             self._last_rsu_choice[v.id] = rsu_id
 
+            # [改动A] 计算通信队列等待时间（含 EDGE 挤占效应）
+            comm_wait = self._compute_comm_wait(v.id)
+            comm_wait_total_v2i = comm_wait['total_v2i']
+            comm_wait_edge_v2i = comm_wait['edge_v2i']
+            comm_wait_total_v2v = comm_wait['total_v2v']
+            comm_wait_edge_v2v = comm_wait['edge_v2v']
+
+            # 归一化 CommWait（使用 log(1+x) 压缩防止饱和）
+            norm_max_comm_wait = getattr(self.config, 'NORM_MAX_COMM_WAIT', 2.0)
+            comm_wait_total_v2i_norm = np.clip(np.log1p(comm_wait_total_v2i) / np.log1p(norm_max_comm_wait), 0, 1)
+            comm_wait_edge_v2i_norm = np.clip(np.log1p(comm_wait_edge_v2i) / np.log1p(norm_max_comm_wait), 0, 1)
+            comm_wait_total_v2v_norm = np.clip(np.log1p(comm_wait_total_v2v) / np.log1p(norm_max_comm_wait), 0, 1)
+            comm_wait_edge_v2v_norm = np.clip(np.log1p(comm_wait_edge_v2v) / np.log1p(norm_max_comm_wait), 0, 1)
+
             resource_raw = np.zeros((self.config.MAX_TARGETS, self.config.RESOURCE_RAW_DIM), dtype=np.float32)
             slack_norm = val_urgency
 
@@ -2362,7 +2329,7 @@ class VecOffloadingEnv(gym.Env):
             local_est_exec = task_comp_size / max(v.cpu_freq, 1e-6) if task_comp_size > 0 else 0.0
             local_est_comm = 0.0  # Local无传输
             local_est_wait = self_wait
-            
+
             resource_raw[0] = [
                 v.cpu_freq * self._inv_max_cpu,
                 np.clip(self_wait * self._inv_max_wait, 0, 1),
@@ -2377,20 +2344,25 @@ class VecOffloadingEnv(gym.Env):
                 1.0,  # Contact永久连接
                 np.clip(local_est_exec / 10.0, 0, 1),  # Est_Exec_Time
                 np.clip(local_est_comm / 10.0, 0, 1),  # Est_Comm_Time
-                np.clip(local_est_wait / 10.0, 0, 1)   # Est_Wait_Time
+                np.clip(local_est_wait / 10.0, 0, 1),  # Est_Wait_Time
+                # [改动A] CommWait 特征 (Local 无通信等待)
+                0.0,  # CommWait_total_v2i (Local不使用V2I)
+                0.0,  # CommWait_edge_v2i
+                0.0,  # CommWait_total_v2v (Local不使用V2V)
+                0.0,  # CommWait_edge_v2v
             ]
 
             if rsu_available:
                 rsu = self.rsus[rsu_id]
                 rel_rsu = (rsu.position - v.pos) * self._inv_map_size
                 rsu_contact_norm = np.clip(rsu_contact / max(self._max_rsu_contact_time, 1e-6), 0, 1)
-                
+
                 # RSU节点特征：计算时间预估
                 rsu_cpu = rsu.cpu_freq if rsu else self.config.F_RSU
                 rsu_est_exec = task_comp_size / max(rsu_cpu, 1e-6) if task_comp_size > 0 else 0.0
                 rsu_est_comm = task_data_size / max(rsu_rate, 1e-6) if task_data_size > 0 else 0.0
                 rsu_est_wait = rsu_wait
-                
+
                 resource_raw[1] = [
                     rsu.cpu_freq * self._inv_max_cpu,
                     np.clip(rsu_wait * self._inv_max_wait, 0, 1),
@@ -2405,17 +2377,22 @@ class VecOffloadingEnv(gym.Env):
                     rsu_contact_norm,
                     np.clip(rsu_est_exec / 10.0, 0, 1),  # Est_Exec_Time
                     np.clip(rsu_est_comm / 10.0, 0, 1),  # Est_Comm_Time
-                    np.clip(rsu_est_wait / 10.0, 0, 1)   # Est_Wait_Time
+                    np.clip(rsu_est_wait / 10.0, 0, 1),  # Est_Wait_Time
+                    # [改动A] CommWait 特征 (RSU 使用 V2I 通信)
+                    comm_wait_total_v2i_norm,  # CommWait_total_v2i
+                    comm_wait_edge_v2i_norm,   # CommWait_edge_v2i
+                    0.0,  # CommWait_total_v2v (RSU不使用V2V)
+                    0.0,  # CommWait_edge_v2v
                 ]
 
             for idx, info in enumerate(candidate_info[:self.config.MAX_NEIGHBORS]):
                 contact_norm = np.clip(info['contact_time'] / max(self._max_v2v_contact_time, 1e-6), 0, 1)
-                
+
                 # Neighbor节点特征：计算时间预估
                 neighbor_est_exec = task_comp_size / max(info['cpu_freq'], 1e-6) if task_comp_size > 0 else 0.0
                 neighbor_est_comm = task_data_size / max(info['rate'], 1e-6) if task_data_size > 0 else 0.0
                 neighbor_est_wait = info['queue_wait']
-                
+
                 resource_raw[2 + idx] = [
                     info['cpu_freq'] * self._inv_max_cpu,
                     np.clip(info['queue_wait'] * self._inv_max_wait, 0, 1),
@@ -2430,7 +2407,12 @@ class VecOffloadingEnv(gym.Env):
                     contact_norm,
                     np.clip(neighbor_est_exec / 10.0, 0, 1),  # Est_Exec_Time
                     np.clip(neighbor_est_comm / 10.0, 0, 1),  # Est_Comm_Time
-                    np.clip(neighbor_est_wait / 10.0, 0, 1)   # Est_Wait_Time
+                    np.clip(neighbor_est_wait / 10.0, 0, 1),  # Est_Wait_Time
+                    # [改动A] CommWait 特征 (V2V 使用 V2V 通信)
+                    0.0,  # CommWait_total_v2i (V2V不使用V2I)
+                    0.0,  # CommWait_edge_v2i
+                    comm_wait_total_v2v_norm,  # CommWait_total_v2v
+                    comm_wait_edge_v2v_norm,   # CommWait_edge_v2v
                 ]
 
             # [关键] 固定维度填充 - 适配批处理要求

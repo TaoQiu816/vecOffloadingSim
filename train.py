@@ -53,77 +53,20 @@ from agents.mappo_agent import MAPPOAgent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
-
-
-def _ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
-
-
-def _read_last_jsonl(path):
-    last = None
-    if not path or not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                last = line
-    if last is None:
-        return None
-    try:
-        return json.loads(last)
-    except Exception:
-        return None
-
-
-def _format_table_header(columns):
-    parts = []
-    for col in columns:
-        label, width = col
-        parts.append(str(label).center(width))
-    return "| " + " | ".join(parts) + " |"
-
-
-def _format_table_divider(columns):
-    parts = []
-    for _, width in columns:
-        parts.append("-" * width)
-    return "+-" + "-+-".join(parts) + "-+"
-
-
-def _format_table_row(values, columns):
-    parts = []
-    for col in columns:
-        key, width = col
-        val = values.get(key)
-        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
-            cell = "-"
-        elif isinstance(val, (int, np.integer)):
-            cell = str(val)
-        elif isinstance(val, float):
-            cell = f"{val:.3f}"
-        else:
-            cell = str(val)
-        parts.append(cell.rjust(width))
-    return "| " + " | ".join(parts) + " |"
-
-
-def _compute_time_limit_penalty(mode, remaining_time, deadline, base_penalty, k, ratio_clip):
-    """
-    Compute scaled time-limit penalty.
-    mode: "fixed" or "scaled"
-    remaining_time: seconds remaining to finish
-    deadline: deadline seconds
-    """
-    if mode == "scaled":
-        if remaining_time is None or not np.isfinite(remaining_time):
-            return 0.0, 0.0
-        denom = max(deadline if deadline is not None and np.isfinite(deadline) else 1.0, 1e-6)
-        ratio = np.clip(remaining_time / denom, 0.0, ratio_clip)
-        penalty = -float(k) * float(ratio)
-        return penalty, ratio
-    else:
-        return float(base_penalty), 0.0
+from utils.train_helpers import (
+    ensure_dir as _ensure_dir,
+    read_last_jsonl as _read_last_jsonl,
+    format_table_header as _format_table_header,
+    format_table_divider as _format_table_divider,
+    format_table_row as _format_table_row,
+    compute_time_limit_penalty as _compute_time_limit_penalty,
+    env_int as _env_int,
+    env_float as _env_float,
+    env_bool as _env_bool,
+    env_str as _env_str,
+    bool_env as _bool_env,
+    json_default as _json_default,
+)
 
 
 def _parse_args():
@@ -141,33 +84,6 @@ def _parse_args():
     parser.add_argument("--step-metrics", action="store_true", default=False)
     parser.add_argument("--no-step-metrics", action="store_true", default=False)
     return parser.parse_args()
-
-
-def _env_int(name):
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
-def _env_float(name):
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-def _env_bool(name):
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    return str(raw).lower() in ("1", "true", "yes", "on")
 
 
 def apply_env_overrides():
@@ -215,21 +131,6 @@ def apply_env_overrides():
     use_logit_bias = _env_bool("USE_LOGIT_BIAS")
     if use_logit_bias is not None:
         TC.USE_LOGIT_BIAS = use_logit_bias
-
-
-def _env_str(name):
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    raw = str(raw).strip()
-    return raw if raw else None
-
-
-def _bool_env(name, default=False):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _collect_obs_stats(obs_list):
@@ -296,18 +197,6 @@ def _inject_obs_stamp(obs_list, actions):
             continue
         if i < len(obs_list) and "obs_stamp" in obs_list[i] and "obs_stamp" not in act:
             act["obs_stamp"] = int(obs_list[i]["obs_stamp"])
-
-
-def _json_default(obj):
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if torch.is_tensor(obj):
-        return obj.item() if obj.numel() == 1 else obj.tolist()
-    return str(obj)
 
 
 def evaluate_baselines(env, num_episodes=10):

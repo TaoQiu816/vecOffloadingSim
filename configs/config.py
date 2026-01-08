@@ -158,9 +158,11 @@ class SystemConfig:
                                 # 影响: 能耗优化范围上限
                                 # Impact: Energy optimization upper bound
     
-    NUM_POWER_LEVELS = 4        # 功率离散等级数 - Number of discrete power levels
-                                # 影响: 动作空间维度，将[MIN,MAX]均匀离散化
-                                # Impact: Action space dimension; uniformly discretizes [MIN,MAX]
+    NUM_POWER_LEVELS = 4        # [DEPRECATED] 功率离散等级数 - Number of discrete power levels
+                                # 已废弃：Agent 使用 Beta 分布输出连续功率 rho∈[0,1]
+                                # DEPRECATED: Agent uses Beta distribution for continuous power rho∈[0,1]
+                                # 保留仅为向后兼容，环境优先使用 dict 格式连续功率
+                                # Kept for backward compatibility; env prefers dict format continuous power
     
     # -------------------------------------------------------------------------
     # 2.4 路径损耗模型 (Path Loss Model - Log-Distance)
@@ -500,9 +502,16 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 14           # 资源原始特征维度 - Resource raw feature dimension
-                                    # 影响: 11原始特征 + 3时间预估特征
-                                    # Impact: 11 raw features + 3 time estimation features
+    RESOURCE_RAW_DIM = 18           # 资源原始特征维度 - Resource raw feature dimension
+                                    # 影响: 14原始特征 + 4 CommWait特征 (total/edge × v2i/v2v)
+                                    # Impact: 14 raw features + 4 CommWait features (total/edge × v2i/v2v)
+
+    # -------------------------------------------------------------------------
+    # 8.1 通信等待时间归一化 (CommWait Normalization)
+    # -------------------------------------------------------------------------
+    NORM_MAX_COMM_WAIT = 2.0        # 通信等待时间归一化基准 (s) - CommWait normalization baseline
+                                    # 影响: 基于 episode 时长上限 (10s) 的 20%，防止饱和
+                                    # Impact: Based on 20% of episode duration (10s), prevents saturation
 
     # =========================================================================
     # 9. 统计与采样参数 (Statistics & Sampling)
