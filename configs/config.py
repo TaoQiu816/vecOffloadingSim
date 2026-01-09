@@ -337,10 +337,10 @@ class SystemConfig:
     # 基于计算量的deadline (使用γ因子)
     # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
     # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
-    DEADLINE_TIGHTENING_MIN = 1.1       # γ最小值 [审计校准: 确保AlwaysLocal≤70%]
+    DEADLINE_TIGHTENING_MIN = 1.2       # γ最小值 [微调: 从1.1放宽到1.2]
                                         # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
-    DEADLINE_TIGHTENING_MAX = 1.4       # γ最大值 [审计校准: 确保AlwaysLocal≥20%]
-                                        # 目标: AlwaysLocal成功率在20%~70%区间
+    DEADLINE_TIGHTENING_MAX = 1.6       # γ最大值 [微调: 从1.4放宽到1.6]
+                                        # 目标: AlwaysLocal成功率在20%~70%区间，提高整体成功率
     
     DEADLINE_LB_EPS = 0.05              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行

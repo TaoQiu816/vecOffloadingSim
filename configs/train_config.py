@@ -86,7 +86,7 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate [审计调优: 降低以提高稳定性]
+    LR_ACTOR = 1e-4         # Actor学习率 - Actor learning rate [调优: 从3e-4降至1e-4稳定梯度]
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
@@ -96,7 +96,7 @@ class TrainConfig:
                             # 推荐范围: 1e-4 ~ 1e-3 (稳定性优先)
                             # Recommended range: 1e-4 ~ 1e-3 (stability first)
 
-    LR_CRITIC = 3e-4        # Critic学习率 - Critic learning rate [审计调优: 与Actor一致]
+    LR_CRITIC = 3e-4        # Critic学习率 - Critic learning rate [审慎: 保持与Actor一致]
                             # 影响: 控制价值网络的更新速度，与Actor保持一致
                             # Impact: Controls value network update speed; consistent with Actor
                             # 推荐范围: 1e-4 ~ 1e-3
@@ -122,15 +122,15 @@ class TrainConfig:
                             # 推荐范围: 0.90-0.95
                             # Recommended range: 0.90-0.95
 
-    MAX_GRAD_NORM = 0.5     # 梯度裁剪阈值 - Gradient clipping threshold
+    MAX_GRAD_NORM = 2.0     # 梯度裁剪阈值 - Gradient clipping threshold [审慎调优: 0.5→2.0]
                             # 影响: 防止梯度爆炸，保证训练稳定性
-                            #       - 过小: 限制学习速度
+                            #       配合Value Loss归一化，温和放宽即可
                             #       - 过大: 可能梯度爆炸
                             # Impact: Prevents gradient explosion, ensures training stability
-                            #       - Too small: Limits learning speed
+                            #       - Too small: Limits learning speed (current: 100% clipped)
                             #       - Too large: May still explode
-                            # 推荐范围: 0.5-2.0 (0.5 conservative, 2.0 aggressive)
-                            # Recommended range: 0.5-2.0
+                            # 诊断: 当前梯度均值90，全部被裁剪，提高阈值配合降低LR
+                            # Diagnostic: Current grad norm avg 90, all clipped, raise threshold with lower LR
 
     # =========================================================================
     # 3. PPO 算法参数 (PPO Algorithm Parameters)
@@ -185,20 +185,21 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.01     # 熵正则化系数 - Entropy coefficient for exploration [审计调优: 增强探索]
+    ENTROPY_COEF = 0.003    # 熵正则化系数 - Entropy coefficient for exploration [审慎调优: 0.01→0.003]
                             # 影响: 增加动作探索性，应对动态环境
-                            #       - 过大: 策略过于随机，难以收敛
+                            #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
                             # Impact: Increases action exploration for dynamic environments
-                            #       - Too large: Policy too random, hard to converge
+                            #       - Too large: Policy too random, hard to converge (current issue)
                             #       - Too small: Policy converges prematurely to local optimum
-                            # 推荐范围: 0.01-0.02 (0.01 for balanced exploration)
-                            # Recommended range: 0.01-0.02
+                            # 诊断: 当前entropy持续上升至最大值96%，需要降低
+                            # Diagnostic: Current entropy rising to 96% of max, needs reduction
 
     VF_COEF = 0.5           # 价值函数损失系数 - Value function loss coefficient
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
+                            #       已通过Value Loss归一化解决梯度主导问题
                             # Impact: Balances Actor-Critic training, controls value function update weight
-                            # 推荐范围: 0.5-1.0 (0.5 is standard)
+                            # 推荐范围: 0.5-1.0 (标准值，配合归一化的Value Loss)
                             # Recommended range: 0.5-1.0
     
     TARGET_KL = 0.02        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
@@ -221,21 +222,20 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 1.5    # RSU的Logit偏置 - Logit bias for RSU action [审计调优]
-                            # 影响: 在softmax前给RSU logit加上偏置，适度提升选择概率
-                            #       避免RSU依赖，促进V2V探索
-                            # Impact: Adds bias to RSU logit before softmax, moderately boosts selection
-                            #       Prevents RSU dependency; promotes V2V exploration
-                            # 推荐范围: 1.0-2.0 (1.5 balances RSU/Local/V2V)
-                            # Recommended range: 1.0-2.0
+    LOGIT_BIAS_RSU = 2.4    # RSU的Logit偏置 - Logit bias for RSU action [数学推导: ln(11)≈2.4]
+                            # 数学推导: 动作空间 1 Local + 1 RSU + 11 V2V
+                            #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
+                            #   需要 exp(b) / [2*exp(b) + 11] = 1/3
+                            #   解得 b = ln(11) ≈ 2.3979
+                            # Impact: Mathematically derived for balanced exploration
+                            # 推荐范围: 1.7-2.4 (2.4 for equal 33%/33%/33% distribution)
     
-    LOGIT_BIAS_LOCAL = 1.0  # Local的Logit偏置 - Logit bias for Local action [审计调优]
-                            # 影响: 在softmax前给Local logit加上偏置，轻度提升选择概率
-                            #       降低Local偏置，促进卸载探索
-                            # Impact: Adds bias to Local logit before softmax, lightly boosts selection
-                            #       Reduced to promote offloading exploration
-                            # 推荐范围: 0.5-1.5 (1.0 for balanced preference)
-                            # Recommended range: 0.5-1.5
+    LOGIT_BIAS_LOCAL = 2.4  # Local的Logit偏置 - Logit bias for Local action [数学推导: ln(11)≈2.4]
+                            # 数学推导: 与RSU相同，确保初始状态三类动作均衡
+                            #   无Bias时: Local 7.7%, RSU 7.7%, V2V 84.6%
+                            #   有Bias=2.4时: Local 33.3%, RSU 33.3%, V2V 33.3%
+                            # Impact: Mathematically derived for balanced exploration
+                            # 推荐范围: 1.7-2.4 (2.4 for equal distribution)
     
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]
@@ -292,7 +292,7 @@ class TrainConfig:
                             # 推荐范围: 50-100 (短期), 100-200 (长期)
                             # Recommended range: 50-100 (short-term), 100-200 (long-term)
     
-    EVAL_INTERVAL = 25      # 评估间隔 (Episodes) - Evaluation interval [增加评估频率]
+    EVAL_INTERVAL = 1       # 评估间隔 (Episodes) - Evaluation interval [调优: 每episode评估以公平对比]
                             # 影响: 每N个Episodes进行一次验证，短期训练更频繁评估
                             # Impact: Evaluates training progress every N episodes; more frequent for validation
                             # 推荐范围: 20-50 (短期), 50-100 (长期)

@@ -250,22 +250,31 @@ class DataRecorder:
                         plt.plot(x, y, color=color, linewidth=2.5, label=label, zorder=5)
                 
                 # 绘制baseline时间序列（如果提供了数据）
+                # 与训练曲线保持一致的绘图风格：平滑曲线，无marker
                 if df_baseline is not None and metric_key is not None and not df_baseline.empty:
                     baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
                     baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
                     baseline_linewidths = {'Random': 2.0, 'Local-Only': 2.0, 'Greedy': 2.0}
                     
                     for policy_name in ['Random', 'Local-Only', 'Greedy']:
-                        policy_data = df_baseline[df_baseline['policy'] == policy_name]
+                        policy_data = df_baseline[df_baseline['policy'] == policy_name].copy()
                         if not policy_data.empty and metric_key in policy_data.columns:
-                            x_baseline = policy_data['episode']
-                            y_baseline = policy_data[metric_key]
+                            x_baseline = policy_data['episode'].values
+                            y_baseline = policy_data[metric_key].values
+                            
+                            # 与训练曲线一致：应用相同的平滑处理
+                            if window > 1 and len(y_baseline) > window:
+                                y_smooth = pd.Series(y_baseline).rolling(window=window, min_periods=1).mean().values
+                            else:
+                                y_smooth = y_baseline
+                            
                             color = baseline_colors.get(policy_name, '#7f8c8d')
                             style = baseline_styles.get(policy_name, '--')
                             linewidth = baseline_linewidths.get(policy_name, 2.0)
-                            plt.plot(x_baseline, y_baseline, color=color, linestyle=style, 
-                                   linewidth=linewidth, label=f'{policy_name} Baseline', 
-                                   alpha=0.8, zorder=4, marker='o', markersize=4)
+                            # 绘制平滑曲线，无marker，与训练曲线风格一致
+                            plt.plot(x_baseline, y_smooth, color=color, linestyle=style, 
+                                   linewidth=linewidth, label=f'{policy_name}', 
+                                   alpha=0.85, zorder=4)
                 
                 # 兼容性：绘制水平线（如果提供了baseline_dict但没有df_baseline）
                 elif baseline_dict is not None:

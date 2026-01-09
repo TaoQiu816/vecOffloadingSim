@@ -101,10 +101,11 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
         for policy in ['Random', 'Local-Only', 'Greedy']:
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty:
-                # 使用步阶绘制完整baseline曲线
-                ax.plot(policy_data['episode'], policy_data['reward_mean'],
+                # 使用平滑曲线绘制baseline，与MAPPO风格一致
+                y_smooth = rolling_mean(policy_data['reward_mean'], 50)
+                ax.plot(policy_data['episode'], y_smooth,
                        color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, label=f'{policy}', alpha=0.8, drawstyle='steps-post')
+                       linewidth=2, label=f'{policy}', alpha=0.85)
     
     ax.set_xlabel('Episode')
     ax.set_ylabel('Reward (per step)')
@@ -122,9 +123,11 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
         for policy in ['Random', 'Local-Only', 'Greedy']:
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty and 'task_sr' in policy_data.columns:
-                ax.plot(policy_data['episode'], policy_data['task_sr'] * 100,
+                # 使用平滑曲线绘制baseline，与MAPPO风格一致
+                y_smooth = rolling_mean(policy_data['task_sr'], 50) * 100
+                ax.plot(policy_data['episode'], y_smooth,
                        color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, label=f'{policy}', alpha=0.8, drawstyle='steps-post')
+                       linewidth=2, label=f'{policy}', alpha=0.85)
     
     ax.set_xlabel('Episode')
     ax.set_ylabel('Task Success Rate (%)')

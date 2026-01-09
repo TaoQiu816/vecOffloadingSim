@@ -245,8 +245,12 @@ class MAPPOAgent:
                 surr2 = torch.clamp(ratio, 1.0 - TC.CLIP_PARAM, 1.0 + TC.CLIP_PARAM) * advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
                 
-                # Value Loss
-                value_loss = nn.functional.mse_loss(values, returns)
+                # Value Loss（归一化处理，解决梯度主导问题）
+                value_loss_raw = nn.functional.mse_loss(values, returns)
+                # 将Value Loss归一化到与Policy Loss相近的量级
+                # 使用动态归一化：除以returns的方差
+                returns_var = returns.var() + 1e-8
+                value_loss = value_loss_raw / returns_var
                 
                 # Entropy Loss
                 entropy_mean = entropy.mean()
@@ -280,7 +284,7 @@ class MAPPOAgent:
                     total_loss += loss.item()
                     total_entropy += entropy_mean.item()
                     total_policy += policy_loss.item()
-                    total_value += value_loss.item()
+                    total_value += value_loss_raw.item()  # 记录原始Value Loss用于诊断
                     total_kl += approx_kl.item()
                     total_clip += clip_frac.item()
                     total_grad_norm += float(grad_norm) if grad_norm is not None else 0.0

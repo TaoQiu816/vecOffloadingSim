@@ -356,6 +356,8 @@ def evaluate_single_baseline_episode(env, policy_name):
         'avg_power': avg_power,
         'avg_queue_len': avg_veh_queue,
         'avg_rsu_queue': avg_rsu_queue,
+        'episode_vehicle_count': episode_vehicle_count,
+        'episode_task_count': episode_vehicle_count,  # 每辆车一个任务
     }
 
 
@@ -1566,10 +1568,12 @@ def main():
                     writer.writerow(baseline_stats_row)
 
                 # 记录到CSV（使用log_episode，但添加policy字段）
+                # 注意：字段顺序和数量必须与训练数据一致，避免CSV列错位
                 baseline_episode_dict = {
                     "episode": episode,
                     "total_reward": baseline_metrics['total_reward'],
                     "avg_step_reward": baseline_metrics['avg_step_reward'],
+                    "loss": 0.0,  # baseline无loss
                     "veh_success_rate": baseline_metrics['veh_success_rate'],
                     "vehicle_success_rate": baseline_metrics['veh_success_rate'],
                     "task_success_rate": baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']),
@@ -1586,9 +1590,9 @@ def main():
                     "max_agent_reward": baseline_metrics['total_reward'],
                     "min_agent_reward": baseline_metrics['total_reward'],
                     "avg_assigned_cpu_ghz": 0.0,  # baseline无此指标
-                    "duration": 0.0,
-                    "loss": 0.0,
-                    "policy": policy_name  # 标识这是baseline
+                    "episode_vehicle_count": baseline_metrics.get('episode_vehicle_count', 20),
+                    "episode_task_count": baseline_metrics.get('episode_task_count', 20),
+                    "duration": policy_name  # 用duration列存储policy名称以便识别
                 }
                 recorder.log_episode(baseline_episode_dict)
 
