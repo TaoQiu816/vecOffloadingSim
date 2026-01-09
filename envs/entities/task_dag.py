@@ -97,6 +97,10 @@ class DAGTask:
         self._is_failed = False
         self.fail_reason = None  # 失败原因：'deadline'/'overflow'/'illegal'/'unfinished'
         self.timeout_logged = False  # 用于死因诊断，避免重复打印
+
+        # [P03新增] 任务完成时间记录（用于deadline检查）
+        # 当所有子任务完成时，记录相对于start_time的完成时间
+        self.completion_time = None  # None表示未完成
         
         # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
         try:

@@ -67,3 +67,9 @@ docs/build/
 
 # Claude生成的审查报告（不同步到git）
 docs/claude-reports/
+
+# 测试（不同步到git）
+tests/
+
+# 文档（不同步到git）
+docs/

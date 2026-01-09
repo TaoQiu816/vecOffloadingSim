@@ -867,10 +867,25 @@ class DataRecorder:
             if df.empty:
                 return
 
-            # 读取baseline数据（如果存在）
+            # 读取baseline数据（如果存在），并扩展为完整曲线
             df_baseline = None
             if baseline_csv and os.path.exists(baseline_csv):
-                df_baseline = pd.read_csv(baseline_csv)
+                df_baseline_raw = pd.read_csv(baseline_csv)
+                # 将baseline扩展为完整episode范围（使用forward fill插值）
+                if not df_baseline_raw.empty:
+                    max_ep = df['episode'].max()
+                    expanded_rows = []
+                    for policy in df_baseline_raw['policy'].unique():
+                        policy_data = df_baseline_raw[df_baseline_raw['policy'] == policy].copy()
+                        policy_data = policy_data.set_index('episode')
+                        # 创建完整episode范围的索引
+                        full_idx = pd.Index(range(1, max_ep + 1), name='episode')
+                        # 重新索引并forward fill
+                        policy_expanded = policy_data.reindex(full_idx).ffill().bfill()
+                        policy_expanded['policy'] = policy
+                        policy_expanded = policy_expanded.reset_index()
+                        expanded_rows.append(policy_expanded)
+                    df_baseline = pd.concat(expanded_rows, ignore_index=True)
 
             # 设置绘图风格
             try:
@@ -896,13 +911,14 @@ class DataRecorder:
                        linewidth=2.5, color='darkblue', label='MAPPO (Mean/Step)')
             if df_baseline is not None and 'reward_mean' in df_baseline.columns:
                 for policy in ['Random', 'Local-Only', 'Greedy']:
-                    policy_data = df_baseline[df_baseline['policy'] == policy]
+                    policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
                     if not policy_data.empty:
                         colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
                         styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                        # 使用drawstyle='steps-post'绘制阶梯曲线，确保baseline完整显示
                         ax.plot(policy_data['episode'], policy_data['reward_mean'],
                                color=colors.get(policy, 'gray'), linestyle=styles.get(policy, '--'),
-                               linewidth=2, label=f'{policy}', marker='o', markersize=3, alpha=0.8)
+                               linewidth=2, label=f'{policy}', alpha=0.8, drawstyle='steps-post')
             ax.set_xlabel('Episode')
             ax.set_ylabel('Reward (per step)')
             ax.set_title('Reward Convergence with Baseline Comparison', fontweight='bold')

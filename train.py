@@ -1194,12 +1194,18 @@ def main():
             
             # 打印表头（每个episode都打印，但只在episode 1或每20个episode打印表头）
             if episode == 1 or episode % 20 == 1:
-                print("\n" + "="*235)
-                print(f"| {'Ep':>5} | {'Wall(s)':>8} | {'Sim(s)':>7} | {'Steps':>5} | {'Reward':>8} | {'V_SR':>6} | {'T_SR':>6} | {'S_SR':>6} | {'D_Miss':>7} | {'TX':>4} | {'NoTX':>5} | {'Local':>6} | {'RSU':>6} | {'V2V':>6} | {'SvcRate':>9} | {'Idle':>6} | {'Bias_R':>7} | {'Bias_L':>7} |")
-                print("="*235)
+                print("\n" + "="*180)
+                print(f"| {'Ep':>5} | {'Time':>6} | {'Reward':>7} | {'V_SR':>5} | {'T_SR':>5} | {'Deci(L/R/V)':>14} | {'P_Loss':>7} | {'V_Loss':>7} | {'Ent':>6} | {'KL':>6} | {'Clip':>5} | {'GNorm':>6} |")
+                print("="*180)
+            
+            # 获取PPO诊断指标
+            approx_kl = update_stats.get("approx_kl", 0.0) if update_stats.get("approx_kl") is not None else 0.0
+            clip_frac = update_stats.get("clip_fraction", 0.0) if update_stats.get("clip_fraction") is not None else 0.0
+            grad_norm_val = update_stats.get("grad_norm", 0.0) if update_stats.get("grad_norm") is not None else 0.0
             
             # 打印数据行（每个episode都打印）
-            print(f"| {episode:5d} | {duration:8.2f} | {sim_time:7.2f} | {total_steps:5d} | {reward_mean:8.2f} | {vehicle_sr:6.2%} | {task_success_rate:6.2%} | {subtask_success:6.2%} | {deadline_misses:7d} | {tx_created:4d} | {same_node_no_tx:5d} | {frac_local:6.2%} | {frac_rsu:6.2%} | {frac_v2v:6.2%} | {service_rate_active/1e9:9.3f}G | {idle_fraction:6.2%} | {TC.LOGIT_BIAS_RSU:7.2f} | {TC.LOGIT_BIAS_LOCAL:7.2f} |", flush=True)
+            deci_str = f"{frac_local:4.1%}/{frac_rsu:4.1%}/{frac_v2v:4.1%}"
+            print(f"| {episode:5d} | {duration:6.1f}s | {reward_mean:7.4f} | {vehicle_sr:5.1%} | {task_success_rate:5.1%} | {deci_str:>14} | {actor_loss:7.4f} | {critic_loss:7.2f} | {entropy_val:6.3f} | {approx_kl:6.4f} | {clip_frac*100:5.1f}% | {grad_norm_val:6.3f} |", flush=True)
 
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
@@ -1615,7 +1621,7 @@ def main():
         recorder.plot_training_stats(training_stats_csv, baseline_stats_csv)
 
         # 2. 调用plot_results.py生成额外图表
-        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plot_results.py")
+        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_results.py")
         if os.path.exists(training_stats_csv):
             print("[Auto Plotting] Generating additional plots from training_stats.csv...")
         try:

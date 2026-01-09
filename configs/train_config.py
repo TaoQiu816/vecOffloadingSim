@@ -50,6 +50,10 @@ class TrainConfig:
                             # Impact: Feature dimension for Transformer and GNN; larger increases capacity but also cost
                             # 推荐范围: 64-256 (64 for fast prototyping, 256 for production)
                             # Recommended range: 64-256
+    USE_SUBTASK_COND_CRITIC = True  # Critic是否使用当前子任务上下文
+    USE_SIMPLIFIED_CRITIC = True    # 是否使用简化版Critic Head
+    USE_NO_READY_EMBEDDING = True   # subtask_index<0 时使用专用嵌入（避免误用节点0）
+    COMMWAIT_DIRECT_TO_CRITIC = False  # 是否将CommWait特征直连拼接到Critic输入
 
     NUM_HEADS = 4           # 注意力头数 - Number of attention heads (Multi-Head Attention)
                             # 影响: 更多头数可以捕获更多样化的依赖关系，必须被EMBED_DIM整除
@@ -57,7 +61,7 @@ class TrainConfig:
                             # 推荐范围: 4-8 (for EMBED_DIM=128)
                             # Recommended range: 4-8
 
-    NUM_LAYERS = 3          # Transformer层数 - Number of Transformer encoder layers
+    NUM_LAYERS = 2          # Transformer层数 - Number of Transformer encoder layers [文献一]
                             # 影响: 更深的网络可以学习更复杂的特征，但可能过拟合或训练困难
                             # Impact: Deeper networks learn complex features but may overfit or be hard to train
                             # 推荐范围: 2-6 (2 for simple tasks, 6 for complex dependencies)
@@ -82,23 +86,21 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate (LR = 3e-4)
+    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate [审计调优: 降低以提高稳定性]
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
                             # Impact: Controls policy network update speed
                             #       - Too large: Unstable training, policy oscillation
                             #       - Too small: Slow convergence, needs more training time
-                            # 推荐范围: 1e-4 ~ 5e-4 (PPO标准)
-                            # Recommended range: 1e-4 ~ 5e-4 (PPO standard)
-    
-    LR_CRITIC = 5e-4        # Critic学习率 - Critic learning rate [P14修复: 从1e-3降至5e-4]
-                            # 影响: 控制价值网络的更新速度，与LR_ACTOR(3e-4)比例约1.67更稳定
-                            # Impact: Controls value network update speed; ratio ~1.67 to LR_ACTOR is more stable
-                            # 修复原因: 原值1e-3是LR_ACTOR的3.3倍，导致Value估计不稳定
-                            # Fix reason: Original 1e-3 was 3.3x LR_ACTOR, causing unstable value estimation
-                            # 推荐范围: 3e-4 ~ 1e-3
-                            # Recommended range: 3e-4 ~ 1e-3
+                            # 推荐范围: 1e-4 ~ 1e-3 (稳定性优先)
+                            # Recommended range: 1e-4 ~ 1e-3 (stability first)
+
+    LR_CRITIC = 3e-4        # Critic学习率 - Critic learning rate [审计调优: 与Actor一致]
+                            # 影响: 控制价值网络的更新速度，与Actor保持一致
+                            # Impact: Controls value network update speed; consistent with Actor
+                            # 推荐范围: 1e-4 ~ 1e-3
+                            # Recommended range: 1e-4 ~ 1e-3
 
     USE_LR_DECAY = True     # 是否启用学习率衰减 - Enable learning rate decay
                             # 影响: 训练后期降低学习率有助于收敛和稳定性
@@ -183,15 +185,15 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.005    # 熵正则化系数 - Entropy coefficient for exploration [降至0.005]
+    ENTROPY_COEF = 0.01     # 熵正则化系数 - Entropy coefficient for exploration [审计调优: 增强探索]
                             # 影响: 增加动作探索性，应对动态环境
-                            #       - 过大: 策略过于随机，难以收敛（之前0.01导致entropy持续增长）
+                            #       - 过大: 策略过于随机，难以收敛
                             #       - 过小: 策略过早收敛到局部最优
                             # Impact: Increases action exploration for dynamic environments
                             #       - Too large: Policy too random, hard to converge
                             #       - Too small: Policy converges prematurely to local optimum
-                            # 推荐范围: 0.005-0.02 (0.005 for controlled exploration)
-                            # Recommended range: 0.005-0.02
+                            # 推荐范围: 0.01-0.02 (0.01 for balanced exploration)
+                            # Recommended range: 0.01-0.02
 
     VF_COEF = 0.5           # 价值函数损失系数 - Value function loss coefficient
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
@@ -219,21 +221,21 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 2.0    # RSU的Logit偏置 - Logit bias for RSU action [降至2.0]
+    LOGIT_BIAS_RSU = 1.5    # RSU的Logit偏置 - Logit bias for RSU action [审计调优]
                             # 影响: 在softmax前给RSU logit加上偏置，适度提升选择概率
-                            #       之前5.0导致100% RSU，降至2.0平衡探索
+                            #       避免RSU依赖，促进V2V探索
                             # Impact: Adds bias to RSU logit before softmax, moderately boosts selection
-                            #       Previous 5.0 caused 100% RSU; reduced to 2.0 for balanced exploration
-                            # 推荐范围: 1.0-3.0 (2.0 balances RSU/Local/V2V)
-                            # Recommended range: 1.0-3.0
-    
-    LOGIT_BIAS_LOCAL = 1.5  # Local的Logit偏置 - Logit bias for Local action [降至1.5]
-                            # 影响: 在softmax前给Local logit加上偏置，轻度提升选择概率
-                            #       降至1.5使本地/RSU/V2V更平衡
-                            # Impact: Adds bias to Local logit before softmax, lightly boosts selection
-                            #       Reduced to 1.5 for better Local/RSU/V2V balance
-                            # 推荐范围: 1.0-2.0 (1.5 for moderate preference)
+                            #       Prevents RSU dependency; promotes V2V exploration
+                            # 推荐范围: 1.0-2.0 (1.5 balances RSU/Local/V2V)
                             # Recommended range: 1.0-2.0
+    
+    LOGIT_BIAS_LOCAL = 1.0  # Local的Logit偏置 - Logit bias for Local action [审计调优]
+                            # 影响: 在softmax前给Local logit加上偏置，轻度提升选择概率
+                            #       降低Local偏置，促进卸载探索
+                            # Impact: Adds bias to Local logit before softmax, lightly boosts selection
+                            #       Reduced to promote offloading exploration
+                            # 推荐范围: 0.5-1.5 (1.0 for balanced preference)
+                            # Recommended range: 0.5-1.5
     
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]
@@ -261,13 +263,13 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 300     # 总训练Episodes - Total training episodes [短期验证训练]
-                            # 影响: 短期验证性训练，快速验证配置有效性
-                            # Impact: Short-term validation training; quickly verify configuration effectiveness
+    MAX_EPISODES = 500      # 总训练Episodes - Total training episodes [审计调优: 增加训练量]
+                            # 影响: 足够的训练量以验证收敛性
+                            # Impact: Sufficient training for convergence verification
                             # 验证目标: Task Success Rate > 0%, Decision分布合理, Entropy收敛
                             # Validation goals: Task Success Rate > 0%, balanced decisions, entropy converges
-                            # 推荐范围: 300-500 (验证), 1000-3000 (完整训练)
-                            # Recommended range: 300-500 (validation), 1000-3000 (full training)
+                            # 推荐范围: 500 (验证), 1000-3000 (完整训练)
+                            # Recommended range: 500 (validation), 1000-3000 (full training)
     
     MAX_STEPS = 200        # 每个Episode最大步数 - Max steps per episode
                             # 影响: 必须与 SystemConfig.MAX_STEPS 一致

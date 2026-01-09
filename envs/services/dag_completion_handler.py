@@ -119,6 +119,8 @@ class DagCompletionHandler:
         """
         subtask_id = job.subtask_id
         dag = vehicle.task_dag
+        if dag.status[subtask_id] == 3:
+            raise RuntimeError("Completed task processed twice")
         
         # [完成位置落地] 从exec_locations读取位置码写入task_locations
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]
@@ -251,4 +253,3 @@ class DagCompletionHandler:
         dag.status[subtask_id] = 2
         
         return job
-

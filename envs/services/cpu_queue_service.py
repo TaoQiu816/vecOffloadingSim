@@ -70,6 +70,10 @@ class CpuQueueService:
 
         while remaining > eps and queue:
             job = queue[0]
+            if job.rem_cycles < -1e-9:
+                raise RuntimeError("rem_cycles negative")
+            if job.rem_cycles < 0:
+                job.rem_cycles = 0.0
             if job.start_time is None:
                 job.start_time = time_now + (dt - remaining)
 
@@ -81,6 +85,10 @@ class CpuQueueService:
             job.step_cycles_done += do
             job.step_time_used += time_used
             remaining -= time_used
+            if job.rem_cycles < -1e-9:
+                raise RuntimeError("rem_cycles negative after step")
+            if job.rem_cycles < 0:
+                job.rem_cycles = 0.0
 
             if processor_node[0] == "VEH":
                 u = processor_node[1]

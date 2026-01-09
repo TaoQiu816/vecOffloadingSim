@@ -79,22 +79,20 @@ class DAGGenerator:
         if daggen is not None:
             try:
                 seed = np.random.randint(0, 100000)
-                dag = daggen.DAG(seed=seed, n=num_nodes,
-                                 fat=self.fat, density=self.density,
-                                 regular=self.regular, ccr=self.ccr)
+                # daggen使用位置参数: DAG(seed, n, fat, density, regular, ccr)
+                dag = daggen.DAG(seed, num_nodes, self.fat, self.density,
+                                 self.regular, self.ccr)
 
                 _, raw_edges = dag.task_n_edge_dicts()
 
                 for edge in raw_edges:
-                    u = edge.get('u', edge.get('src'))
-                    v = edge.get('v', edge.get('dst'))
+                    # daggen边字段是 'source' 和 'target'，索引从1开始
+                    u = edge.get('source', edge.get('u', edge.get('src')))
+                    v = edge.get('target', edge.get('v', edge.get('dst')))
 
                     if u is not None and v is not None:
-                        # 索引修正
-                        if u >= num_nodes or v >= num_nodes:
-                            u_idx, v_idx = u - 1, v - 1
-                        else:
-                            u_idx, v_idx = u, v
+                        # daggen索引从1开始，转为0-based
+                        u_idx, v_idx = u - 1, v - 1
 
                         if 0 <= u_idx < num_nodes and 0 <= v_idx < num_nodes:
                             if u_idx != v_idx:
@@ -104,22 +102,9 @@ class DAGGenerator:
             except Exception as e:
                 use_fallback = True
 
-        # Fallback生成策略（当daggen不可用时）
+        # Fallback生成策略（当daggen不可用时）- 生成有并行宽度的DAG
         if use_fallback:
-            # 根据CCR调整边密度：CCR越高，通信越多，需要更多边
-            ccr_factor = np.clip(self.ccr, 0.2, 2.0)
-            edge_prob = min(0.7, 0.2 + 0.3 * ccr_factor)
-            
-            for i in range(num_nodes - 1):
-                adj_matrix[i, i + 1] = 1
-                edge_data = np.random.uniform(*self.edge_data_range) * ccr_factor
-                data_matrix[i, i + 1] = edge_data
-
-                if i + 2 < num_nodes and np.random.rand() < edge_prob:
-                    target = np.random.randint(i + 2, num_nodes)
-                    adj_matrix[i, target] = 1
-                    edge_data = np.random.uniform(*self.edge_data_range) * ccr_factor
-                    data_matrix[i, target] = edge_data
+            adj_matrix, data_matrix = self._generate_layered_dag(num_nodes)
 
         # 生成节点属性
         profiles = []
@@ -151,86 +136,195 @@ class DAGGenerator:
 
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
-        计算相对截止时间（支持3种模式）
+        计算相对截止时间（基于关键路径）
         
-        模式1 (TOTAL_MEDIAN): deadline = γ × (total_comp / f_median)
-          - total_comp: 所有子任务计算量之和
-          - f_median: (F_MIN + F_MAX) / 2 平均算力
-          - γ: 松紧因子 [DEADLINE_TIGHTENING_MIN, DEADLINE_TIGHTENING_MAX]
+        核心公式:
+            T_base = CP_total / f_ref           # 关键路径基准时间
+            deadline_raw = gamma * T_base + slack
+            LB0 = CP_total / f_max              # 物理下界
+            deadline = max(deadline_raw, (1+eps) * LB0)  # 保证可行性
         
-        模式2 (TOTAL_LOCAL): deadline = γ × (total_comp / f_local)
-          - f_local: 任务所属车辆的实际CPU频率
-          - 考虑车辆本地队列时间（队列在仿真执行时自动计入）
-        
-        模式3 (FIXED_RANGE): deadline ∈ [DEADLINE_FIXED_MIN, DEADLINE_FIXED_MAX]
-          - 直接从固定范围随机，与计算量无关
+        模式说明:
+        - CRITICAL_PATH (推荐): 使用关键路径计算量，反映DAG结构特性
+        - TOTAL_MEDIAN: 使用总计算量（向后兼容）
+        - TOTAL_LOCAL: 使用本地频率（向后兼容）
+        - FIXED_RANGE: 固定范围随机
         
         Args:
             n: 节点数
             adj: 邻接矩阵
             profiles: 节点属性列表
-            f_base: 本地CPU频率(Hz)，仅模式2使用
+            f_base: 本地CPU频率(Hz)
         
         Returns:
-            tuple: (deadline_seconds, gamma, total_cycles, base_time)
+            tuple: (deadline_seconds, gamma, critical_path_cycles, base_time)
         """
-        # 计算总计算量
         comp_arr = np.array([p['comp'] for p in profiles], dtype=float)
         total_cycles = np.sum(comp_arr)
         
+        # 计算关键路径长度（最长路径计算量和）
+        cp_cycles = self._critical_path_cycles(adj, comp_arr)
+        if cp_cycles <= 0 or not np.isfinite(cp_cycles):
+            cp_cycles = total_cycles  # fallback
+        
         if total_cycles <= 0 or not np.isfinite(total_cycles):
             total_cycles = Cfg.MEAN_COMP_LOAD * n
+            cp_cycles = total_cycles
+        
+        # 系统算力参数
+        f_median = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+        f_max = max(Cfg.MAX_VEHICLE_CPU_FREQ, getattr(Cfg, 'F_RSU', Cfg.MAX_VEHICLE_CPU_FREQ))
+        
+        # 物理下界：即使最优调度也无法突破
+        LB0 = cp_cycles / f_max
         
         # 获取deadline模式
         mode = getattr(Cfg, 'DEADLINE_MODE', 'TOTAL_MEDIAN')
         
+        # gamma范围
+        gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 1.3)
+        gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 2.0)
+        gamma_min = max(0.1, gamma_min)
+        gamma_max = max(gamma_min, gamma_max)
+        gamma = np.random.uniform(gamma_min, gamma_max)
+        
+        slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
+        eps = getattr(Cfg, 'DEADLINE_LB_EPS', 0.05)  # 下界裕量
+        
         if mode == 'FIXED_RANGE':
-            # 模式3: 固定范围直接随机
+            # 模式: 固定范围直接随机
             d_min = getattr(Cfg, 'DEADLINE_FIXED_MIN', 2.0)
             d_max = getattr(Cfg, 'DEADLINE_FIXED_MAX', 5.0)
-            deadline = np.random.uniform(d_min, d_max)
-            gamma = deadline / (total_cycles / Cfg.MIN_VEHICLE_CPU_FREQ)  # 反推gamma（仅供记录）
-            base_time = total_cycles / Cfg.MIN_VEHICLE_CPU_FREQ
+            deadline_raw = np.random.uniform(d_min, d_max)
+            base_time = cp_cycles / f_median
+            gamma = deadline_raw / max(base_time, 1e-9)  # 反推gamma
             
         elif mode == 'TOTAL_LOCAL':
-            # 模式2: 使用本地CPU频率
+            # 模式: 使用本地CPU频率 + 总计算量
             if f_base is None or f_base <= 0:
-                f_base = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+                f_base = f_median
             base_time = total_cycles / f_base
+            deadline_raw = gamma * base_time + slack
             
-            gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 4.0)
-            gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 7.0)
-            gamma_min = max(0.1, gamma_min)
-            gamma_max = max(gamma_min, gamma_max)
-            gamma = np.random.uniform(gamma_min, gamma_max)
+        elif mode == 'CRITICAL_PATH':
+            # 模式: 使用关键路径（推荐）
+            base_time = cp_cycles / f_median
+            deadline_raw = gamma * base_time + slack
             
-            slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
-            deadline = gamma * base_time + slack
-            
-        else:  # 'TOTAL_MEDIAN' (默认)
-            # 模式1: 使用平均算力（中位数）
-            f_median = (Cfg.MIN_VEHICLE_CPU_FREQ + Cfg.MAX_VEHICLE_CPU_FREQ) / 2.0
+        else:  # 'TOTAL_MEDIAN' (默认，向后兼容)
+            # 模式: 使用总计算量 + 平均算力
             base_time = total_cycles / f_median
-            
-            gamma_min = getattr(Cfg, 'DEADLINE_TIGHTENING_MIN', 4.0)
-            gamma_max = getattr(Cfg, 'DEADLINE_TIGHTENING_MAX', 7.0)
-            gamma_min = max(0.1, gamma_min)
-            gamma_max = max(gamma_min, gamma_max)
-            gamma = np.random.uniform(gamma_min, gamma_max)
-            
-            slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
-            deadline = gamma * base_time + slack
+            deadline_raw = gamma * base_time + slack
+        
+        # 物理下界保险：确保deadline至少比LB0大(1+eps)倍
+        deadline = max(deadline_raw, (1.0 + eps) * LB0)
         
         # 安全检查
         if not np.isfinite(base_time) or base_time <= 0:
             base_time = Cfg.MIN_COMP / Cfg.MIN_VEHICLE_CPU_FREQ
         
         if not np.isfinite(deadline) or deadline <= 0:
-            deadline = 0.1
-        else:
-            deadline = max(deadline, 0.1)
+            deadline = max(0.1, (1.0 + eps) * LB0)
+        
+        return float(deadline), float(gamma), float(cp_cycles), float(base_time)
 
-        return float(deadline), float(gamma), float(total_cycles), float(base_time)
+    def _generate_layered_dag(self, num_nodes):
+        """
+        生成有并行宽度的层级DAG（fallback方法）
+        
+        结构设计:
+        - 入口层: 1个入口节点
+        - 中间层: 多层，每层2-3个并行节点
+        - 出口层: 1个出口节点
+        
+        连接规则:
+        - 每层节点连接到下一层的部分或全部节点
+        - 确保DAG连通且无环
+        
+        Args:
+            num_nodes: 节点总数
+            
+        Returns:
+            adj_matrix: 邻接矩阵
+            data_matrix: 边数据矩阵
+        """
+        adj_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
+        data_matrix = np.zeros((num_nodes, num_nodes))
+        
+        if num_nodes <= 2:
+            # 极小DAG，直接链式
+            if num_nodes == 2:
+                adj_matrix[0, 1] = 1
+                data_matrix[0, 1] = np.random.uniform(*self.edge_data_range)
+            return adj_matrix, data_matrix
+        
+        # 计算层级结构
+        # 入口层1个节点，出口层1个节点，中间层分配剩余节点
+        middle_nodes = num_nodes - 2
+        
+        # 根据fat参数确定平均每层宽度
+        # fat=0.5 -> 宽度约2-3
+        avg_width = max(2, int(2 + 2 * self.fat))
+        
+        # 分配中间层
+        layers = [[0]]  # 入口层
+        node_idx = 1
+        
+        while node_idx < num_nodes - 1:
+            # 当前层宽度
+            remaining = num_nodes - 1 - node_idx
+            width = min(remaining, avg_width)
+            width = max(1, int(width * np.random.uniform(0.7, 1.3)))  # 添加随机性
+            width = min(width, remaining)
+            
+            layer = list(range(node_idx, node_idx + width))
+            layers.append(layer)
+            node_idx += width
+        
+        # 出口层
+        layers.append([num_nodes - 1])
+        
+        # 建立层间连接
+        density_factor = max(0.3, min(0.8, 0.4 + 0.3 * self.density))
+        
+        for l in range(len(layers) - 1):
+            curr_layer = layers[l]
+            next_layer = layers[l + 1]
+            
+            # 确保每个当前层节点至少有一条出边
+            for u in curr_layer:
+                # 选择目标节点数量
+                num_targets = max(1, int(len(next_layer) * density_factor))
+                num_targets = min(num_targets, len(next_layer))
+                
+                targets = np.random.choice(next_layer, size=num_targets, replace=False)
+                for v in targets:
+                    adj_matrix[u, v] = 1
+                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+            
+            # 确保每个下一层节点至少有一条入边
+            for v in next_layer:
+                if np.sum(adj_matrix[:, v]) == 0:
+                    u = np.random.choice(curr_layer)
+                    adj_matrix[u, v] = 1
+                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+        
+        # 可选：添加跨层边（增加复杂度）
+        if self.density > 0.3 and len(layers) > 3:
+            num_skip_edges = int(num_nodes * self.density * 0.3)
+            for _ in range(num_skip_edges):
+                # 选择跨层连接
+                src_layer_idx = np.random.randint(0, len(layers) - 2)
+                dst_layer_idx = np.random.randint(src_layer_idx + 2, len(layers))
+                
+                u = np.random.choice(layers[src_layer_idx])
+                v = np.random.choice(layers[dst_layer_idx])
+                
+                if adj_matrix[u, v] == 0:
+                    adj_matrix[u, v] = 1
+                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+        
+        return adj_matrix, data_matrix
 
     @staticmethod
     def _critical_path_cycles(adj, comp_arr):

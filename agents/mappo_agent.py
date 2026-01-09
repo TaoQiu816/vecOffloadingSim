@@ -85,13 +85,16 @@ class MAPPOAgent:
                 obs_list, deterministic=deterministic, device=self.device
             )
         
+        target_actions_np = torch.atleast_1d(target_actions).cpu().numpy().astype(int).flatten()
+        power_actions_np = torch.atleast_1d(power_actions).cpu().numpy().flatten()
+
         # 转换为环境可用的动作格式
         actions = []
         for i in range(len(obs_list)):
             obs_stamp = obs_list[i].get("obs_stamp")
             actions.append({
-                'target': int(target_actions[i].cpu().item()),
-                'power': float(power_actions[i].cpu().item()),
+                'target': int(target_actions_np[i]),
+                'power': float(power_actions_np[i]),
                 **({'obs_stamp': int(obs_stamp)} if obs_stamp is not None else {})
             })
 

@@ -61,6 +61,10 @@ class CommQueueService:
 
         while remaining > eps and queue:
             job = queue[0]
+            if job.rem_bytes < -1e-9:
+                raise RuntimeError("rem_bytes negative")
+            if job.rem_bytes < 0:
+                job.rem_bytes = 0.0
 
             # 首次推进：记录start_time
             if job.start_time is None:
@@ -79,6 +83,10 @@ class CommQueueService:
             job.step_bytes_sent += send
             job.step_time_used += time_used
             remaining -= time_used
+            if job.rem_bytes < -1e-9:
+                raise RuntimeError("rem_bytes negative after step")
+            if job.rem_bytes < 0:
+                job.rem_bytes = 0.0
 
             # 能耗记账：仅车辆发送端计入
             if tx_node[0] == "VEH":

@@ -48,10 +48,10 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.2 车辆参数 (Vehicle Parameters)
     # -------------------------------------------------------------------------
-    NUM_VEHICLES = 12       # 初始车辆数 - Initial number of vehicles
-                            # 影响: 网络负载和V2V候选数量，降低以减少动作空间不平衡
-                            # Impact: Network load and V2V candidates; reduced to balance action space
-    
+    NUM_VEHICLES = 20       # 初始车辆数 - Initial number of vehicles (文献二标准)
+                            # 影响: 网络负载和V2V候选数量，对齐文献参数
+                            # Impact: Network load and V2V candidates; aligned with literature
+
     V2V_TOP_K = 11          # V2V候选数上限 - Max V2V candidates per agent
                             # 影响: 限制每个Agent的V2V目标数，控制动作空间大小
                             # Impact: Limits V2V targets per agent, controls action space size
@@ -66,31 +66,31 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.3 车辆移动性参数 (Vehicle Mobility - Truncated Normal Distribution)
     # -------------------------------------------------------------------------
-    VEL_MEAN = 13.8         # 速度均值 (m/s) ≈ 50 km/h - Mean velocity
+    VEL_MEAN = 15.0         # 速度均值 (m/s) ≈ 54 km/h - Mean velocity (文献二)
                             # 影响: 城市快速路标准速度，增加拓扑动态性
                             # Impact: Urban expressway standard speed, increases topology dynamics
-    
+
     VEL_STD = 3.0           # 速度标准差 (m/s) - Velocity standard deviation
                             # 影响: 更大的速度异构性，模拟多样化驾驶风格
                             # Impact: Greater velocity heterogeneity, simulates diverse driving styles
-    
+
     VEL_MIN = 5.0           # 最小速度 (m/s) ≈ 18 km/h - Minimum velocity
                             # 影响: 防止车辆静止，确保拓扑动态性
                             # Impact: Prevents static vehicles, ensures topology dynamics
-    
-    VEL_MAX = 20.0          # 最大速度 (m/s) ≈ 72 km/h - Maximum velocity
+
+    VEL_MAX = 25.0          # 最大速度 (m/s) ≈ 90 km/h - Maximum velocity (文献二)
                             # 影响: 城市快速路限速，控制最大拓扑变化速率
                             # Impact: Urban expressway speed limit, controls max topology change rate
     
     MAX_VELOCITY = VEL_MAX  # 最大速度 - Maximum velocity
     
-    DT = 0.05               # 仿真时间步长 (s) - Simulation time step
-                            # 影响: 精度与计算开销权衡，0.05s保证 v_max * DT << R_rsu
-                            # Impact: Accuracy vs. computation tradeoff; 0.05s ensures v_max * DT << R_rsu
-    
-    MAX_STEPS = 200         # Episode最大步数 - Max steps per episode (延长至20s)
-                            # 影响: Episode总时长 = MAX_STEPS * DT = 20秒 (适应处理器共享降速)
-                            # Impact: Total episode duration = MAX_STEPS * DT = 20s (accommodates processor sharing)
+    DT = 0.1                # 仿真时间步长 (s) - Simulation time step (文献二)
+                            # 影响: 精度与计算开销权衡，0.1s降低50%开销
+                            # Impact: Accuracy vs. computation tradeoff; 0.1s reduces 50% overhead
+
+    MAX_STEPS = 200         # Episode最大步数 - Max steps per episode
+                            # 影响: Episode总时长 = MAX_STEPS × DT = 20秒
+                            # Impact: Total episode duration = MAX_STEPS × DT = 20s
     
     # -------------------------------------------------------------------------
     # 1.4 RSU部署参数 (RSU Deployment)
@@ -103,9 +103,9 @@ class SystemConfig:
                             # 影响: V2I路径损耗，10m为标准高度
                             # Impact: V2I path loss; 10m is standard height
     
-    RSU_RANGE = 400.0       # RSU覆盖半径 (m) - RSU coverage radius
-                            # 影响: V2I通信范围，400m确保全覆盖
-                            # Impact: V2I communication range; 400m ensures full coverage
+    RSU_RANGE = 250.0       # RSU覆盖半径 (m) - RSU coverage radius (文献二: 500m直径)
+                            # 影响: V2I通信范围，250m半径对齐文献
+                            # Impact: V2I communication range; 250m radius aligned with literature
     
     RSU_POS = np.array([500.0, 500.0])  # 默认RSU位置（向后兼容）
                                          # Default RSU position (backward compatibility)
@@ -113,6 +113,10 @@ class SystemConfig:
     # =========================================================================
     # 2. 通信参数 (Communication Model)
     # =========================================================================
+    # Block Fading 开关：同一时隙内复用 V2V 小尺度衰落（保证口径一致）
+    USE_BLOCK_FADING = True
+    # CFT缓存哈希严格模式：包含DAG状态/队列摘要，避免错误复用
+    CFT_CACHE_STRICT_KEY = True
     # -------------------------------------------------------------------------
     # 2.1 无线物理层参数 (Wireless Physical Layer - C-V2X / DSRC)
     # -------------------------------------------------------------------------
@@ -122,11 +126,11 @@ class SystemConfig:
     
     C_LIGHT = 3e8           # 光速 (m/s) - Speed of light
     
-    BW_V2I = 100e6          # V2I带宽 (Hz) - V2I bandwidth (100 MHz) [提升到100MHz减少12车队列拥塞]
-                            # 影响: V2I最大速率上限，100MHz使12车可在deadline内完成
-                            # Impact: V2I max rate limit; 100 MHz enables 12 vehicles to finish within deadline
-    
-    BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz)
+    BW_V2I = 20e6           # V2I带宽 (Hz) - V2I bandwidth (20 MHz) [文献一标准]
+                            # 影响: V2I最大速率上限，20MHz对齐文献实际吞吐
+                            # Impact: V2I max rate limit; 20 MHz aligned with literature throughput
+
+    BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz) [文献二]
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
                             # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
     
@@ -142,27 +146,22 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 2.3 发射功率参数 (Transmit Power - FCC Compliant)
     # -------------------------------------------------------------------------
-    TX_POWER_UP_DBM = 23.0      # 上行发射功率 (dBm) ≈ 200mW - Uplink transmit power
-                                # 影响: V2I SINR，200mW为FCC限制
-                                # Impact: V2I SINR; 200mW is FCC limit
-    
-    TX_POWER_V2V_DBM = 23.0     # V2V发射功率 (dBm) ≈ 200mW - V2V transmit power
+    TX_POWER_UP_DBM = 20.0      # 上行发射功率 (dBm) ≈ 100mW - Uplink transmit power (文献二)
+                                # 影响: V2I SINR，100mW对齐文献
+                                # Impact: V2I SINR; 100mW aligned with literature
+
+    TX_POWER_V2V_DBM = 20.0     # V2V发射功率 (dBm) ≈ 100mW - V2V transmit power (文献二)
                                 # 影响: V2V SINR和干扰强度
                                 # Impact: V2V SINR and interference strength
+
+    TX_POWER_MIN_DBM = 13.0     # 功控下限 (dBm) - Power control lower bound [审计调优v2]
+                                # 影响: 扩大功率范围，增强功率梯度可见性
+                                # Impact: Expands power range; enhances power gradient visibility
+
+    TX_POWER_MAX_DBM = 23.0     # 功控上限 (dBm) - Power control upper bound [审计调优]
+                                # 影响: 避免SNR过早饱和，保持功率梯度
+                                # Impact: Prevents SNR saturation; maintains power gradient
     
-    TX_POWER_MIN_DBM = 20.0     # 功控下限 (dBm) - Power control lower bound
-                                # 影响: 能耗优化范围下限
-                                # Impact: Energy optimization lower bound
-    
-    TX_POWER_MAX_DBM = 23.0     # 功控上限 (dBm) - Power control upper bound
-                                # 影响: 能耗优化范围上限
-                                # Impact: Energy optimization upper bound
-    
-    NUM_POWER_LEVELS = 4        # [DEPRECATED] 功率离散等级数 - Number of discrete power levels
-                                # 已废弃：Agent 使用 Beta 分布输出连续功率 rho∈[0,1]
-                                # DEPRECATED: Agent uses Beta distribution for continuous power rho∈[0,1]
-                                # 保留仅为向后兼容，环境优先使用 dict 格式连续功率
-                                # Kept for backward compatibility; env prefers dict format continuous power
     
     # -------------------------------------------------------------------------
     # 2.4 路径损耗模型 (Path Loss Model - Log-Distance)
@@ -193,7 +192,7 @@ class SystemConfig:
     # 2.5 速率估计参数 (Rate Estimation - Shannon Capacity Approximation)
     # -------------------------------------------------------------------------
     SNR_MIN_DB = -10.0      # 最低可检测SNR (dB) - Minimum detectable SNR
-    SNR_MAX_DB = 20.0       # 饱和SNR (dB) - Saturation SNR
+    SNR_MAX_DB = 25.0       # 饱和SNR (dB) - Saturation SNR [审计调优: 避免近距离功率截断]
     SNR_OFFSET_DB = 10.0    # SNR偏移量 (dB) - SNR offset for positive values
     RICIAN_K_DB = 6.0
     BETA_0_DB = -30
@@ -204,17 +203,17 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.1 CPU频率设定 (CPU Frequency - Heterogeneous Configuration)
     # -------------------------------------------------------------------------
-    MIN_VEHICLE_CPU_FREQ = 1.0e9    # 车辆最小CPU频率 (Hz) - Min vehicle CPU freq (1 GHz)
-                                    # 影响: 异构性下界，最弱车辆算力
-                                    # Impact: Heterogeneity lower bound, weakest vehicle computing power
-    
-    MAX_VEHICLE_CPU_FREQ = 3.0e9    # 车辆最大CPU频率 (Hz) - Max vehicle CPU freq (3 GHz)
-                                    # 影响: 异构性上界，最强车辆算力
-                                    # Impact: Heterogeneity upper bound, strongest vehicle computing power
-    
-    F_RSU = 12.0e9          # RSU CPU频率 (Hz) - RSU CPU frequency (12 GHz)
-                            # 影响: RSU算力优势，约为车辆平均频率的6倍，显著强于车辆
-                            # Impact: RSU computing advantage, ~6x vehicle average frequency, significantly stronger
+    MIN_VEHICLE_CPU_FREQ = 2.0e9    # 车辆最小CPU频率 (Hz) - Min vehicle CPU freq (2 GHz) [审计调优]
+                                    # 影响: 异构性下界，弱车需卸载才能在deadline内完成
+                                    # Impact: Heterogeneity lower bound, weak vehicles need offloading
+
+    MAX_VEHICLE_CPU_FREQ = 8.0e9    # 车辆最大CPU频率 (Hz) - Max vehicle CPU freq (8 GHz) [审计调优]
+                                    # 影响: 异构性上界，强车可作为V2V卸载目标
+                                    # Impact: Heterogeneity upper bound, strong vehicles as V2V targets
+
+    F_RSU = 12.0e9          # RSU CPU频率 (Hz) - RSU CPU frequency (12 GHz) [审计调优]
+                            # 影响: RSU算力优势明显但不绝对，与强车形成竞争
+                            # Impact: RSU computing advantage significant but not absolute
     
     RSU_NUM_PROCESSORS = 4  # RSU处理器核心数 - RSU processor cores
                             # 影响: RSU并行处理能力，4核可同时处理4个任务
@@ -228,13 +227,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.2 队列限制 (Queue Limits - Cycle-Based)
     # -------------------------------------------------------------------------
-    VEHICLE_QUEUE_CYCLES_LIMIT = 5.0e9  # 车辆队列上限 (cycles) - Vehicle queue limit
-                                        # 影响: 约3个平均任务，严格限制防止车辆队列过载
-                                        # Impact: ~3 average tasks; strict limit prevents vehicle queue overload
+    VEHICLE_QUEUE_CYCLES_LIMIT = 10.0e9  # 车辆队列上限 (cycles) - Vehicle queue limit [审计调优]
+                                        # 影响: 约8个平均任务(1.25G each)，适应新负载
+                                        # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 50.0e9     # RSU队列上限 (cycles) - RSU queue limit
-                                        # 影响: 约33个平均任务，RSU高承载能力
-                                        # Impact: ~33 average tasks; RSU high capacity
+    RSU_QUEUE_CYCLES_LIMIT = 80.0e9     # RSU队列上限 (cycles) - RSU queue limit [审计调优]
+                                        # 影响: 约64个平均任务，支持多车同时卸载
+                                        # Impact: ~64 average tasks; supports concurrent offloading
 
     MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
                                         # 影响: 限制车辆本地任务数，防止内存溢出
@@ -246,13 +245,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.1 DAG结构参数 (DAG Structure)
     # -------------------------------------------------------------------------
-    MIN_NODES = 8           # DAG最小节点数 - Min DAG nodes
-                            # 影响: 降低依赖链复杂度，从8降到4
-                            # Impact: Reduces dependency complexity; decreased from 8 to 4
-    
-    MAX_NODES = 12           # DAG最大节点数 - Max DAG nodes
-                            # 影响: 极大降低依赖链深度，从12降到6
-                            # Impact: Greatly reduces dependency depth; decreased from 12 to 6
+    MIN_NODES = 6           # DAG最小节点数 - Min DAG nodes [文献二范围4-12]
+                            # 影响: 降低依赖链复杂度，中心值8±2
+                            # Impact: Reduces dependency complexity; center=8±2
+
+    MAX_NODES = 10          # DAG最大节点数 - Max DAG nodes [文献二中心值]
+                            # 影响: 确保Episode内完成概率>90%
+                            # Impact: Ensures >90% completion probability within episode
     
     DAG_FAT = 0.5           # DAG宽度参数 - DAG width parameter
                             # 影响: 控制并行度，0.5为中等偏低宽度，减少并行任务数
@@ -273,34 +272,34 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 2.0e7        # 子任务最小计算量 (cycles) - Min subtask computation (0.02 Gcycles) [参考文献2倍，本地可行]
-                            # 影响: 本地执行约0.01s @2GHz，确保本地执行可行
-                            # Impact: Local execution ~0.01s @2GHz; ensures local execution feasible
+    MIN_COMP = 8.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.8 Gcycles) [审计调优v2]
+                            # 影响: 弱车(2GHz)执行0.4s，拉大卸载优势幅度
+                            # Impact: Weak vehicle (2GHz) executes in 0.4s; increases offloading advantage
+
+    MAX_COMP = 2.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (2.5 Gcycles) [审计调优v2]
+                            # 影响: 弱车(2GHz)执行1.25s，强制卸载必要性
+                            # Impact: Weak vehicle (2GHz) executes in 1.25s; forces offloading necessity
+
+    MIN_DATA = 2.0e5        # 子任务最小数据量 (bits) - Min subtask data (25 KB) [审计调优]
+                            # 影响: 传输时间适中，确保功率梯度可见
+                            # Impact: Moderate transmission time; ensures power gradient visibility
+
+    MAX_DATA = 1.0e6        # 子任务最大数据量 (bits) - Max subtask data (125 KB) [审计调优]
+                            # 影响: V2I传输约0.03s @33Mbps，计算仍占主导
+                            # Impact: V2I transmission ~0.03s @33Mbps; computation still dominant
+
+    MIN_EDGE_DATA = 1.0e5   # DAG边最小数据量 (bits) - Min edge data (12.5 KB) [审计调优]
+                            # 影响: 依赖数据传输开销适中
+                            # Impact: Moderate dependency transmission overhead
+
+    MAX_EDGE_DATA = 5.0e5   # DAG边最大数据量 (bits) - Max edge data (62.5 KB) [审计调优]
+                            # 影响: 依赖数据传输开销适中
+                            # Impact: Moderate dependency transmission overhead
     
-    MAX_COMP = 2.0e8        # 子任务最大计算量 (cycles) - Max subtask computation (0.2 Gcycles) [参考文献2倍]
-                            # 影响: 本地执行约0.10s @2GHz，最坏2.4s可完成
-                            # Impact: Local execution ~0.10s @2GHz; worst case 2.4s completable
-    
-    MIN_DATA = 1.2e6        # 子任务最小数据量 (bits) - Min subtask data (1.2 Mbit ≈ 150KB) [满足>10ms @100Mbps]
-                            # 影响: V2I传输约0.012s @100Mbps单车独占
-                            # Impact: V2I transmission ~0.012s @100Mbps single user
-    
-    MAX_DATA = 3.0e6        # 子任务最大数据量 (bits) - Max subtask data (3 Mbit ≈ 375KB) [参考文献上限]
-                            # 影响: V2I传输约0.030s @100Mbps单车独占，12车3.6s
-                            # Impact: V2I transmission ~0.030s @100Mbps single user, 12 vehicles 3.6s
-    
-    MIN_EDGE_DATA = 8.0e5   # DAG边最小数据量 (bits) - Min edge data (0.8 Mbit ≈ 100KB) [参考文献]
-                            # 影响: 依赖数据传输开销，节点间通信
-                            # Impact: Dependency transmission overhead, inter-node communication
-    
-    MAX_EDGE_DATA = 4.0e6   # DAG边最大数据量 (bits) - Max edge data (4 Mbit ≈ 500KB) [参考文献]
-                            # 影响: 依赖数据传输开销，节点间通信
-                            # Impact: Dependency transmission overhead, inter-node communication
-    
-    MEAN_COMP_LOAD = (0.8e9 + 2.5e9) / 2  # 平均计算负载 (cycles) - Average computation load
-                                         # 动态计算：(MIN_COMP + MAX_COMP) / 2 = 1.65e9
-                                         # Dynamically computed: (MIN_COMP + MAX_COMP) / 2 = 1.65e9
-    AVG_COMP = MEAN_COMP_LOAD            # 同上 - Same as above
+    MEAN_COMP_LOAD = (8.0e8 + 2.5e9) / 2  # 平均计算负载 (cycles) - Average computation load
+                                          # 动态计算：(MIN_COMP + MAX_COMP) / 2 = 1.65e9
+                                          # Dynamically computed: (MIN_COMP + MAX_COMP) / 2 = 1.65e9
+    AVG_COMP = MEAN_COMP_LOAD             # 同上 - Same as above
     
     # -------------------------------------------------------------------------
     # 4.3 Deadline计算参数 (Deadline Calculation - Ideal Local Anchoring)
@@ -330,16 +329,24 @@ class SystemConfig:
     # Deadline计算模式选择
     # -------------------------------------------------------------------------
     DEADLINE_MODE = 'TOTAL_MEDIAN'      # 选择deadline计算模式:
-                                        # - 'TOTAL_MEDIAN': total_comp / f_median (平均算力，推荐)
+                                        # - 'CRITICAL_PATH': CP_total / f_median (关键路径，推荐)
+                                        # - 'TOTAL_MEDIAN': total_comp / f_median (总量，向后兼容)
                                         # - 'TOTAL_LOCAL': total_comp / f_local (本地算力)
                                         # - 'FIXED_RANGE': 直接从固定范围随机 (秒)
+
+    # 基于计算量的deadline (使用γ因子)
+    # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
+    # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
+    DEADLINE_TIGHTENING_MIN = 1.1       # γ最小值 [审计校准: 确保AlwaysLocal≤70%]
+                                        # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
+    DEADLINE_TIGHTENING_MAX = 1.4       # γ最大值 [审计校准: 确保AlwaysLocal≥20%]
+                                        # 目标: AlwaysLocal成功率在20%~70%区间
     
-    # 模式1&2: 基于计算量的deadline (使用γ因子)
-    DEADLINE_TIGHTENING_MIN = 0.8       # γ最小值 [给传输+队列+串行调度留300%余量]
-                                        # deadline = γ × (total_comp / CPU频率)
-    DEADLINE_TIGHTENING_MAX = 1.2       # γ最大值 [确保12车RSU排队可完成]
+    DEADLINE_LB_EPS = 0.05              # 物理下界裕量 eps
+                                        # deadline ≥ (1+eps) × LB0 保证不先天不可行
+                                        # 推荐范围: 0.05~0.1
     
-    # 模式3: 固定范围的deadline (秒)
+    # 模式FIXED_RANGE: 固定范围的deadline (秒)
     DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
     DEADLINE_FIXED_MAX = 5.0            # 最大deadline (秒)
     
@@ -482,6 +489,34 @@ class SystemConfig:
     REWARD_MIN = -25.0              # 奖励下限 - Reward lower bound
                                     # 影响: 容纳PENALTY_FAILURE(-20)，防止裁剪
                                     # Impact: Accommodates PENALTY_FAILURE(-20); prevents clipping
+    # -------------------------------------------------------------------------
+    # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
+    # -------------------------------------------------------------------------
+    REWARD_SCHEME = "PBRS_KP"       # 奖励方案: "LEGACY_CFT" (旧) 或 "PBRS_KP" (潜势关键路径)
+    REWARD_ALPHA = 1.0              # 基础奖励系数 alpha
+    REWARD_BETA = 0.1               # PBRS 系数 beta [审计调优: 降低shape噪声]
+    REWARD_GAMMA = 0.99             # PBRS 折扣 gamma（应与训练端 TC.GAMMA 保持一致）
+    T_REF = 0.5                     # 时间归一化参考尺度 (s) [审计调优: 扩大以适应0.3-0.6s典型优势]
+    PHI_CLIP = 5.0                  # ϕ 裁剪上界（负值幅度上限）
+    SHAPE_CLIP = 10.0               # 潜势差分裁剪上界
+    R_CLIP = 40.0                   # 总奖励裁剪上界（绝对值）
+    EPS_RATE = 1e-9                 # 速率下界，防止除0
+    ILLEGAL_PENALTY = -2.0          # 非法动作额外惩罚
+
+    # -------------------------------------------------------------------------
+    # 6.7.1 非法动作惩罚细分 (Illegal Action Penalty Refinement)
+    # -------------------------------------------------------------------------
+    NO_TASK_PENALTY_DAG_DONE = 0.0      # DAG完成后no_task惩罚（不可控，应为0）
+    NO_TASK_PENALTY_BLOCKED = 0.0       # 所有任务依赖阻塞惩罚（部分可控，暂设为0）
+    NO_TASK_PENALTY_ASSIGNED = 0.0      # 所有READY任务已分配惩罚（边界情况，暂设为0）
+    ILLEGAL_ENABLE_DYNAMIC_PENALTY = False  # 启用动态惩罚（Stage 2）
+
+    TERMINAL_BONUS_SUCC = SUCCESS_BONUS       # 成功终局奖励
+    TERMINAL_PENALTY_FAIL = PENALTY_FAILURE   # 失败终局惩罚
+    ENERGY_LAMBDA = 0.0             # 通信能耗权重（默认关闭）
+    P_MAX_WATT = 10 ** ((TX_POWER_MAX_DBM - 30) / 10.0)  # 最大功率对应瓦特
+    E_REF = 1.0                     # 能耗归一化参考
+    E_CLIP = 10.0                   # 能耗裁剪上界
     
 
     # =========================================================================
@@ -494,6 +529,9 @@ class SystemConfig:
     DEBUG_ASSERT_METRICS = False            # 指标范围断言 - Metrics range assertion
                                             # 影响: True时对成功率/决策分布做范围断言
                                             # Impact: True asserts success rate/decision distribution ranges
+
+    DEBUG_REWARD_ASSERTS = False            # 奖励/速率快照强一致性断言
+    DEBUG_PHI_MONO_PROB = 0.1               # Phi单调性抽样概率
     
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output
                                             # 影响: 是否在stdout打印每个episode的JSONL
@@ -502,7 +540,7 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 18           # 资源原始特征维度 - Resource raw feature dimension
+    RESOURCE_RAW_DIM = 14           # 资源原始特征维度 - Resource raw feature dimension (CommWait 4维已移除)
                                     # 影响: 14原始特征 + 4 CommWait特征 (total/edge × v2i/v2v)
                                     # Impact: 14 raw features + 4 CommWait features (total/edge × v2i/v2v)
 

@@ -134,7 +134,10 @@ class OffloadingPolicyNetwork(nn.Module):
         
         # 5. Actor-Critic网络
         self.actor_critic = ActorCriticNetwork(
-            d_model, num_heads, num_layers, d_ff, dropout
+            d_model, num_heads, num_layers, d_ff, dropout,
+            use_simplified_critic=TC.USE_SIMPLIFIED_CRITIC,
+            use_subtask_cond_critic=getattr(TC, "USE_SUBTASK_COND_CRITIC", True),
+            use_no_ready_embed=getattr(TC, "USE_NO_READY_EMBEDDING", True),
         )
     
     def prepare_inputs(self, obs_list: List[Dict], device='cpu') -> Dict[str, torch.Tensor]:
@@ -286,12 +289,19 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         
         # 4. 资源特征编码（物理特征 + ID嵌入）
+        assert resource_raw.shape[-1] == Cfg.RESOURCE_RAW_DIM, (
+            f"resource_raw dim mismatch: got {resource_raw.shape[-1]}, expected {Cfg.RESOURCE_RAW_DIM}"
+        )
         resource_encoded = self.resource_encoder(resource_raw, resource_ids)
         
         # 6. 生成资源padding mask（padding或不可选动作）
         resource_padding_mask = (resource_ids == 0)
         if action_mask is not None:
             resource_padding_mask = resource_padding_mask | (~action_mask)
+
+        commwait_extra = None
+        if getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False):
+            raise RuntimeError("COMMWAIT_DIRECT_TO_CRITIC is no longer supported after CommWait features were removed.")
         
         # 7. Actor-Critic输出
         target_logits, alpha, beta, value = self.actor_critic(
@@ -301,7 +311,8 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index=subtask_index,
             action_mask=action_mask,
             task_mask=task_mask,
-            resource_padding_mask=resource_padding_mask
+            resource_padding_mask=resource_padding_mask,
+            commwait_extra=commwait_extra,
         )
         
         return target_logits, alpha, beta, value

@@ -26,6 +26,10 @@ class ChannelModel:
         # 注意：V2I不使用衰落，V2V使用瑞利衰落
         # 瑞利衰落：h ~ CN(0, 1)，|h|^2 服从指数分布
         # 每次计算时重新采样，模拟快变信道
+        # [Block Fading] 同一时隙对同一(src,dst)复用衰落系数，避免口径不一致
+        self.use_block_fading = getattr(Cfg, "USE_BLOCK_FADING", True)
+        self.v2v_fading_cache = {}
+        self._v2v_cache_slot = None
 
     def compute_rates(self, vehicles, rsu_pos):
         """
@@ -169,8 +173,20 @@ class ChannelModel:
             else:
                 interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
             
-            # 信号功率包含瑞利衰落（每次重新采样）
-            h_rayleigh = self._rayleigh_fading(1)[0]
+            # 信号功率包含瑞利衰落（同一时隙可复用以保证口径一致）
+            if self.use_block_fading and curr_time is not None:
+                # 使用离散时隙索引作为cache key，避免浮点误差
+                slot = int(round(curr_time / Cfg.DT))
+                if slot != self._v2v_cache_slot:
+                    self.v2v_fading_cache.clear()
+                    self._v2v_cache_slot = slot
+                target_key = tuple(np.round(target_pos, 3).tolist())
+                cache_key = (vehicle.id, target_key)
+                if cache_key not in self.v2v_fading_cache:
+                    self.v2v_fading_cache[cache_key] = self._rayleigh_fading(1)[0]
+                h_rayleigh = self.v2v_fading_cache[cache_key]
+            else:
+                h_rayleigh = self._rayleigh_fading(1)[0]
             signal_power = p_tx * h_bar * h_rayleigh
             
             sinr = signal_power / (noise_w + interference)

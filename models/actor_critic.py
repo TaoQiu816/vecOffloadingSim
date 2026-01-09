@@ -275,30 +275,45 @@ class CriticHead(nn.Module):
     全局池化 + Value估计
     """
     
-    def __init__(self, d_model: int = 128):
+    def __init__(self, d_model: int = 128, use_subtask_cond: bool = True, use_no_ready_embed: bool = True,
+                 use_commwait_direct: bool = False, commwait_dim: int = 0):
         """
         Args:
             d_model: 输入特征维度
         """
         super().__init__()
         self.d_model = d_model
+        self.use_subtask_cond = use_subtask_cond
+        self.use_no_ready_embed = use_no_ready_embed
+        self.use_commwait_direct = use_commwait_direct
+        self.commwait_dim = commwait_dim if use_commwait_direct else 0
         
         # 注意力权重层（用于加权池化）
         self.attention_weight = nn.Linear(d_model, 1)
+
+        # 当没有READY任务（subtask_index<0）时使用的嵌入（learnable，初始为0）
+        if self.use_subtask_cond and self.use_no_ready_embed:
+            self.no_ready_embed = nn.Parameter(torch.zeros(d_model))
         
-        # Value头
+        # Value头（输入：全局 + 当前子任务 [+ CommWait]）或仅全局
+        value_in_dim = d_model * (2 if use_subtask_cond else 1) + self.commwait_dim
+        self.critic_input_dim = value_in_dim
         self.value_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Linear(value_in_dim, d_model),
             nn.ReLU(),
             nn.Linear(d_model, 1)
         )
     
     def forward(self,
                 dag_features: torch.Tensor,
+                subtask_index: Optional[torch.Tensor] = None,
+                commwait_extra: Optional[torch.Tensor] = None,
                 task_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             dag_features: [Batch, MAX_NODES, d_model], DAG节点特征
+            subtask_index: [Batch], 当前子任务索引
+            commwait_extra: [Batch, commwait_dim], 额外的CommWait特征（直连）
             task_mask: [Batch, MAX_NODES], 有效节点mask
         
         Returns:
@@ -320,10 +335,32 @@ class CriticHead(nn.Module):
         
         # 2. 加权池化
         global_feature = torch.sum(dag_features * attn_weights, dim=1)  # [B, d_model]
-        
+
+        if self.use_subtask_cond and subtask_index is not None:
+            batch_size = dag_features.shape[0]
+            max_nodes = dag_features.shape[1]
+            if (subtask_index >= max_nodes).any():
+                bad = subtask_index[subtask_index >= max_nodes]
+                raise ValueError(f"subtask_index out of range: {bad}")
+            if (subtask_index < 0).any():
+                if self.use_no_ready_embed:
+                    h_cur = self.no_ready_embed.unsqueeze(0).expand(batch_size, -1)
+                else:
+                    subtask_index = torch.clamp(subtask_index, min=0)
+                    gather_idx = subtask_index.view(batch_size, 1, 1).expand(-1, 1, self.d_model)
+                    h_cur = torch.gather(dag_features, 1, gather_idx).squeeze(1)
+            else:
+                gather_idx = subtask_index.view(batch_size, 1, 1).expand(-1, 1, self.d_model)
+                h_cur = torch.gather(dag_features, 1, gather_idx).squeeze(1)  # [B, d]
+            critic_input = torch.cat([global_feature, h_cur], dim=-1)
+        else:
+            critic_input = global_feature
+        if self.use_commwait_direct and commwait_extra is not None:
+            critic_input = torch.cat([critic_input, commwait_extra], dim=-1)
+
         # 3. Value估计
-        value = self.value_head(global_feature)  # [B, 1]
-        
+        value = self.value_head(critic_input)  # [B, 1]
+
         return value
 
 
@@ -339,20 +376,29 @@ class SimplifiedCriticHead(nn.Module):
     类似IPPO，用于快速验证Actor逻辑
     """
     
-    def __init__(self, d_model: int = 128):
+    def __init__(self, d_model: int = 128, use_subtask_cond: bool = True, use_no_ready_embed: bool = True,
+                 use_commwait_direct: bool = False, commwait_dim: int = 0):
         """
         Args:
             d_model: 输入特征维度
         """
         super().__init__()
         self.d_model = d_model
+        self.use_subtask_cond = use_subtask_cond
+        self.use_no_ready_embed = use_no_ready_embed
+        self.use_commwait_direct = use_commwait_direct
+        self.commwait_dim = commwait_dim if use_commwait_direct else 0
+        if self.use_subtask_cond and self.use_no_ready_embed:
+            self.no_ready_embed = nn.Parameter(torch.zeros(d_model))
         
         # DAG特征池化权重
         self.dag_attention_weight = nn.Linear(d_model, 1)
-        
-        # Value头（输入：DAG + Neighbors + RSU = 3*d_model）
+        in_dim = d_model * (4 if use_subtask_cond else 3) + self.commwait_dim
+        self.critic_input_dim = in_dim
+
+        # Value头（输入：DAG + Neighbors + RSU (+ h_cur)）
         self.value_head = nn.Sequential(
-            nn.Linear(d_model * 3, d_model * 2),
+            nn.Linear(in_dim, d_model * 2),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(d_model * 2, d_model),
@@ -364,13 +410,17 @@ class SimplifiedCriticHead(nn.Module):
                 dag_features: torch.Tensor,
                 resource_features: torch.Tensor,
                 task_mask: Optional[torch.Tensor] = None,
-                resource_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                subtask_index: Optional[torch.Tensor] = None,
+                resource_mask: Optional[torch.Tensor] = None,
+                commwait_extra: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             dag_features: [Batch, MAX_NODES, d_model], DAG节点特征
             resource_features: [Batch, N_res, d_model], 资源节点特征
             task_mask: [Batch, MAX_NODES], DAG有效节点mask
+            subtask_index: [Batch], 当前子任务索引
             resource_mask: [Batch, N_res], 资源有效节点mask
+            commwait_extra: [Batch, commwait_dim], 直连的CommWait特征
         
         Returns:
             value: [Batch, 1], 状态价值估计
@@ -407,8 +457,27 @@ class SimplifiedCriticHead(nn.Module):
         # 3. RSU特征（Index 1）
         rsu_feat = resource_features[:, 1, :]  # [B, d]
         
-        # 4. 拼接所有特征
-        critic_input = torch.cat([dag_global, neighbor_avg, rsu_feat], dim=-1)  # [B, 3*d]
+        # 4. 当前子任务特征（可选）
+        if self.use_subtask_cond and subtask_index is not None:
+            max_nodes = dag_features.shape[1]
+            if (subtask_index >= max_nodes).any():
+                bad = subtask_index[subtask_index >= max_nodes]
+                raise ValueError(f"subtask_index out of range: {bad}")
+            if (subtask_index < 0).any():
+                if self.use_no_ready_embed:
+                    h_cur = self.no_ready_embed.unsqueeze(0).expand(batch_size, -1)
+                else:
+                    subtask_index = torch.clamp(subtask_index, min=0)
+                    gather_idx = subtask_index.view(batch_size, 1, 1).expand(-1, 1, self.d_model)
+                    h_cur = torch.gather(dag_features, 1, gather_idx).squeeze(1)
+            else:
+                gather_idx = subtask_index.view(batch_size, 1, 1).expand(-1, 1, self.d_model)
+                h_cur = torch.gather(dag_features, 1, gather_idx).squeeze(1)
+            critic_input = torch.cat([dag_global, neighbor_avg, rsu_feat, h_cur], dim=-1)  # [B, 4*d]
+        else:
+            critic_input = torch.cat([dag_global, neighbor_avg, rsu_feat], dim=-1)  # [B, 3*d]
+        if self.use_commwait_direct and commwait_extra is not None:
+            critic_input = torch.cat([critic_input, commwait_extra], dim=-1)
         
         # 5. Value估计
         value = self.value_head(critic_input)  # [B, 1]
@@ -433,7 +502,11 @@ class ActorCriticNetwork(nn.Module):
                  num_layers: int = 4,
                  d_ff: int = 512,
                  dropout: float = 0.1,
-                 use_simplified_critic: bool = True):
+                 use_simplified_critic: bool = True,
+                 use_subtask_cond_critic: bool = True,
+                 use_no_ready_embed: bool = True,
+                 use_commwait_direct: bool = False,
+                 commwait_dim: int = 0):
         """
         Args:
             d_model: 模型维度
@@ -447,6 +520,10 @@ class ActorCriticNetwork(nn.Module):
         
         self.d_model = d_model
         self.use_simplified_critic = use_simplified_critic
+        self.use_subtask_cond_critic = use_subtask_cond_critic
+        self.use_no_ready_embed = use_no_ready_embed
+        self.use_commwait_direct = use_commwait_direct
+        self.commwait_dim = commwait_dim
         
         # Cross-Attention（带物理偏置）
         self.cross_attention = CrossAttentionWithPhysicsBias(d_model, num_heads, dropout)
@@ -456,9 +533,21 @@ class ActorCriticNetwork(nn.Module):
         
         # Critic头（根据配置选择）
         if use_simplified_critic:
-            self.critic_head = SimplifiedCriticHead(d_model)
+            self.critic_head = SimplifiedCriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
         else:
-            self.critic_head = CriticHead(d_model)
+            self.critic_head = CriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
         
         # Layer Norm（用于Cross-Attention后）
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
@@ -524,6 +613,8 @@ class ActorCriticNetwork(nn.Module):
     
     def forward_critic(self,
                       dag_features: torch.Tensor,
+                      subtask_index: Optional[torch.Tensor] = None,
+                      commwait_extra: Optional[torch.Tensor] = None,
                       resource_features: Optional[torch.Tensor] = None,
                       task_mask: Optional[torch.Tensor] = None,
                       resource_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -542,10 +633,10 @@ class ActorCriticNetwork(nn.Module):
         if self.use_simplified_critic:
             # 简化版Critic需要资源特征
             assert resource_features is not None, "Simplified critic requires resource_features"
-            value = self.critic_head(dag_features, resource_features, task_mask, resource_mask)
+            value = self.critic_head(dag_features, resource_features, task_mask, subtask_index, resource_mask, commwait_extra)
         else:
             # 原版Critic只需要DAG特征
-            value = self.critic_head(dag_features, task_mask)
+            value = self.critic_head(dag_features, subtask_index, commwait_extra, task_mask)
         
         return value
     
@@ -556,7 +647,8 @@ class ActorCriticNetwork(nn.Module):
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
                 task_mask: Optional[torch.Tensor] = None,
-                resource_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                resource_padding_mask: Optional[torch.Tensor] = None,
+                commwait_extra: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（同时计算Actor和Critic）（Beta分布版）
         
@@ -583,7 +675,7 @@ class ActorCriticNetwork(nn.Module):
         
         # Critic
         value = self.forward_critic(
-            dag_features, resource_encoded, task_mask, resource_padding_mask
+            dag_features, subtask_index, commwait_extra, resource_encoded, task_mask, resource_padding_mask
         )
         
         return target_logits, alpha, beta, value
