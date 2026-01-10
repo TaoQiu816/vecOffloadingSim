@@ -185,7 +185,7 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.003    # 熵正则化系数 - Entropy coefficient for exploration [审慎调优: 0.01→0.003]
+    ENTROPY_COEF = 0.0005   # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.003→0.0005]
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -222,20 +222,17 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 2.4    # RSU的Logit偏置 - Logit bias for RSU action [数学推导: ln(11)≈2.4]
-                            # 数学推导: 动作空间 1 Local + 1 RSU + 11 V2V
+    LOGIT_BIAS_RSU = 1.6    # RSU的Logit偏置 - Logit bias for RSU action [调优: ln(5)≈1.6]
+                            # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
                             #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
-                            #   需要 exp(b) / [2*exp(b) + 11] = 1/3
-                            #   解得 b = ln(11) ≈ 2.3979
-                            # Impact: Mathematically derived for balanced exploration
-                            # 推荐范围: 1.7-2.4 (2.4 for equal 33%/33%/33% distribution)
+                            #   需要 b = ln(5) ≈ 1.6094
+                            # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 2.4  # Local的Logit偏置 - Logit bias for Local action [数学推导: ln(11)≈2.4]
+    LOGIT_BIAS_LOCAL = 1.6  # Local的Logit偏置 - Logit bias for Local action [调优: ln(5)≈1.6]
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
-                            #   无Bias时: Local 7.7%, RSU 7.7%, V2V 84.6%
-                            #   有Bias=2.4时: Local 33.3%, RSU 33.3%, V2V 33.3%
-                            # Impact: Mathematically derived for balanced exploration
-                            # 推荐范围: 1.7-2.4 (2.4 for equal distribution)
+                            #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
+                            #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
+                            # Impact: Adapted for new action space with 5 V2V options
     
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]

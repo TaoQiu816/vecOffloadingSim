@@ -52,9 +52,9 @@ class SystemConfig:
                             # 影响: 网络负载和V2V候选数量，对齐文献参数
                             # Impact: Network load and V2V candidates; aligned with literature
 
-    V2V_TOP_K = 11          # V2V候选数上限 - Max V2V candidates per agent
-                            # 影响: 限制每个Agent的V2V目标数，控制动作空间大小
-                            # Impact: Limits V2V targets per agent, controls action space size
+    V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
+                            # 影响: 减少V2V冗余，使邻居选择更有意义
+                            # Impact: Reduces V2V redundancy, makes neighbor selection more meaningful
     
     MAX_NEIGHBORS = max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))  # 派生值 - Derived value
     MAX_TARGETS = 2 + MAX_NEIGHBORS  # Local + RSU + Neighbors
@@ -215,9 +215,9 @@ class SystemConfig:
                             # 影响: RSU算力优势明显但不绝对，与强车形成竞争
                             # Impact: RSU computing advantage significant but not absolute
     
-    RSU_NUM_PROCESSORS = 4  # RSU处理器核心数 - RSU processor cores
-                            # 影响: RSU并行处理能力，4核可同时处理4个任务
-                            # Impact: RSU parallel processing capacity; 4 cores can handle 4 tasks simultaneously
+    RSU_NUM_PROCESSORS = 8  # RSU处理器核心数 - RSU processor cores [调优: 4→8]
+                            # 影响: 增加RSU容量，使RSU成为有效选择
+                            # Impact: Increased RSU capacity; makes RSU a viable option vs V2V
     
     K_ENERGY = 1e-28        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -231,9 +231,9 @@ class SystemConfig:
                                         # 影响: 约8个平均任务(1.25G each)，适应新负载
                                         # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 80.0e9     # RSU队列上限 (cycles) - RSU queue limit [审计调优]
-                                        # 影响: 约64个平均任务，支持多车同时卸载
-                                        # Impact: ~64 average tasks; supports concurrent offloading
+    RSU_QUEUE_CYCLES_LIMIT = 160.0e9    # RSU队列上限 (cycles) - RSU queue limit [调优: 80→160]
+                                        # 影响: 翻倍RSU容量，使RSU可以承担更多任务
+                                        # Impact: Doubled RSU capacity; can handle more tasks
 
     MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
                                         # 影响: 限制车辆本地任务数，防止内存溢出
