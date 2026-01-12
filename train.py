@@ -821,7 +821,8 @@ def main():
             "assigned_cpu_sum": 0.0,
             "agent_rewards_sum": 0.0,
             "agent_rewards_count": 0,
-            "v2v_count": 0
+            "v2v_count": 0,
+            "agent_rewards_per_veh": {}  # 追踪每个Agent的累计奖励
         }
         terminated = False
         truncated = False
@@ -843,6 +844,11 @@ def main():
             # 统计
             stats["agent_rewards_sum"] += sum(rewards)
             stats["agent_rewards_count"] += len(rewards)
+            # 追踪每个Agent的累计奖励
+            for agent_idx, r in enumerate(rewards):
+                if agent_idx not in stats["agent_rewards_per_veh"]:
+                    stats["agent_rewards_per_veh"][agent_idx] = 0.0
+                stats["agent_rewards_per_veh"][agent_idx] += r
 
             # [修复] 存入Buffer时分离terminated和truncated
             buffer.add(obs_list, actions, rewards, values, log_probs, done,
@@ -928,12 +934,25 @@ def main():
         total_steps = step + 1
         total_decisions = stats["agent_rewards_count"] if stats["agent_rewards_count"] > 0 else 1
 
-        # 简化的公平性指数（使用平均值，因为我们不再跟踪每个agent的单独奖励）
+        # 计算每个Agent的累计奖励统计
+        agent_rewards_list = list(stats["agent_rewards_per_veh"].values())
         avg_agent_reward = stats["agent_rewards_sum"] / total_decisions if total_decisions > 0 else 0
-        fairness_index = 1.0  # 简化处理
-
-        # 个体奖励差异（简化处理）
-        reward_gap = 0.0
+        
+        if len(agent_rewards_list) > 0:
+            max_agent_r = max(agent_rewards_list)
+            min_agent_r = min(agent_rewards_list)
+            # 个体奖励差异 (Max - Min)
+            reward_gap = max_agent_r - min_agent_r
+            # Jain's Fairness Index: (sum(x))^2 / (n * sum(x^2))
+            sum_r = sum(agent_rewards_list)
+            sum_r2 = sum(r**2 for r in agent_rewards_list)
+            n = len(agent_rewards_list)
+            fairness_index = (sum_r ** 2) / (n * sum_r2) if sum_r2 > 0 else 1.0
+        else:
+            max_agent_r = 0.0
+            min_agent_r = 0.0
+            reward_gap = 0.0
+            fairness_index = 1.0
 
         # 协作率
         collaboration_rate = (stats['v2v_count'] / total_decisions) * 100 if total_decisions > 0 else 0
@@ -1503,8 +1522,8 @@ def main():
             "ma_fairness": fairness_index,
             "ma_reward_gap": reward_gap,
             "ma_collaboration": collaboration_rate,
-            "max_agent_reward": avg_agent_reward,
-            "min_agent_reward": avg_agent_reward,
+            "max_agent_reward": max_agent_r,
+            "min_agent_reward": min_agent_r,
             "avg_assigned_cpu_ghz": avg_assigned_cpu / 1e9,
             "episode_vehicle_count": episode_vehicle_count,
             "episode_task_count": episode_vehicle_count,

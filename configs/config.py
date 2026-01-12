@@ -215,9 +215,9 @@ class SystemConfig:
                             # 影响: RSU算力优势明显但不绝对，与强车形成竞争
                             # Impact: RSU computing advantage significant but not absolute
     
-    RSU_NUM_PROCESSORS = 8  # RSU处理器核心数 - RSU processor cores [调优: 4→8]
-                            # 影响: 增加RSU容量，使RSU成为有效选择
-                            # Impact: Increased RSU capacity; makes RSU a viable option vs V2V
+    RSU_NUM_PROCESSORS = 16  # RSU处理器核心数 - RSU processor cores [优化: 8→16]
+                             # 影响: 减少队列等待，使RSU在大任务场景可用
+                             # Impact: Reduces queue wait; makes RSU viable for large tasks
     
     K_ENERGY = 1e-28        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -231,9 +231,9 @@ class SystemConfig:
                                         # 影响: 约8个平均任务(1.25G each)，适应新负载
                                         # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 160.0e9    # RSU队列上限 (cycles) - RSU queue limit [调优: 80→160]
-                                        # 影响: 翻倍RSU容量，使RSU可以承担更多任务
-                                        # Impact: Doubled RSU capacity; can handle more tasks
+    RSU_QUEUE_CYCLES_LIMIT = 250.0e9    # RSU队列上限 (cycles) - RSU queue limit [优化: 160→250]
+                                        # 影响: 配合16核，支持更大并发
+                                        # Impact: Matches 16 cores; supports higher concurrency
 
     MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
                                         # 影响: 限制车辆本地任务数，防止内存溢出
@@ -245,13 +245,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.1 DAG结构参数 (DAG Structure)
     # -------------------------------------------------------------------------
-    MIN_NODES = 6           # DAG最小节点数 - Min DAG nodes [文献二范围4-12]
-                            # 影响: 降低依赖链复杂度，中心值8±2
-                            # Impact: Reduces dependency complexity; center=8±2
+    MIN_NODES = 4           # DAG最小节点数 - Min DAG nodes [优化: 6→4]
+                            # 影响: 减少并发子任务数，降低RSU排队压力
+                            # Impact: Reduces concurrent subtasks; lowers RSU queue pressure
 
-    MAX_NODES = 10          # DAG最大节点数 - Max DAG nodes [文献二中心值]
-                            # 影响: 确保Episode内完成概率>90%
-                            # Impact: Ensures >90% completion probability within episode
+    MAX_NODES = 8           # DAG最大节点数 - Max DAG nodes [优化: 10→8]
+                            # 影响: 更贴近实际场景，平均6节点
+                            # Impact: More realistic; average 6 nodes
     
     DAG_FAT = 0.5           # DAG宽度参数 - DAG width parameter
                             # 影响: 控制并行度，0.5为中等偏低宽度，减少并行任务数
@@ -272,13 +272,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 8.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.8 Gcycles) [审计调优v2]
-                            # 影响: 弱车(2GHz)执行0.4s，拉大卸载优势幅度
-                            # Impact: Weak vehicle (2GHz) executes in 0.4s; increases offloading advantage
+    MIN_COMP = 3.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.3 Gcycles) [优化: 0.8→0.3]
+                            # 影响: 小任务强车Local仅38ms，提供策略差异化
+                            # Impact: Small tasks on strong vehicles only 38ms; enables strategy differentiation
 
-    MAX_COMP = 2.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (2.5 Gcycles) [审计调优v2]
-                            # 影响: 弱车(2GHz)执行1.25s，强制卸载必要性
-                            # Impact: Weak vehicle (2GHz) executes in 1.25s; forces offloading necessity
+    MAX_COMP = 3.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (3.5 Gcycles) [优化: 2.5→3.5]
+                            # 影响: 大任务必须卸载，增加决策复杂度
+                            # Impact: Large tasks require offloading; increases decision complexity
 
     MIN_DATA = 2.0e5        # 子任务最小数据量 (bits) - Min subtask data (25 KB) [审计调优]
                             # 影响: 传输时间适中，确保功率梯度可见
@@ -377,9 +377,9 @@ class SystemConfig:
                                 # 影响: RSU频率基准，确保归一化值在[0,1]
                                 # Impact: RSU frequency baseline, ensures normalized values in [0,1]
     
-    NORM_MAX_COMP = 2.0e9       # 计算量归一化基准 (cycles) - Computation normalization baseline
-                                # 影响: 适应1e9级别计算量
-                                # Impact: Adapts to 1e9-level computation
+    NORM_MAX_COMP = 4.0e9       # 计算量归一化基准 (cycles) - Computation normalization baseline [优化: 2.0→4.0]
+                                # 影响: 适应新的MAX_COMP=3.5e9
+                                # Impact: Adapts to new MAX_COMP=3.5e9
     
     NORM_MAX_DATA = 5.0e6       # 数据量归一化基准 (bits) - Data normalization baseline
                                 # 影响: 适应约4e6 bit数据量
