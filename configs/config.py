@@ -215,9 +215,9 @@ class SystemConfig:
                             # 影响: RSU算力优势明显但不绝对，与强车形成竞争
                             # Impact: RSU computing advantage significant but not absolute
     
-    RSU_NUM_PROCESSORS = 16  # RSU处理器核心数 - RSU processor cores [优化: 8→16]
-                             # 影响: 减少队列等待，使RSU在大任务场景可用
-                             # Impact: Reduces queue wait; makes RSU viable for large tasks
+    RSU_NUM_PROCESSORS = 12  # RSU处理器核心数 - RSU processor cores [优化: 8→12]
+                             # 影响: 适度增加容量，符合边缘设备定位
+                             # Impact: Moderate capacity increase; aligns with edge device profile
     
     K_ENERGY = 1e-28        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -272,9 +272,9 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 3.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.3 Gcycles) [优化: 0.8→0.3]
-                            # 影响: 小任务强车Local仅38ms，提供策略差异化
-                            # Impact: Small tasks on strong vehicles only 38ms; enables strategy differentiation
+    MIN_COMP = 5.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.5 Gcycles) [优化: 0.8→0.5]
+                            # 影响: 小任务强车Local 62ms，保持卸载必要性
+                            # Impact: Small tasks on strong vehicles 62ms; maintains offloading relevance
 
     MAX_COMP = 3.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (3.5 Gcycles) [优化: 2.5→3.5]
                             # 影响: 大任务必须卸载，增加决策复杂度
