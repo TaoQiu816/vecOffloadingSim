@@ -55,6 +55,8 @@ class Vehicle:
         # 保持向后兼容的属性
         self.task_queue_len = 0
         self.max_queue_size = Cfg.MAX_VEH_QUEUE_SIZE
+        # Serving RSU (nearest in coverage), updated by environment each step
+        self.serving_rsu_id = None
 
         # --- 任务状态 ---
         self.task_dag = None  # 车辆的 DAG 任务

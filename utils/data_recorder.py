@@ -200,25 +200,35 @@ class DataRecorder:
             # 1. 读取数据
             df = pd.read_csv(self.episode_log_path)
             if df.empty: return
-            
-            # 分离训练数据和baseline数据
+
+            # 分离训练数据和baseline数据（兼容旧版duration字段）
+            baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
             if 'policy' in df.columns:
                 df_train = df[df['policy'].isna() | (df['policy'] == '')].copy()
                 df_baseline = df[df['policy'].notna() & (df['policy'] != '')].copy()
+            elif 'duration' in df.columns:
+                baseline_mask = df['duration'].isin(baseline_policies)
+                df_train = df[~baseline_mask].copy()
+                df_baseline = df[baseline_mask].copy()
+                if not df_baseline.empty:
+                    df_baseline = df_baseline.copy()
+                    df_baseline['policy'] = df_baseline['duration']
             else:
                 df_train = df.copy()
                 df_baseline = pd.DataFrame()
 
-            # 2. 设置绘图风格 (兼容性设置)
-            # 尝试使用 seaborn 风格，如果不可用则回退
+            # 2. 设置绘图风格 (论文级默认风格)
             try:
                 plt.style.use('seaborn-v0_8-whitegrid')
             except OSError:
                 plt.style.use('seaborn-whitegrid')  # 旧版本 matplotlib
-
-            # 字体兼容性: 优先使用支持中文或通用符号的字体
             plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial', 'sans-serif']
-            plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方块的问题
+            plt.rcParams['axes.unicode_minus'] = False
+            plt.rcParams['pdf.fonttype'] = 42
+            plt.rcParams['ps.fonttype'] = 42
+            plt.rcParams['lines.linewidth'] = 2.0
+            plt.rcParams['axes.spines.top'] = False
+            plt.rcParams['axes.spines.right'] = False
 
             # 3. 辅助绘图函数 (带平滑处理和baseline时间序列)
             def save_plot(x, y_dict, title, ylabel, filename, window=20, baseline_dict=None, 
@@ -252,11 +262,20 @@ class DataRecorder:
                 # 绘制baseline时间序列（如果提供了数据）
                 # 与训练曲线保持一致的绘图风格：平滑曲线，无marker
                 if df_baseline is not None and metric_key is not None and not df_baseline.empty:
-                    baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                    baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
-                    baseline_linewidths = {'Random': 2.0, 'Local-Only': 2.0, 'Greedy': 2.0}
+                    baseline_colors = {
+                        'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                        'Greedy': '#f39c12', 'Static': '#7c3aed'
+                    }
+                    baseline_styles = {
+                        'Random': '--', 'Local-Only': '-.',
+                        'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
+                    }
+                    baseline_linewidths = {
+                        'Random': 2.0, 'Local-Only': 2.0,
+                        'Greedy': 2.0, 'Static': 2.0
+                    }
                     
-                    for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                    for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
                         policy_data = df_baseline[df_baseline['policy'] == policy_name].copy()
                         if not policy_data.empty and metric_key in policy_data.columns:
                             x_baseline = policy_data['episode'].values
@@ -278,8 +297,14 @@ class DataRecorder:
                 
                 # 兼容性：绘制水平线（如果提供了baseline_dict但没有df_baseline）
                 elif baseline_dict is not None:
-                    baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                    baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                    baseline_colors = {
+                        'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                        'Greedy': '#f39c12', 'Static': '#7c3aed'
+                    }
+                    baseline_styles = {
+                        'Random': '--', 'Local-Only': '-.',
+                        'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
+                    }
                     for baseline_name, baseline_value in baseline_dict.items():
                         color = baseline_colors.get(baseline_name, '#7f8c8d')
                         style = baseline_styles.get(baseline_name, '--')
@@ -342,7 +367,7 @@ class DataRecorder:
                 
                 # 为每个baseline策略绘制卸载决策分布
                 if not df_baseline.empty:
-                    for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                    for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
                         policy_data = df_baseline[df_baseline['policy'] == policy_name]
                         if not policy_data.empty:
                             baseline_offload = {}
@@ -360,11 +385,22 @@ class DataRecorder:
                 save_plot(episodes, {'Fairness Index': df_train['ma_fairness']},
                           'System Fairness (Jain Index)', 'Index [0-1]', 'ma_fairness.png')
 
-            # (F) [多智能体] 协作活跃度 (V2V Collaboration Rate)
-            if 'ma_collaboration' in df_train.columns:
-                save_plot(episodes, {'MAPPO': df_train['ma_collaboration']},
-                          'Agent Collaboration (V2V) Rate', 'Rate (%)', 'ma_collaboration_with_baselines.png',
-                          df_baseline=df_baseline, metric_key='ma_collaboration')
+            # (F) [多智能体] 协作收益 (V2V Gain Positive Rate)
+            if 'v2v_gain_pos_rate' in df_train.columns or 'ma_collaboration' in df_train.columns:
+                if 'v2v_gain_pos_rate' in df_train.columns:
+                    v2v_gain_series = df_train['v2v_gain_pos_rate'] * 100
+                    baseline_metric = 'v2v_gain_pos_rate'
+                else:
+                    v2v_gain_series = df_train['ma_collaboration']
+                    baseline_metric = 'ma_collaboration'
+                df_baseline_scaled = df_baseline.copy()
+                if baseline_metric in df_baseline_scaled.columns:
+                    df_baseline_scaled[baseline_metric] = df_baseline_scaled[baseline_metric] * (
+                        100 if baseline_metric == 'v2v_gain_pos_rate' else 1
+                    )
+                save_plot(episodes, {'MAPPO': v2v_gain_series},
+                          'Collaboration Gain (V2V Positive Rate)', 'Rate (%)', 'ma_collaboration_with_baselines.png',
+                          df_baseline=df_baseline_scaled, metric_key=baseline_metric)
 
             # (G) [多智能体] 奖励差距 (Reward Gap)
             if 'ma_reward_gap' in df_train.columns:
@@ -448,7 +484,7 @@ class DataRecorder:
             plt.ylabel('Reward')
             plt.grid(True, linestyle='--', alpha=0.5)
 
-            plt.savefig(os.path.join(self.plot_dir, 'agent_reward_boxplot.png'), dpi=100)
+            plt.savefig(os.path.join(self.plot_dir, 'agent_reward_boxplot.png'), dpi=300, bbox_inches='tight')
             plt.close()
 
         except Exception as e:
@@ -475,10 +511,13 @@ class DataRecorder:
             
             # Baseline数据
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                baseline_markers = {'Random': 'x', 'Local-Only': 's', 'Greedy': '^'}
+                baseline_colors = {
+                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                    'Greedy': '#f39c12', 'Static': '#7c3aed'
+                }
+                baseline_markers = {'Random': 'x', 'Local-Only': 's', 'Greedy': '^', 'Static': 'D'}
                 
-                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty and 'avg_latency' in policy_data.columns:
                         avg_lat = policy_data['avg_latency'].mean()
@@ -537,8 +576,11 @@ class DataRecorder:
             
             # 绘制Baseline（如果有）
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                baseline_colors = {
+                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                    'Greedy': '#f39c12', 'Static': '#7c3aed'
+                }
+                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty:
                         baseline_values = [
@@ -663,10 +705,16 @@ class DataRecorder:
             
             # Baseline的CDF
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                baseline_styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                baseline_colors = {
+                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                    'Greedy': '#f39c12', 'Static': '#7c3aed'
+                }
+                baseline_styles = {
+                    'Random': '--', 'Local-Only': '-.',
+                    'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
+                }
                 
-                for policy_name in ['Random', 'Local-Only', 'Greedy']:
+                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty and 'avg_completion_time' in policy_data.columns:
                         times = policy_data['avg_completion_time'].dropna().sort_values()
@@ -903,6 +951,11 @@ class DataRecorder:
                 plt.style.use('seaborn-whitegrid')
             plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial', 'sans-serif']
             plt.rcParams['axes.unicode_minus'] = False
+            plt.rcParams['pdf.fonttype'] = 42
+            plt.rcParams['ps.fonttype'] = 42
+            plt.rcParams['lines.linewidth'] = 2.0
+            plt.rcParams['axes.spines.top'] = False
+            plt.rcParams['axes.spines.right'] = False
 
             window = 20  # 平滑窗口
             episodes = df['episode']
@@ -919,11 +972,17 @@ class DataRecorder:
                 ax.plot(episodes, df['reward_mean'].rolling(window, min_periods=1).mean(),
                        linewidth=2.5, color='darkblue', label='MAPPO (Mean/Step)')
             if df_baseline is not None and 'reward_mean' in df_baseline.columns:
-                for policy in ['Random', 'Local-Only', 'Greedy']:
+                for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
                     policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
                     if not policy_data.empty:
-                        colors = {'Random': '#e74c3c', 'Local-Only': '#95a5a6', 'Greedy': '#f39c12'}
-                        styles = {'Random': '--', 'Local-Only': '-.', 'Greedy': ':'}
+                        colors = {
+                            'Random': '#e74c3c', 'Local-Only': '#95a5a6',
+                            'Greedy': '#f39c12', 'Static': '#7c3aed'
+                        }
+                        styles = {
+                            'Random': '--', 'Local-Only': '-.',
+                            'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
+                        }
                         # 使用drawstyle='steps-post'绘制阶梯曲线，确保baseline完整显示
                         ax.plot(policy_data['episode'], policy_data['reward_mean'],
                                color=colors.get(policy, 'gray'), linestyle=styles.get(policy, '--'),

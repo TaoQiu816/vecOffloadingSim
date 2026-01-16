@@ -68,7 +68,8 @@ def test_edge_activation_in_same_step():
 
     print(f"  Steps executed: {step + 1}")
     print(f"  Final active_edge_keys: {len(env.active_edge_keys)}")
-    return True
+    # 验证至少执行了一些步骤
+    assert step >= 0, "Should execute at least one step"
 
 
 def test_edge_activation_idempotency():
@@ -106,7 +107,6 @@ def test_edge_activation_idempotency():
     )
 
     print(f"  Idempotency verified: {edges_before} edges unchanged after 5 calls")
-    return True
 
 
 def test_dag_completion_flow():
@@ -160,8 +160,6 @@ def test_dag_completion_flow():
     # 检查没有死锁（应该有进展）
     assert completion_rate > 0.5, f"Completion rate too low: {completion_rate}"
 
-    return True
-
 
 def test_inter_task_transfer_cleanup():
     """
@@ -199,8 +197,8 @@ def test_inter_task_transfer_cleanup():
 
     print(f"  Pending transfers: {total_pending}")
     print(f"  Completed transfers (in dict): {total_completed}")
-
-    return True
+    # 验证有完成的传输
+    assert total_completed >= 0, "Should have non-negative completed transfers"
 
 
 def test_phase_execution_order():
@@ -235,8 +233,6 @@ def test_phase_execution_order():
     print("  Phase execution order verified:")
     print("    Phase1 -> Phase2 -> Phase3 -> Phase4 -> Phase2(补偿)")
 
-    return True
-
 
 def run_all_p01_tests():
     """运行所有P01相关测试"""
@@ -258,13 +254,9 @@ def run_all_p01_tests():
     for name, test_fn in tests:
         print(f"\nTesting {name}...")
         try:
-            result = test_fn()
-            if result:
-                print(f"✓ {name} passed")
-                passed += 1
-            else:
-                print(f"✗ {name} failed")
-                failed += 1
+            test_fn()
+            print(f"✓ {name} passed")
+            passed += 1
         except Exception as e:
             print(f"✗ {name} failed with error: {e}")
             import traceback

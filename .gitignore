@@ -16,6 +16,13 @@ logs/
 models/*.pth
 *.pth
 .cursor/
+.claude/
+.cursorrules
+
+# 评估/审计输出（非训练必需）
+audit_results/
+eval_results/
+sweep_results/
 
 # 数据文件
 data/

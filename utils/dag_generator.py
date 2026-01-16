@@ -134,6 +134,119 @@ class DAGGenerator:
 
         return adj_matrix, profiles, data_matrix, deadline, extras
 
+    def generate_from_config(self, veh_f=None):
+        """
+        根据配置选择DAG来源
+
+        支持:
+        - synthetic_small: 按MIN_NODES~MAX_NODES随机
+        - synthetic_large: 从DAG_LARGE_NODE_OPTIONS选择
+        - workflow_json: 读取本地JSON文件
+        """
+        source = getattr(Cfg, "DAG_SOURCE", "synthetic_small")
+        if source == "synthetic_small":
+            num_nodes = np.random.randint(Cfg.MIN_NODES, Cfg.MAX_NODES + 1)
+            return self.generate(num_nodes, veh_f=veh_f)
+        if source == "synthetic_large":
+            options = getattr(Cfg, "DAG_LARGE_NODE_OPTIONS", [20, 50, 100])
+            if not options:
+                raise ValueError("DAG_LARGE_NODE_OPTIONS is empty")
+            num_nodes = int(np.random.choice(options))
+            if num_nodes > Cfg.MAX_NODES:
+                raise ValueError(
+                    f"synthetic_large nodes={num_nodes} exceeds MAX_NODES={Cfg.MAX_NODES}"
+                )
+            return self.generate(num_nodes, veh_f=veh_f)
+        if source == "workflow_json":
+            path = getattr(Cfg, "WORKFLOW_JSON_PATH", None)
+            if not path:
+                raise ValueError("WORKFLOW_JSON_PATH is required for workflow_json")
+            return self._load_workflow_json(path, veh_f=veh_f)
+        raise ValueError(f"Unknown DAG_SOURCE: {source}")
+
+    def _load_workflow_json(self, path, veh_f=None):
+        import json
+
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        nodes = payload.get("nodes")
+        node_comp = payload.get("node_comp_cycles")
+        node_input = payload.get("node_input_bytes")
+        if nodes is not None:
+            num_nodes = len(nodes)
+            comp_arr = [float(n.get("comp_cycles", 0.0)) for n in nodes]
+            input_arr = [float(n.get("input_data_bytes", 0.0)) for n in nodes]
+        elif node_comp is not None:
+            num_nodes = len(node_comp)
+            comp_arr = [float(x) for x in node_comp]
+            if node_input is not None and len(node_input) == num_nodes:
+                input_arr = [float(x) for x in node_input]
+            else:
+                input_arr = [0.0] * num_nodes
+        else:
+            raise ValueError("workflow_json missing nodes or node_comp_cycles")
+
+        if num_nodes <= 0:
+            raise ValueError("workflow_json has no nodes")
+        if num_nodes > Cfg.MAX_NODES:
+            raise ValueError(
+                f"workflow_json nodes={num_nodes} exceeds MAX_NODES={Cfg.MAX_NODES}"
+            )
+
+        adj_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
+        data_matrix = np.zeros((num_nodes, num_nodes), dtype=float)
+
+        edges = payload.get("edges", [])
+        for edge in edges:
+            if isinstance(edge, dict):
+                u = edge.get("src")
+                v = edge.get("dst")
+                data_bytes = edge.get("data_bytes", 0.0)
+            else:
+                u = edge[0] if len(edge) > 0 else None
+                v = edge[1] if len(edge) > 1 else None
+                data_bytes = edge[2] if len(edge) > 2 else 0.0
+            if u is None or v is None:
+                continue
+            u_idx = int(u)
+            v_idx = int(v)
+            if u_idx == v_idx:
+                continue
+            if not (0 <= u_idx < num_nodes and 0 <= v_idx < num_nodes):
+                raise ValueError(f"workflow_json edge out of range: {u_idx}->{v_idx}")
+            adj_matrix[u_idx, v_idx] = 1
+            data_matrix[u_idx, v_idx] = float(data_bytes)
+
+        # DAG校验
+        graph = nx.DiGraph(adj_matrix)
+        if not nx.is_directed_acyclic_graph(graph):
+            raise ValueError("workflow_json edges contain cycle")
+
+        in_degrees = np.sum(adj_matrix, axis=0)
+        profiles = []
+        for i in range(num_nodes):
+            comp = comp_arr[i] if i < len(comp_arr) else float(np.random.uniform(*self.comp_range))
+            is_entry = (in_degrees[i] == 0)
+            inp_d = input_arr[i] if is_entry else 0.0
+            profiles.append({
+                "comp": comp,
+                "input_data": inp_d,
+            })
+
+        deadline, gamma, critical_path_cycles, base_time = self._calc_deadline(
+            num_nodes, adj_matrix, profiles, veh_f
+        )
+        extras = {
+            "deadline_gamma": gamma,
+            "critical_path_cycles": critical_path_cycles,
+            "deadline_base_time": base_time,
+            "deadline_seconds": deadline,
+            "deadline_slack": getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0),
+            "workflow_path": path,
+        }
+        return adj_matrix, profiles, data_matrix, deadline, extras
+
     def _calc_deadline(self, n, adj, profiles, f_base=None):
         """
         计算相对截止时间（基于关键路径）

@@ -391,12 +391,16 @@ def plot_multi_agent_metrics(df, output_dir):
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # 3. Collaboration
+    # 3. Collaboration Gain (V2V Positive Rate)
     ax = axes[1, 0]
-    ax.plot(episodes, df['ma_collaboration'], alpha=0.3, color='blue', linewidth=0.5)
-    ax.plot(episodes, smooth(df['ma_collaboration'], 50), color='darkblue', linewidth=2.5)
-    ax.set_ylabel('Collaboration Score')
-    ax.set_title('Multi-Agent Collaboration')
+    if 'v2v_gain_pos_rate' in df.columns:
+        collab_series = df['v2v_gain_pos_rate'] * 100
+    else:
+        collab_series = df['ma_collaboration']
+    ax.plot(episodes, collab_series, alpha=0.3, color='blue', linewidth=0.5)
+    ax.plot(episodes, smooth(collab_series, 50), color='darkblue', linewidth=2.5)
+    ax.set_ylabel('Collaboration Gain (%)')
+    ax.set_title('Multi-Agent Collaboration Gain')
     ax.grid(True, alpha=0.3)
     
     # 4. Agent Reward Range
@@ -435,19 +439,34 @@ def plot_system_metrics(df, output_dir):
     ax.set_title('Average Power Consumption')
     ax.grid(True, alpha=0.3)
     
-    # 2. Average Queue Length
+    # 2. Queue Length (Vehicle & RSU)
     ax = axes[0, 1]
-    ax.plot(episodes, df['avg_queue_len'], alpha=0.3, color='brown', linewidth=0.5)
-    ax.plot(episodes, smooth(df['avg_queue_len'], 50), color='saddlebrown', linewidth=2.5)
+    # 兼容新旧字段
+    if 'avg_veh_queue' in df.columns and 'avg_rsu_queue' in df.columns:
+        ax.plot(episodes, smooth(df['avg_veh_queue'], 50), color='blue', 
+                linewidth=2.5, label='Vehicle Queue')
+        ax.plot(episodes, smooth(df['avg_rsu_queue'], 50), color='orange', 
+                linewidth=2.5, label='RSU Queue')
+        ax.legend()
+        ax.set_title('Queue Length (Vehicle vs RSU)')
+    else:
+        ax.plot(episodes, df['avg_queue_len'], alpha=0.3, color='brown', linewidth=0.5)
+        ax.plot(episodes, smooth(df['avg_queue_len'], 50), color='saddlebrown', linewidth=2.5)
+        ax.set_title('Average Queue Length')
     ax.set_ylabel('Average Queue Length')
-    ax.set_title('Average Queue Length')
     ax.grid(True, alpha=0.3)
     
     # 3. Episode Duration
     ax = axes[1, 0]
-    durations = df['duration'].astype(float)
-    ax.plot(episodes, durations, alpha=0.3, color='blue', linewidth=0.5)
-    ax.plot(episodes, smooth(durations, 50), color='darkblue', linewidth=2.5)
+    # 过滤掉 baseline 数据（duration 可能是策略名称字符串）
+    try:
+        durations = pd.to_numeric(df['duration'], errors='coerce')
+        valid_mask = durations.notna()
+        ax.plot(episodes[valid_mask], durations[valid_mask], alpha=0.3, color='blue', linewidth=0.5)
+        ax.plot(episodes[valid_mask], smooth(durations[valid_mask], 50), color='darkblue', linewidth=2.5)
+    except Exception:
+        ax.text(0.5, 0.5, 'Duration data unavailable', ha='center', va='center', 
+                transform=ax.transAxes)
     ax.set_ylabel('Duration (s)')
     ax.set_title('Episode Duration')
     ax.set_xlabel('Episode')
@@ -538,8 +557,15 @@ def plot_convergence_analysis(df, output_dir):
 def plot_baseline_comparison(df, output_dir):
     """与Baseline对比"""
     # 分离MAPPO和baseline数据
-    mappo_df = df[~df['duration'].isin(['Random', 'Local-Only', 'Greedy'])].copy()
-    baseline_df = df[df['duration'].isin(['Random', 'Local-Only', 'Greedy'])].copy()
+    # 优先使用 policy 字段（新版），兼容使用 duration 字段（旧版）
+    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
+    if 'policy' in df.columns:
+        mappo_df = df[(df['policy'] == '') | (df['policy'].isna())].copy()
+        baseline_df = df[df['policy'].isin(baseline_policies)].copy()
+    else:
+        # 旧版兼容：使用 duration 字段
+        mappo_df = df[~df['duration'].isin(baseline_policies)].copy()
+        baseline_df = df[df['duration'].isin(baseline_policies)].copy()
     
     if len(baseline_df) == 0:
         print("⚠ No baseline data found, skipping baseline comparison plot")
@@ -553,8 +579,11 @@ def plot_baseline_comparison(df, output_dir):
     ax.plot(mappo_df['episode'], smooth(mappo_df['task_success_rate'] * 100, 50),
             color='blue', linewidth=2.5, label='MAPPO')
     
-    for policy in ['Random', 'Local-Only', 'Greedy']:
-        policy_df = baseline_df[baseline_df['duration'] == policy]
+    # 确定 baseline 数据中用于筛选策略的列（新版用 policy，旧版用 duration）
+    policy_col = 'policy' if 'policy' in baseline_df.columns else 'duration'
+    
+    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
             ax.plot(policy_df['episode'], policy_df['task_success_rate'] * 100,
                    'o-', alpha=0.7, markersize=6, label=policy)
@@ -569,8 +598,8 @@ def plot_baseline_comparison(df, output_dir):
     ax.plot(mappo_df['episode'], smooth(mappo_df['total_reward'], 50),
             color='blue', linewidth=2.5, label='MAPPO')
     
-    for policy in ['Random', 'Local-Only', 'Greedy']:
-        policy_df = baseline_df[baseline_df['duration'] == policy]
+    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
             ax.plot(policy_df['episode'], policy_df['total_reward'],
                    'o-', alpha=0.7, markersize=6, label=policy)
@@ -586,8 +615,8 @@ def plot_baseline_comparison(df, output_dir):
     ax.plot(mappo_df['episode'], smooth(mappo_df['subtask_success_rate'] * 100, 50),
             color='blue', linewidth=2.5, label='MAPPO')
     
-    for policy in ['Random', 'Local-Only', 'Greedy']:
-        policy_df = baseline_df[baseline_df['duration'] == policy]
+    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
             ax.plot(policy_df['episode'], policy_df['subtask_success_rate'] * 100,
                    'o-', alpha=0.7, markersize=6, label=policy)
@@ -600,7 +629,7 @@ def plot_baseline_comparison(df, output_dir):
     
     # 4. Bar Chart (Final Performance)
     ax = axes[1, 1]
-    policies = ['MAPPO'] + ['Random', 'Local-Only', 'Greedy']
+    policies = ['MAPPO'] + ['Random', 'Local-Only', 'Greedy', 'Static']
     task_sr_vals = []
     subtask_sr_vals = []
     
@@ -608,8 +637,8 @@ def plot_baseline_comparison(df, output_dir):
     task_sr_vals.append(mappo_df.tail(50)['task_success_rate'].mean() * 100)
     subtask_sr_vals.append(mappo_df.tail(50)['subtask_success_rate'].mean() * 100)
     
-    for policy in ['Random', 'Local-Only', 'Greedy']:
-        policy_df = baseline_df[baseline_df['duration'] == policy]
+    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
             task_sr_vals.append(policy_df['task_success_rate'].mean() * 100)
             subtask_sr_vals.append(policy_df['subtask_success_rate'].mean() * 100)
@@ -650,7 +679,12 @@ def main():
     print(f"✓ Loaded {len(df)} episodes from {episode_log}")
     
     # 过滤MAPPO数据（用于部分图表）
-    mappo_df = df[~df['duration'].isin(['Random', 'Local-Only', 'Greedy'])].copy()
+    # 优先使用 policy 字段（新版），兼容使用 duration 字段（旧版）
+    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
+    if 'policy' in df.columns:
+        mappo_df = df[(df['policy'] == '') | (df['policy'].isna())].copy()
+    else:
+        mappo_df = df[~df['duration'].isin(baseline_policies)].copy()
     print(f"✓ MAPPO episodes: {len(mappo_df)}")
     
     # 创建输出目录
@@ -674,4 +708,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

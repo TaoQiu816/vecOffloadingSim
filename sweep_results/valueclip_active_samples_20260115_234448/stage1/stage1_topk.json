@@ -1,0 +1,14 @@
+[
+  {
+    "clip_range": 0.4,
+    "min_active_samples": 64
+  },
+  {
+    "clip_range": 0.3,
+    "min_active_samples": 64
+  },
+  {
+    "clip_range": 0.2,
+    "min_active_samples": 96
+  }
+]

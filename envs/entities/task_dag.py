@@ -196,7 +196,7 @@ class DAGTask:
             np.array(bool): [Num_Subtasks], True表示可调度
         """
         ready_mask = (self.status == 1)
-        not_assigned_mask = np.array([loc is None for loc in self.task_locations])
+        not_assigned_mask = np.array([loc is None for loc in self.exec_locations])
         return ready_mask & not_assigned_mask
     
     def compute_task_priority(self, task_id: int) -> float:

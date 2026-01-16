@@ -1,0 +1,43 @@
+[
+  {
+    "policy_name": "RandomPolicy",
+    "episodes": 30,
+    "avg_reward": 39.102856405129735,
+    "deadline_miss_rate_mean": 0.07499999999999998,
+    "deadline_miss_rate_p95": 0.17749999999999985,
+    "task_success_rate_mean": 0.9250000000000002,
+    "subtask_success_rate_mean": 0.9938182531168098,
+    "idle_fraction_mean": 0.015490786379206142,
+    "terminated_reason_counts": {
+      "success_all_done": 10,
+      "idle": 20
+    }
+  },
+  {
+    "policy_name": "LocalOnlyPolicy",
+    "episodes": 30,
+    "avg_reward": 8.964292447885855,
+    "deadline_miss_rate_mean": 0.43333333333333335,
+    "deadline_miss_rate_p95": 0.6,
+    "task_success_rate_mean": 0.5666666666666667,
+    "subtask_success_rate_mean": 0.8734633537847353,
+    "idle_fraction_mean": 0.008264498038845491,
+    "terminated_reason_counts": {
+      "idle": 30
+    }
+  },
+  {
+    "policy_name": "GreedyPolicy",
+    "episodes": 30,
+    "avg_reward": 37.49170847531824,
+    "deadline_miss_rate_mean": 0.10333333333333333,
+    "deadline_miss_rate_p95": 0.22749999999999987,
+    "task_success_rate_mean": 0.8966666666666665,
+    "subtask_success_rate_mean": 0.9803263625099548,
+    "idle_fraction_mean": 0.028242154815887037,
+    "terminated_reason_counts": {
+      "success_all_done": 4,
+      "idle": 26
+    }
+  }
+]

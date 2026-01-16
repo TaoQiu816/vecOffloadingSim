@@ -30,6 +30,11 @@ plt.rcParams['axes.grid'] = True
 plt.rcParams['grid.alpha'] = 0.3
 plt.rcParams['figure.facecolor'] = 'white'
 plt.rcParams['axes.facecolor'] = '#f8f9fa'
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+plt.rcParams['lines.linewidth'] = 2.0
+plt.rcParams['axes.spines.top'] = False
+plt.rcParams['axes.spines.right'] = False
 
 # 配色方案
 COLORS = {
@@ -41,6 +46,7 @@ COLORS = {
     'Random': '#e74c3c',       # Baseline: Random
     'Local-Only': '#95a5a6',   # Baseline: Local
     'Greedy': '#f39c12',       # Baseline: Greedy
+    'Static': '#7c3aed',       # Baseline: Static
 }
 
 
@@ -98,7 +104,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
             color=COLORS['primary'], linewidth=2.5, label='MAPPO')
     
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy']:
+        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty:
                 # 使用平滑曲线绘制baseline，与MAPPO风格一致
@@ -120,7 +126,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
             color=COLORS['secondary'], linewidth=2.5, label='MAPPO')
     
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy']:
+        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty and 'task_sr' in policy_data.columns:
                 # 使用平滑曲线绘制baseline，与MAPPO风格一致
@@ -365,7 +371,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
             color=COLORS['primary'], linewidth=3, label='MAPPO')
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy']:
+        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
             policy_data = df_baseline[df_baseline['policy'] == policy]
             if not policy_data.empty:
                 ax.plot(policy_data['episode'], policy_data['reward_mean'],
@@ -382,7 +388,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['task_sr'], 50) * 100, 
             color=COLORS['secondary'], linewidth=3, label='MAPPO T_SR')
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy']:
+        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
             policy_data = df_baseline[df_baseline['policy'] == policy]
             if not policy_data.empty and 'task_sr' in policy_data.columns:
                 ax.plot(policy_data['episode'], policy_data['task_sr'] * 100,

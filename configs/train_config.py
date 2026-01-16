@@ -86,7 +86,7 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 1e-4         # Actor学习率 - Actor learning rate [调优: 从3e-4降至1e-4稳定梯度]
+    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate [P14: 对齐Critic比例]
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
@@ -96,7 +96,7 @@ class TrainConfig:
                             # 推荐范围: 1e-4 ~ 1e-3 (稳定性优先)
                             # Recommended range: 1e-4 ~ 1e-3 (stability first)
 
-    LR_CRITIC = 3e-4        # Critic学习率 - Critic learning rate [审慎: 保持与Actor一致]
+    LR_CRITIC = 5e-4        # Critic学习率 - Critic learning rate [P14: 对齐测试基准]
                             # 影响: 控制价值网络的更新速度，与Actor保持一致
                             # Impact: Controls value network update speed; consistent with Actor
                             # 推荐范围: 1e-4 ~ 1e-3
@@ -155,7 +155,7 @@ class TrainConfig:
                             # 推荐范围: 0.90-0.99 (0.95 balances immediate and long-term)
                             # Recommended range: 0.90-0.99
 
-    CLIP_PARAM = 0.2        # PPO裁剪阈值 epsilon - PPO clipping threshold (PPO_CLIP = 0.2)
+    CLIP_PARAM = 0.25       # PPO裁剪阈值 epsilon - PPO clipping threshold (PPO_CLIP = 0.2)
                             # 影响: 限制策略更新幅度，防止破坏性更新
                             #       - 过小: 更新保守，学习慢
                             #       - 过大: 更新激进，可能不稳定
@@ -185,7 +185,7 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.0005   # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.003→0.0005]
+    ENTROPY_COEF = 0.002    # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.003→0.002]
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -201,6 +201,17 @@ class TrainConfig:
                             # Impact: Balances Actor-Critic training, controls value function update weight
                             # 推荐范围: 0.5-1.0 (标准值，配合归一化的Value Loss)
                             # Recommended range: 0.5-1.0
+
+    USE_VALUE_CLIP = True   # 是否启用Value Clipping（PPO常用）
+                            # 影响: 限制Critic更新幅度，降低高方差回报导致的不稳定
+                            # Impact: Caps critic update, reduces variance under sparse active samples
+    VALUE_CLIP_RANGE = 0.2  # Value clipping范围（与CLIP_PARAM同量级）
+                            # 推荐范围: 0.1-0.3
+
+    USE_VALUE_TARGET_NORM = True   # 是否对Value target做归一化（仅训练侧）
+                                   # 影响: 稳定critic尺度，但不改变环境奖励
+
+    MIN_ACTIVE_SAMPLES = 64  # active样本低于阈值时跳过更新（防止过高方差）
     
     TARGET_KL = 0.02        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
                             # 影响: 如果KL散度超过此值，提前停止policy update（若实现）
@@ -237,23 +248,23 @@ class TrainConfig:
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]
     # -------------------------------------------------------------------------
-    BIAS_DECAY_EVERY_EP = 100  # 每N个episode退火一次 - Decay bias every N episodes [适应短期]
+    BIAS_DECAY_EVERY_EP = 200  # 每N个episode退火一次 - Decay bias every N episodes [适应中期]
                                # 影响: 控制退火频率，短期训练使用较快退火
                                # Impact: Controls decay frequency; faster decay for short-term training
     
-    BIAS_DECAY_RSU = 0.5       # RSU bias每次退火减少量 - RSU bias decay amount per step [降至0.5]
+    BIAS_DECAY_RSU = 0.2       # RSU bias每次退火减少量 - RSU bias decay amount per step [更缓慢衰减]
                                # 影响: 每次退火时LOGIT_BIAS_RSU减少的量，更缓慢的衰减
                                # Impact: Amount to reduce LOGIT_BIAS_RSU per decay step, slower decay
     
-    BIAS_DECAY_LOCAL = 0.3     # Local bias每次退火减少量 - Local bias decay amount per step [降至0.3]
+    BIAS_DECAY_LOCAL = 0.2     # Local bias每次退火减少量 - Local bias decay amount per step [更缓慢衰减]
                                # 影响: 每次退火时LOGIT_BIAS_LOCAL减少的量，更缓慢的衰减
                                # Impact: Amount to reduce LOGIT_BIAS_LOCAL per decay step, slower decay
     
-    BIAS_MIN_RSU = 0.5         # RSU bias最小值 - Minimum RSU bias [设为0.5]
+    BIAS_MIN_RSU = 0.8         # RSU bias最小值 - Minimum RSU bias [保持探索]
                                # 影响: LOGIT_BIAS_RSU不会低于此值，保持RSU探索
                                # Impact: LOGIT_BIAS_RSU will not go below this value, maintains RSU exploration
     
-    BIAS_MIN_LOCAL = 0.5       # Local bias最小值 - Minimum Local bias [设为0.5]
+    BIAS_MIN_LOCAL = 0.8       # Local bias最小值 - Minimum Local bias [保持探索]
                                # 影响: LOGIT_BIAS_LOCAL不会低于此值，保持Local探索
                                # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 

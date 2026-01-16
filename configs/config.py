@@ -53,13 +53,19 @@ class SystemConfig:
                             # Impact: Network load and V2V candidates; aligned with literature
 
     V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
+    CANDIDATE_SORT_BY = "t_finish"  # t_finish | rate | distance (V2V候选排序规则)
+    DEBUG_CANDIDATE_SET = False     # 是否打印候选集排序与映射
+    V2V_DYNAMIC_K = True    # 是否启用动态邻居数选择 - Enable dynamic V2V candidate filtering
+    V2V_TOP_K_MIN = 2       # 动态筛选最少保留的V2V候选数 - Min V2V candidates to keep
+    V2V_CANDIDATE_REL_TOL = 0.25  # 相对最优时间允许阈值 - Relative time tolerance (best*(1+rel))
+    V2V_CANDIDATE_ABS_TOL = 0.2   # 绝对时间允许阈值(秒) - Absolute time tolerance (seconds)
                             # 影响: 减少V2V冗余，使邻居选择更有意义
                             # Impact: Reduces V2V redundancy, makes neighbor selection more meaningful
     
     MAX_NEIGHBORS = max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))  # 派生值 - Derived value
     MAX_TARGETS = 2 + MAX_NEIGHBORS  # Local + RSU + Neighbors
     
-    VEHICLE_ARRIVAL_RATE = 0.2  # 泊松到达率 (veh/s) - Poisson arrival rate
+    VEHICLE_ARRIVAL_RATE = 0.0  # 泊松到达率 (veh/s) - Poisson arrival rate
                                 # 影响: 动态车辆生成，0表示禁用动态到达
                                 # Impact: Dynamic vehicle spawning; 0 disables dynamic arrivals
     
@@ -91,6 +97,13 @@ class SystemConfig:
     MAX_STEPS = 200         # Episode最大步数 - Max steps per episode
                             # 影响: Episode总时长 = MAX_STEPS × DT = 20秒
                             # Impact: Total episode duration = MAX_STEPS × DT = 20s
+    TERMINATE_ON_ALL_FINISHED = True  # 是否允许任务全部完成时提前终止
+
+    # -------------------------------------------------------------------------
+    # 1.3.1 调度与决策稀疏控制 (Scheduling Controls)
+    # -------------------------------------------------------------------------
+    MAX_SCHEDULE_PER_STEP = 1  # 每车每步最多调度的READY子任务数 (1=保持现状)
+    MAX_INFLIGHT_SUBTASKS_PER_VEHICLE = 0  # 每车在途子任务上限 (0=不限制)
     
     # -------------------------------------------------------------------------
     # 1.4 RSU部署参数 (RSU Deployment)
@@ -245,13 +258,17 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.1 DAG结构参数 (DAG Structure)
     # -------------------------------------------------------------------------
-    MIN_NODES = 4           # DAG最小节点数 - Min DAG nodes [优化: 6→4]
-                            # 影响: 减少并发子任务数，降低RSU排队压力
-                            # Impact: Reduces concurrent subtasks; lowers RSU queue pressure
+    DAG_SOURCE = "synthetic_small"  # synthetic_small | synthetic_large | workflow_json
+    DAG_LARGE_NODE_OPTIONS = [20, 50, 100]  # synthetic_large节点数候选
+    WORKFLOW_JSON_PATH = "data/workflows/sample_workflow.json"  # workflow_json路径
 
-    MAX_NODES = 8           # DAG最大节点数 - Max DAG nodes [优化: 10→8]
-                            # 影响: 更贴近实际场景，平均6节点
-                            # Impact: More realistic; average 6 nodes
+    MIN_NODES = 18          # DAG最小节点数 - Min DAG nodes [训练默认提高密度]
+                            # 影响: 提升决策密度，减少空转步
+                            # Impact: Increases decision density, reduces idle steps
+
+    MAX_NODES = 24          # DAG最大节点数 - Max DAG nodes [训练默认提高密度]
+                            # 影响: 提升决策密度，减少空转步
+                            # Impact: Increases decision density, reduces idle steps
     
     DAG_FAT = 0.5           # DAG宽度参数 - DAG width parameter
                             # 影响: 控制并行度，0.5为中等偏低宽度，减少并行任务数
@@ -337,10 +354,10 @@ class SystemConfig:
     # 基于计算量的deadline (使用γ因子)
     # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
     # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
-    DEADLINE_TIGHTENING_MIN = 1.2       # γ最小值 [微调: 从1.1放宽到1.2]
+    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值 [下调: 提高deadline压力]
                                         # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
-    DEADLINE_TIGHTENING_MAX = 1.6       # γ最大值 [微调: 从1.4放宽到1.6]
-                                        # 目标: AlwaysLocal成功率在20%~70%区间，提高整体成功率
+    DEADLINE_TIGHTENING_MAX = 1.3       # γ最大值 [下调: 提高deadline压力]
+                                        # 目标: 基线有一定超时，便于体现训练优势
     
     DEADLINE_LB_EPS = 0.05              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -493,10 +510,10 @@ class SystemConfig:
     # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
     # -------------------------------------------------------------------------
     REWARD_SCHEME = "PBRS_KP"       # 奖励方案: "LEGACY_CFT" (旧) 或 "PBRS_KP" (潜势关键路径)
-    REWARD_ALPHA = 1.0              # 基础奖励系数 alpha
+    REWARD_ALPHA = 1.5              # 基础奖励系数 alpha
     REWARD_BETA = 0.1               # PBRS 系数 beta [审计调优: 降低shape噪声]
     REWARD_GAMMA = 0.99             # PBRS 折扣 gamma（应与训练端 TC.GAMMA 保持一致）
-    T_REF = 0.5                     # 时间归一化参考尺度 (s) [审计调优: 扩大以适应0.3-0.6s典型优势]
+    T_REF = 0.7                     # 时间归一化参考尺度 (s) [审计标定: 取|Δt| p90≈0.69s以降低剪裁]
     PHI_CLIP = 5.0                  # ϕ 裁剪上界（负值幅度上限）
     SHAPE_CLIP = 10.0               # 潜势差分裁剪上界
     R_CLIP = 40.0                   # 总奖励裁剪上界（绝对值）
@@ -531,6 +548,7 @@ class SystemConfig:
                                             # Impact: True asserts success rate/decision distribution ranges
 
     DEBUG_REWARD_ASSERTS = False            # 奖励/速率快照强一致性断言
+    DEBUG_PBRS_AUDIT = False                # PBRS一致性审计/打点开关
     DEBUG_PHI_MONO_PROB = 0.1               # Phi单调性抽样概率
     
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output

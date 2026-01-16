@@ -60,15 +60,17 @@ class RolloutBuffer:
         self.values_buffer = []    # [T] 每步是长度N_t的数组
         self.log_probs_buffer = [] # [T] 每步是长度N_t的数组
         self.dones_buffer = []     # [T] 每步是标量
+        self.active_masks_buffer = []  # [T] 每步是长度N_t的数组 (0/1)
         
         # GAE计算结果 - 列表形式
         self.advantages_buffer = []  # [T] 每步是长度N_t的数组
         self.returns_buffer = []     # [T] 每步是长度N_t的数组
         
-    def add(self, obs_list: List[Dict], actions: List[Dict], 
-            rewards: List[float], values: np.ndarray, 
-            log_probs: np.ndarray, done: bool, 
-            terminated: bool = None, truncated: bool = None):
+    def add(self, obs_list: List[Dict], actions: List[Dict],
+            rewards: List[float], values: np.ndarray,
+            log_probs: np.ndarray, done: bool,
+            terminated: bool = None, truncated: bool = None,
+            active_masks: List[int] = None):
         """
         添加一步数据
         
@@ -100,6 +102,18 @@ class RolloutBuffer:
             
         self.values_buffer.append(values.astype(np.float32).flatten())
         self.log_probs_buffer.append(log_probs.astype(np.float32).flatten())
+
+        # active mask (1=有效决策，0=no_task/无决策)
+        if active_masks is None:
+            active_masks = np.ones_like(rewards, dtype=np.float32)
+        else:
+            if isinstance(active_masks, list):
+                active_masks = np.array(active_masks, dtype=np.float32)
+            elif not isinstance(active_masks, np.ndarray):
+                active_masks = np.array([active_masks], dtype=np.float32)
+            if len(active_masks) != len(rewards):
+                active_masks = np.ones_like(rewards, dtype=np.float32)
+        self.active_masks_buffer.append(active_masks.astype(np.float32))
         
         # [修复] 分离terminated和truncated
         # 如果提供了terminated/truncated，使用它们；否则向后兼容使用done
@@ -228,6 +242,8 @@ class RolloutBuffer:
         flat_log_probs = []
         flat_advantages = []
         flat_returns = []
+        flat_active_masks = []
+        flat_values = []
         
         for t in range(T):
             N_t = len(self.obs_list_buffer[t])
@@ -237,6 +253,8 @@ class RolloutBuffer:
                 flat_log_probs.append(self.log_probs_buffer[t][n])
                 flat_advantages.append(self.advantages_buffer[t][n])
                 flat_returns.append(self.returns_buffer[t][n])
+                flat_active_masks.append(self.active_masks_buffer[t][n])
+                flat_values.append(self.values_buffer[t][n])
         
         total_samples = len(flat_obs_list)
         
@@ -247,11 +265,19 @@ class RolloutBuffer:
         flat_log_probs = np.array(flat_log_probs, dtype=np.float32)
         flat_advantages = np.array(flat_advantages, dtype=np.float32)
         flat_returns = np.array(flat_returns, dtype=np.float32)
+        flat_active_masks = np.array(flat_active_masks, dtype=np.float32)
+        flat_values = np.array(flat_values, dtype=np.float32)
         
-        # 归一化advantages
-        adv_std = flat_advantages.std()
+        # 归一化advantages（优先使用active样本）
+        active_idx = flat_active_masks > 0.0
+        if np.any(active_idx):
+            adv_mean = flat_advantages[active_idx].mean()
+            adv_std = flat_advantages[active_idx].std()
+        else:
+            adv_mean = flat_advantages.mean()
+            adv_std = flat_advantages.std()
         if adv_std > 1e-8:
-            flat_advantages = (flat_advantages - flat_advantages.mean()) / (adv_std + 1e-8)
+            flat_advantages = (flat_advantages - adv_mean) / (adv_std + 1e-8)
         
         # 随机打乱
         indices = np.random.permutation(total_samples)
@@ -272,7 +298,9 @@ class RolloutBuffer:
                 'actions': [flat_actions[idx] for idx in batch_indices],
                 'old_log_probs': flat_log_probs[batch_indices],
                 'advantages': flat_advantages[batch_indices],
-                'returns': flat_returns[batch_indices]
+                'returns': flat_returns[batch_indices],
+                'active_masks': flat_active_masks[batch_indices],
+                'old_values': flat_values[batch_indices],
             }
             
             yield batch
@@ -287,6 +315,41 @@ class RolloutBuffer:
         self.dones_buffer.clear()
         self.advantages_buffer.clear()
         self.returns_buffer.clear()
+        self.active_masks_buffer.clear()
+
+    def get_active_stats(self) -> Tuple[int, int]:
+        """
+        统计active样本数量与总样本数
+        """
+        total = 0
+        active = 0
+        for masks in self.active_masks_buffer:
+            total += len(masks)
+            active += int(np.sum(masks))
+        return active, total
+
+    def get_adv_stats(self) -> Tuple[float, float]:
+        """
+        统计active样本上的优势均值/方差
+        """
+        advantages = []
+        masks = []
+        for t in range(len(self.advantages_buffer)):
+            if not self.advantages_buffer[t] is None:
+                advantages.extend(list(self.advantages_buffer[t]))
+                masks.extend(list(self.active_masks_buffer[t]))
+        if not advantages:
+            return 0.0, 0.0
+        advantages = np.array(advantages, dtype=np.float32)
+        masks = np.array(masks, dtype=np.float32)
+        active_idx = masks > 0.0
+        if np.any(active_idx):
+            mean = float(np.mean(advantages[active_idx]))
+            std = float(np.std(advantages[active_idx]))
+        else:
+            mean = float(np.mean(advantages))
+            std = float(np.std(advantages))
+        return mean, std
     
     def __len__(self):
         return len(self.obs_list_buffer)

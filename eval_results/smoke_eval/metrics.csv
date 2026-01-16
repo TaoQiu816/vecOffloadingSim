@@ -1,0 +1,2 @@
+seed,episode,dag_source,avg_dag_nodes,terminated,truncated,success_rate,deadline_miss_rate,latency_mean,latency_p95,energy_norm_mean,throughput,episode_time_seconds,completed_tasks
+1,1,synthetic_small,5.8,False,True,0.8,0.2,2.4588235294117653,3.3400000000000016,0.01265334425259692,0.8499999999999994,20.000000000000014,17
