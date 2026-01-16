@@ -48,7 +48,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.2 车辆参数 (Vehicle Parameters)
     # -------------------------------------------------------------------------
-    NUM_VEHICLES = 20       # 初始车辆数 - Initial number of vehicles (文献二标准)
+    NUM_VEHICLES = 30       # 初始车辆数 - Initial number of vehicles (提高密度)
                             # 影响: 网络负载和V2V候选数量，对齐文献参数
                             # Impact: Network load and V2V candidates; aligned with literature
 
@@ -228,9 +228,9 @@ class SystemConfig:
                             # 影响: RSU算力优势明显但不绝对，与强车形成竞争
                             # Impact: RSU computing advantage significant but not absolute
     
-    RSU_NUM_PROCESSORS = 12  # RSU处理器核心数 - RSU processor cores [优化: 8→12]
-                             # 影响: 适度增加容量，符合边缘设备定位
-                             # Impact: Moderate capacity increase; aligns with edge device profile
+    RSU_NUM_PROCESSORS = 6  # RSU处理器核心数 - RSU processor cores
+                             # 影响: 降低并行度，提高调度压力
+                             # Impact: Lower parallelism, higher scheduling pressure
     
     K_ENERGY = 1e-28        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -244,9 +244,9 @@ class SystemConfig:
                                         # 影响: 约8个平均任务(1.25G each)，适应新负载
                                         # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 250.0e9    # RSU队列上限 (cycles) - RSU queue limit [优化: 160→250]
-                                        # 影响: 配合16核，支持更大并发
-                                        # Impact: Matches 16 cores; supports higher concurrency
+    RSU_QUEUE_CYCLES_LIMIT = 250.0e9    # RSU队列上限 (cycles) - RSU queue limit
+                                        # 影响: 总容量不变，单核允许负载随核心数变化
+                                        # Impact: Total capacity fixed; per-core limit adapts with core count
 
     MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
                                         # 影响: 限制车辆本地任务数，防止内存溢出
@@ -354,12 +354,12 @@ class SystemConfig:
     # 基于计算量的deadline (使用γ因子)
     # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
     # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
-    DEADLINE_TIGHTENING_MIN = 1.0       # γ最小值 [下调: 提高deadline压力]
+    DEADLINE_TIGHTENING_MIN = 0.7       # γ最小值 [再次下调: 提高deadline压力]
                                         # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
-    DEADLINE_TIGHTENING_MAX = 1.3       # γ最大值 [下调: 提高deadline压力]
-                                        # 目标: 基线有一定超时，便于体现训练优势
+    DEADLINE_TIGHTENING_MAX = 1.0       # γ最大值 [再次下调: 提高deadline压力]
+                                        # 目标: 基线有明显超时，便于体现训练优势
     
-    DEADLINE_LB_EPS = 0.05              # 物理下界裕量 eps
+    DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
                                         # 推荐范围: 0.05~0.1
     
