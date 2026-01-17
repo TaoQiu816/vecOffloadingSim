@@ -1,2 +1,0 @@
-value_loss_mean,value_loss_std,policy_loss_mean,policy_loss_std,reward_mean_mean,reward_mean_std,active_ratio_mean,nan_value_loss,nan_policy_loss,nan_grad_norm
-4.698193844693925,4.333652806808318,-0.01576138442204376,0.023989703696628707,0.14154452025890346,0.02331213756292333,0.029784999999999996,0,0,0

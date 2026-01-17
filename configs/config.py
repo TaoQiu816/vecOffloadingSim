@@ -244,9 +244,9 @@ class SystemConfig:
                                         # 影响: 约8个平均任务(1.25G each)，适应新负载
                                         # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 250.0e9    # RSU队列上限 (cycles) - RSU queue limit
-                                        # 影响: 总容量不变，单核允许负载随核心数变化
-                                        # Impact: Total capacity fixed; per-core limit adapts with core count
+    RSU_QUEUE_CYCLES_LIMIT = 150.0e9    # RSU队列上限 (cycles) - RSU queue limit
+                                        # 影响: 适度收紧RSU负载，避免过度偏向RSU
+                                        # Impact: Moderately tightens RSU load to avoid over-reliance
 
     MAX_VEH_QUEUE_SIZE = 20             # 车辆任务缓冲区大小 - Vehicle task buffer size (count)
                                         # 影响: 限制车辆本地任务数，防止内存溢出

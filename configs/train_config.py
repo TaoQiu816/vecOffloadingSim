@@ -271,7 +271,7 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 500      # 总训练Episodes - Total training episodes [审计调优: 增加训练量]
+    MAX_EPISODES = 1500      # 总训练Episodes - Total training episodes [审计调优: 增加训练量]
                             # 影响: 足够的训练量以验证收敛性
                             # Impact: Sufficient training for convergence verification
                             # 验证目标: Task Success Rate > 0%, Decision分布合理, Entropy收敛
