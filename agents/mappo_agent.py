@@ -259,7 +259,11 @@ class MAPPOAgent:
             }
             return 0.0
 
+        early_stop = False
+        target_kl = getattr(TC, "TARGET_KL", None)
         for _ in range(TC.PPO_EPOCH):
+            if early_stop:
+                break
             for batch in buffer.get_batches(batch_size):
                 # 提取batch数据
                 obs_list = batch['obs_list']
@@ -365,6 +369,9 @@ class MAPPOAgent:
                     total_value_pred_mean += float(value_pred_mean.item())
                     total_value_pred_std += float(value_pred_std.item())
                     num_updates += 1
+                if target_kl is not None and target_kl > 0.0 and approx_kl.item() > target_kl:
+                    early_stop = True
+                    break
 
         if num_updates > 0:
             avg_entropy = total_entropy / num_updates
@@ -394,6 +401,7 @@ class MAPPOAgent:
                 "value_pred_std": total_value_pred_std / num_updates,
                 "value_clip_fraction": total_value_clip / num_updates,
                 "skipped_update_count": 0,
+                "early_stop": early_stop,
             }
         else:
             # 如果没有有效更新，保留上一次的stats或使用默认值
@@ -418,6 +426,7 @@ class MAPPOAgent:
                 "value_pred_std": 0.0,
                 "value_clip_fraction": 0.0,
                 "skipped_update_count": 0,
+                "early_stop": early_stop,
             }
 
         return total_loss / num_updates if num_updates > 0 else 0.0

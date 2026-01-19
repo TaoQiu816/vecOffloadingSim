@@ -12,7 +12,7 @@ MAPPO Training Script for VEC Task Offloading
     2. 全指标记录 - 记录训练过程的所有关键指标到CSV（reward, success_rate, loss等）
     3. 最佳模型保存 - 基于成功率（50-ep滑动平均）保存最佳模型
     4. 自动可视化 - 训练结束后自动调用plot_results.py生成图表
-    5. Baseline对比 - 定期评估Random/LocalOnly/Greedy策略作为基准
+    5. Baseline对比 - 默认关闭（由独立脚本运行）
 
 使用方法 (Usage):
     python train.py --max-episodes 5000 --device cuda --seed 42
@@ -83,6 +83,10 @@ def _parse_args():
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--step-metrics", action="store_true", default=False)
     parser.add_argument("--no-step-metrics", action="store_true", default=False)
+    parser.add_argument("--step-logs", action="store_true", default=False)
+    parser.add_argument("--no-step-logs", action="store_true", default=False)
+    parser.add_argument("--enable-baseline-eval", action="store_true", default=False)
+    parser.add_argument("--disable-baseline-eval", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -428,7 +432,7 @@ def evaluate_single_baseline_episode(env, policy_name):
 
 def main():
     args = _parse_args()
-    disable_baseline_eval = False
+    disable_baseline_eval = True
     
     # CFG_PROFILE已移除，如果传入则忽略并警告
     if args.cfg_profile:
@@ -450,11 +454,12 @@ def main():
     env_time_penalty = _env_float("TIME_LIMIT_PENALTY")
     env_time_penalty_k = _env_float("TIME_LIMIT_PENALTY_K")
     env_time_penalty_clip = _env_float("TIME_LIMIT_PENALTY_RATIO_CLIP")
+    env_reward_scheme = _env_str("REWARD_SCHEME")
 
     # Env/train overrides from environment variables (after profile/reward selection)
     apply_env_overrides()
 
-    if Cfg.REWARD_SCHEME == "PBRS_KP":
+    if Cfg.REWARD_SCHEME in ("PBRS_KP", "PBRS_KP_V2"):
         print(f"[PBRS] reward_gamma={Cfg.REWARD_GAMMA} train_gamma={TC.GAMMA}")
         if abs(Cfg.REWARD_GAMMA - TC.GAMMA) > 1e-9:
             print("[PBRS] Warning: reward_gamma != train_gamma, aligning reward_gamma to train_gamma.")
@@ -489,6 +494,8 @@ def main():
         Cfg.TIME_LIMIT_PENALTY_K = env_time_penalty_k
     if env_time_penalty_clip is not None:
         Cfg.TIME_LIMIT_PENALTY_RATIO_CLIP = env_time_penalty_clip
+    if env_reward_scheme:
+        Cfg.REWARD_SCHEME = env_reward_scheme
 
     if args.log_interval is not None:
         TC.LOG_INTERVAL = int(args.log_interval)
@@ -512,8 +519,12 @@ def main():
     elif env_device:
         TC.DEVICE_NAME = env_device
 
-    if env_disable_baseline:
+    if env_disable_baseline is not None:
         disable_baseline_eval = env_disable_baseline.lower() in ("1", "true", "yes")
+    if args.enable_baseline_eval:
+        disable_baseline_eval = False
+    if args.disable_baseline_eval:
+        disable_baseline_eval = True
 
     seed = args.seed if args.seed is not None else env_seed
     if seed is not None:
@@ -529,6 +540,11 @@ def main():
         log_step_metrics = True
     if args.no_step_metrics:
         log_step_metrics = False
+    log_step_logs = _bool_env("LOG_STEP_LOGS", False)
+    if args.step_logs:
+        log_step_logs = True
+    if args.no_step_logs:
+        log_step_logs = False
 
     # 开启 CuDNN 加速
     if torch.cuda.is_available():
@@ -844,6 +860,32 @@ def main():
         "mean_cost_gap_v2v_minus_rsu",
         "mean_cost_rsu",
         "mean_cost_v2v",
+        # PBRS_KP_V2 diagnostics
+        "t_L",
+        "t_R",
+        "t_V",
+        "t_a",
+        "t_alt",
+        "A_t",
+        "r_lat",
+        "cp_rem",
+        "f_max",
+        "d_cp_lb",
+        "rate_best",
+        "comm_lb",
+        "queue_lb",
+        "lb",
+        "phi",
+        "delta_phi",
+        "r_shape",
+        "overtime_ratio",
+        "r_timeout",
+        "e_tx",
+        "r_energy",
+        "r_power",
+        "avg_power",
+        "avg_rsu_queue",
+        "rsu_queue_p95",
         "time_limit_penalty_applied",
         "time_limit_penalty_value",
         "remaining_time_seconds_used",
@@ -888,9 +930,10 @@ def main():
 
         ep_reward = 0
         ep_start_time = time.time()
-        step_logs_buffer = []
+        step_logs_buffer = [] if log_step_logs else None
         ep_step_rewards = []
         step_metrics_rows = []
+        rsu_queue_series = []
 
         # 统计容器
         stats = {
@@ -1015,16 +1058,20 @@ def main():
                     proc_dict = env.rsu_cpu_q.get(rsu.id, {})
                     rsu_queue_len += sum(len(q) for q in proc_dict.values())
                 stats['rsu_queue_sum'] += rsu_queue_len
+                rsu_queue_series.append(rsu_queue_len)
+            else:
+                rsu_queue_series.append(0.0)
 
             # 记录详细日志
-            for i, act in enumerate(actions):
-                step_logs_buffer.append({
-                    "episode": episode, "step": step, "veh_id": i,
-                    "target": act['target'],
-                    "power": f"{act['power']:.3f}",
-                    "reward": f"{rewards[i]:.3f}",
-                    "q_len": env.vehicles[i].task_queue_len
-                })
+            if log_step_logs:
+                for i, act in enumerate(actions):
+                    step_logs_buffer.append({
+                        "episode": episode, "step": step, "veh_id": i,
+                        "target": act['target'],
+                        "power": f"{act['power']:.3f}",
+                        "reward": f"{rewards[i]:.3f}",
+                        "q_len": env.vehicles[i].task_queue_len
+                    })
 
             obs_list = next_obs_list
             if done:
@@ -1067,6 +1114,7 @@ def main():
         avg_power = stats['power_sum'] / total_decisions
         avg_veh_queue = stats['queue_len_sum'] / total_decisions
         avg_rsu_queue = stats['rsu_queue_sum'] / total_steps
+        rsu_queue_p95 = float(np.percentile(rsu_queue_series, 95)) if rsu_queue_series else 0.0
 
         frac_local = (stats['local_cnt'] / total_decisions)
         frac_rsu = (stats['rsu_cnt'] / total_decisions)
@@ -1194,6 +1242,28 @@ def main():
         power_ratio_p95 = env_metrics.get("power_ratio.p95")
         deadline_gamma = env_stats.get("deadline_gamma_mean") if env_stats else None
         deadline_seconds = env_stats.get("deadline_seconds_mean") if env_stats else None
+        t_L = env_metrics.get("t_L.mean")
+        t_R = env_metrics.get("t_R.mean")
+        t_V = env_metrics.get("t_V.mean")
+        t_a = env_metrics.get("t_a.mean")
+        t_alt = env_metrics.get("t_alt.mean")
+        A_t = env_metrics.get("A_t.mean")
+        r_lat = env_metrics.get("r_lat.mean")
+        cp_rem = env_metrics.get("cp_rem.mean")
+        f_max = env_metrics.get("f_max.mean")
+        d_cp_lb = env_metrics.get("d_cp_lb.mean")
+        rate_best = env_metrics.get("rate_best.mean")
+        comm_lb = env_metrics.get("comm_lb.mean")
+        queue_lb = env_metrics.get("queue_lb.mean")
+        lb = env_metrics.get("lb.mean")
+        phi = env_metrics.get("phi.mean")
+        delta_phi = env_metrics.get("delta_phi.mean")
+        r_shape = env_metrics.get("r_shape.mean")
+        overtime_ratio = env_metrics.get("overtime_ratio.mean")
+        r_timeout_mean = env_metrics.get("r_timeout.mean")
+        e_tx_mean = env_metrics.get("e_tx.mean")
+        r_energy_mean = env_metrics.get("r_energy.mean")
+        r_power_mean = env_metrics.get("r_power.mean")
         # mean_cft_rem: 优先使用env_stats，其次用env_metrics，最后fallback到deadline剩余时间
         mean_cft_rem = env_stats.get("mean_cft_rem") if env_stats else None
         if mean_cft_rem is None:
@@ -1449,6 +1519,32 @@ def main():
             "mean_cost_gap_v2v_minus_rsu": mean_cost_gap,
             "mean_cost_rsu": mean_cost_rsu,
             "mean_cost_v2v": mean_cost_v2v,
+            # PBRS_KP_V2 diagnostics
+            "t_L": t_L if t_L is not None else 0.0,
+            "t_R": t_R if t_R is not None else 0.0,
+            "t_V": t_V if t_V is not None else 0.0,
+            "t_a": t_a if t_a is not None else 0.0,
+            "t_alt": t_alt if t_alt is not None else 0.0,
+            "A_t": A_t if A_t is not None else 0.0,
+            "r_lat": r_lat if r_lat is not None else 0.0,
+            "cp_rem": cp_rem if cp_rem is not None else 0.0,
+            "f_max": f_max if f_max is not None else 0.0,
+            "d_cp_lb": d_cp_lb if d_cp_lb is not None else 0.0,
+            "rate_best": rate_best if rate_best is not None else 0.0,
+            "comm_lb": comm_lb if comm_lb is not None else 0.0,
+            "queue_lb": queue_lb if queue_lb is not None else 0.0,
+            "lb": lb if lb is not None else 0.0,
+            "phi": phi if phi is not None else 0.0,
+            "delta_phi": delta_phi if delta_phi is not None else 0.0,
+            "r_shape": r_shape if r_shape is not None else 0.0,
+            "overtime_ratio": overtime_ratio if overtime_ratio is not None else 0.0,
+            "r_timeout": r_timeout_mean if r_timeout_mean is not None else 0.0,
+            "e_tx": e_tx_mean if e_tx_mean is not None else 0.0,
+            "r_energy": r_energy_mean if r_energy_mean is not None else 0.0,
+            "r_power": r_power_mean if r_power_mean is not None else 0.0,
+            "avg_power": avg_power,
+            "avg_rsu_queue": avg_rsu_queue,
+            "rsu_queue_p95": rsu_queue_p95,
         }
         metrics_row_full = dict(metrics_row)
         metrics_row_full.update(env_metrics)
@@ -1636,7 +1732,8 @@ def main():
                 writer.writerows(step_metrics_rows)
 
         # 记录到Tensorboard/CSV
-        recorder.log_step(step_logs_buffer)
+        if log_step_logs and step_logs_buffer:
+            recorder.log_step(step_logs_buffer)
 
         episode_metrics = {
             "episode": episode,
@@ -1682,8 +1779,9 @@ def main():
             baseline_stats_csv = os.path.join(logs_dir, "baseline_stats.csv")
             baseline_stats_fields = [
                 "episode", "policy", "reward_mean", "reward_total",
-                "vehicle_sr", "task_sr", "subtask_sr",
+                "vehicle_sr", "task_sr", "subtask_sr", "v2v_subtask_sr",
                 "ratio_local", "ratio_rsu", "ratio_v2v",
+                "avg_power", "avg_queue_len", "avg_rsu_queue",
             ]
             baseline_header_written = os.path.exists(baseline_stats_csv) and os.path.getsize(baseline_stats_csv) > 0
 
@@ -1715,9 +1813,13 @@ def main():
                     "vehicle_sr": baseline_metrics['veh_success_rate'],
                     "task_sr": baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']),
                     "subtask_sr": baseline_metrics['subtask_success_rate'],
+                    "v2v_subtask_sr": baseline_metrics['v2v_subtask_success_rate'],
                     "ratio_local": baseline_metrics['decision_frac_local'],
                     "ratio_rsu": baseline_metrics['decision_frac_rsu'],
                     "ratio_v2v": baseline_metrics['decision_frac_v2v'],
+                    "avg_power": baseline_metrics['avg_power'],
+                    "avg_queue_len": baseline_metrics['avg_queue_len'],
+                    "avg_rsu_queue": baseline_metrics.get('avg_rsu_queue', 0.0),
                 }
                 with open(baseline_stats_csv, "a", newline="", encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=baseline_stats_fields, extrasaction="ignore")
@@ -1806,6 +1908,22 @@ def main():
             print(f"⚠ plot_results.py failed: {e.stdout}")
         except Exception as e:
             print(f"⚠ plot_results.py failed: {e}")
+
+        # 2.5 调用generate_all_plots.py生成MAPPO独立图表
+        generate_plots_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "generate_all_plots.py")
+        if os.path.exists(generate_plots_script):
+            try:
+                subprocess.run(
+                    [sys.executable, generate_plots_script, "--run-dir", run_dir],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"⚠ generate_all_plots.py failed: {e.stdout}")
+            except Exception as e:
+                print(f"⚠ generate_all_plots.py failed: {e}")
 
         # 3. 调用DataRecorder的auto_plot保持兼容性
         print("[Auto Plotting] Generating legacy episode_log plots...")

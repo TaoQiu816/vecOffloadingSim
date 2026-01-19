@@ -245,7 +245,12 @@ def test_ppo_update_cycle():
 
     # PPO更新
     initial_params = {name: param.clone() for name, param in network.named_parameters()}
-    loss = agent.update(buffer, batch_size=4)
+    original_min_active = TC.MIN_ACTIVE_SAMPLES
+    TC.MIN_ACTIVE_SAMPLES = 1
+    try:
+        loss = agent.update(buffer, batch_size=4)
+    finally:
+        TC.MIN_ACTIVE_SAMPLES = original_min_active
 
     # 验证参数已更新
     params_changed = False

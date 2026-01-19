@@ -476,6 +476,27 @@ class VecOffloadingEnv(gym.Env):
                     link_type = "V2I" if src_node[0] == "RSU" or dst_node[0] == "RSU" else "V2V"
                     _add_pair(src_node, dst_node, link_type, getattr(self.config, "TX_POWER_MAX_DBM", None))
 
+        # 5) 候选集合的潜在链路（用于PBRS_KP_V2时延/势函数估计）
+        for v in self.vehicles:
+            candidate_set = self._last_candidate_set.get(v.id)
+            tx_power_dbm = getattr(v, "tx_power_dbm", None)
+            if candidate_set is None:
+                rsu_id = self._last_rsu_choice.get(v.id)
+                if rsu_id is not None and rsu_id >= 0:
+                    _add_pair(("VEH", v.id), ("RSU", int(rsu_id)), "V2I", tx_power_dbm)
+                continue
+            ids = candidate_set.get("ids", [])
+            mask = candidate_set.get("mask", [])
+            if len(ids) > 1 and len(mask) > 1 and bool(mask[1]):
+                rsu_id = int(ids[1])
+                if rsu_id >= 0:
+                    _add_pair(("VEH", v.id), ("RSU", rsu_id), "V2I", tx_power_dbm)
+            for idx in range(2, len(ids)):
+                if idx < len(mask) and bool(mask[idx]):
+                    cand_id = int(ids[idx])
+                    if cand_id >= 0:
+                        _add_pair(("VEH", v.id), ("VEH", cand_id), "V2V", tx_power_dbm)
+
         self._rate_snapshot = {
             "step": self.steps,
             "raw_rates": rates_raw,
@@ -1441,6 +1462,10 @@ class VecOffloadingEnv(gym.Env):
             "best_v2v_rate_sum": 0.0,
             "best_v2v_valid_sum": 0.0,
             "v2v_beats_rsu_sum": 0.0,
+            "cost_gap_sum": 0.0,
+            "cost_rsu_sum": 0.0,
+            "cost_v2v_sum": 0.0,
+            "cost_pair_count": 0.0,
         }
         self._last_candidates = {}
         self._last_candidate_set = {}
@@ -2139,8 +2164,14 @@ class VecOffloadingEnv(gym.Env):
                     cycles,
                     plan.get("power_ratio") if plan else 1.0
                 )
+            if scheme == "PBRS_KP_V2":
+                phi_prev, phi_debug = self._compute_phi_value_v2(dag, vehicle=v)
+            else:
+                phi_prev = self._compute_phi_value(dag, vehicle=v)
+                phi_debug = {}
             reward_cache[v.id] = {
-                "phi_prev": self._compute_phi_value(dag, vehicle=v),
+                "phi_prev": phi_prev,
+                "phi_v2_debug": phi_debug,
                 "finished_prev": dag.is_finished,
                 "failed_prev": dag.is_failed,
                 "subtask": subtask_idx,
@@ -2392,19 +2423,36 @@ class VecOffloadingEnv(gym.Env):
                     "illegal": getattr(v, "illegal_action", False),
                     "power_ratio": step_power_ratio.get(v.id, 0.0),
                 })
-                phi_next = self._compute_phi_value(dag, vehicle=v)
+                # PBRS_KP_V2: latency advantage + LB shaping + timeout/power penalties
+                if scheme == "PBRS_KP_V2":
+                    phi_next, phi_debug = self._compute_phi_value_v2(dag, vehicle=v)
+                else:
+                    phi_next = self._compute_phi_value(dag, vehicle=v)
+                    phi_debug = {}
                 assert np.isfinite(phi_next) and np.isfinite(ctx.get("phi_prev", 0.0)), "[Assert] phi not finite"
                 phi_list.append(phi_next)
                 try:
                     rem_list.append(float(np.sum(dag.rem_comp[dag.status != 3])))
                 except Exception:
                     pass
+
                 delta_t = ctx.get("t_local", 0.0) - ctx.get("t_actual", 0.0)
-                assert np.isfinite(delta_t), "[Assert] delta_t not finite"
-                if ctx.get("subtask") is not None and ctx.get("target") == 'Local' and not ctx.get("illegal"):
-                    assert np.isclose(delta_t, 0.0, atol=1e-6), "[Assert] Local action delta_t should be ~0"
-                r_base = self.config.REWARD_ALPHA * float(np.clip(delta_t / max(self.config.T_REF, 1e-9), -1.0, 1.0))
-                raw_base = self.config.REWARD_ALPHA * (delta_t / max(self.config.T_REF, 1e-9))
+                if not np.isfinite(delta_t):
+                    delta_t = 0.0
+                if scheme != "PBRS_KP_V2":
+                    assert np.isfinite(delta_t), "[Assert] delta_t not finite"
+                    if ctx.get("subtask") is not None and ctx.get("target") == 'Local' and not ctx.get("illegal"):
+                        assert np.isclose(delta_t, 0.0, atol=1e-6), "[Assert] Local action delta_t should be ~0"
+
+                r_base = 0.0
+                raw_base = 0.0
+                r_lat = 0.0
+                lat_debug = {}
+                if scheme == "PBRS_KP_V2":
+                    r_lat, lat_debug = self._compute_latency_advantage(v, ctx)
+                else:
+                    r_base = self.config.REWARD_ALPHA * float(np.clip(delta_t / max(self.config.T_REF, 1e-9), -1.0, 1.0))
+                    raw_base = self.config.REWARD_ALPHA * (delta_t / max(self.config.T_REF, 1e-9))
 
                 # [Stage 1] 细分非法惩罚
                 r_illegal = 0.0
@@ -2426,18 +2474,45 @@ class VecOffloadingEnv(gym.Env):
                 if (not ctx.get("failed_prev")) and dag.is_failed:
                     r_term += self.config.TERMINAL_PENALTY_FAIL
                 r_energy = 0.0
-                if getattr(self.config, "ENERGY_LAMBDA", 0.0) > 0.0:
-                    p_ratio = float(np.clip(ctx.get("power_ratio", 0.0), 0.0, 1.0))
-                    p_watt = getattr(self.config, "P_MAX_WATT", 0.0) * p_ratio
-                    e_tx = p_watt * ctx.get("t_tx", 0.0)
-                    e_norm = e_tx / max(self.config.E_REF, 1e-9)
-                    r_energy = -self.config.ENERGY_LAMBDA * float(np.clip(e_norm, 0.0, self.config.E_CLIP))
+                r_power = 0.0
+                e_tx = 0.0
+                overtime_ratio = 0.0
+                r_timeout = 0.0
                 delta_phi = self.config.REWARD_GAMMA * phi_next - ctx.get("phi_prev", 0.0)
                 raw_shape = self.config.REWARD_BETA * delta_phi
                 r_shape = self.config.REWARD_BETA * float(np.clip(delta_phi, -self.config.SHAPE_CLIP, self.config.SHAPE_CLIP))
-                r_total = r_base + r_illegal + r_term + r_shape + r_energy
+
+                if scheme == "PBRS_KP_V2":
+                    target = ctx.get("target")
+                    if not ctx.get("illegal") and target is not None and target != 'Local':
+                        p_ratio = float(np.clip(ctx.get("power_ratio", 0.0), 0.0, 1.0))
+                        p_watt = getattr(self.config, "P_MAX_WATT", 0.0) * p_ratio
+                        e_tx = p_watt * ctx.get("t_tx", 0.0)
+                        r_energy = -self.config.ENERGY_LAMBDA * float(np.tanh(e_tx / max(self.config.E_REF, 1e-9)))
+                        r_power = -self.config.POWER_LAMBDA * float(p_ratio ** 2)
+                    if dag.deadline > 0 and dag.is_failed and dag.fail_reason == 'deadline':
+                        elapsed = self.time - dag.start_time
+                        overtime_ratio = max((elapsed - dag.deadline) / dag.deadline, 0.0)
+                        r_timeout = -self.config.TIMEOUT_L1 * np.tanh(self.config.TIMEOUT_K * overtime_ratio)
+                        r_timeout += -self.config.TIMEOUT_L2 * float(max(overtime_ratio - self.config.TIMEOUT_O0, 0.0) ** 2)
+                    r_total = r_lat + r_shape + r_timeout + r_energy + r_power + r_term + r_illegal
+                else:
+                    if getattr(self.config, "ENERGY_LAMBDA_PBRS", 0.0) > 0.0:
+                        p_ratio = float(np.clip(ctx.get("power_ratio", 0.0), 0.0, 1.0))
+                        p_watt = getattr(self.config, "P_MAX_WATT", 0.0) * p_ratio
+                        e_tx = p_watt * ctx.get("t_tx", 0.0)
+                        e_norm = e_tx / max(self.config.E_REF, 1e-9)
+                        r_energy = -self.config.ENERGY_LAMBDA_PBRS * float(np.clip(e_norm, 0.0, self.config.E_CLIP))
+                    if dag.deadline > 0 and dag.is_failed and dag.fail_reason == 'deadline':
+                        elapsed = self.time - dag.start_time
+                        overtime_ratio = max((elapsed - dag.deadline) / dag.deadline, 0.0)
+                        r_timeout = -self.config.TIMEOUT_PENALTY_WEIGHT * np.tanh(
+                            self.config.TIMEOUT_STEEPNESS * overtime_ratio
+                        )
+                    r_total = r_base + r_illegal + r_term + r_shape + r_energy + r_timeout
+
                 r_total = float(np.clip(r_total, -self.config.R_CLIP, self.config.R_CLIP))
-                assert np.isfinite(r_total) and np.isfinite(r_base) and np.isfinite(r_shape), "[Assert] reward not finite"
+                assert np.isfinite(r_total) and np.isfinite(r_shape), "[Assert] reward not finite"
                 if dag.is_finished:
                     assert np.isclose(phi_next, 0.0, atol=1e-6), "[Assert] Phi must be 0 when DAG finished"
                 assert abs(r_total) <= self.config.R_CLIP + 1e-6, "[Assert] reward exceeded clip bound"
@@ -2504,10 +2579,13 @@ class VecOffloadingEnv(gym.Env):
                         "phi_next": float(phi_next),
                         "delta_phi": float(delta_phi),
                         "r_base": float(r_base),
+                        "r_lat": float(r_lat),
                         "r_shape": float(r_shape),
                         "r_illegal": float(r_illegal),
                         "r_term": float(r_term),
                         "r_energy": float(r_energy),
+                        "r_power": float(r_power),
+                        "r_timeout": float(r_timeout),
                         "r_total": float(r_total),
                         "base_clipped": bool(base_clipped),
                         "shape_clipped": bool(shape_clipped),
@@ -2532,17 +2610,61 @@ class VecOffloadingEnv(gym.Env):
                 rewards.append(r_total)
 
                 if hasattr(self, '_reward_stats'):
-                    self._reward_stats.add_metric("r_base", r_base)
-                    self._reward_stats.add_metric("r_shape", r_shape)
-                    self._reward_stats.add_metric("r_term", r_term)
-                    self._reward_stats.add_metric("r_illegal", r_illegal)
-                    self._reward_stats.add_metric("delta_phi", delta_phi)
-                    if abs(r_base - raw_base) > 1e-9:
-                        self._reward_stats.add_counter("r_base_clipped", 1)
-                    if abs(r_shape - raw_shape) > 1e-9:
-                        self._reward_stats.add_counter("r_shape_clipped", 1)
-                    if abs(r_total) >= self.config.R_CLIP - 1e-9:
-                        self._reward_stats.add_counter("r_total_clipped", 1)
+                    def _add_metric(name, value):
+                        if value is None:
+                            return
+                        try:
+                            if not np.isfinite(value):
+                                return
+                        except Exception:
+                            return
+                        self._reward_stats.add_metric(name, value)
+
+                    if scheme == "PBRS_KP_V2":
+                        _add_metric("r_lat", r_lat)
+                        _add_metric("r_shape", r_shape)
+                        _add_metric("r_term", r_term)
+                        _add_metric("r_illegal", r_illegal)
+                        _add_metric("r_timeout", r_timeout)
+                        _add_metric("r_energy", r_energy)
+                        _add_metric("r_power", r_power)
+                        _add_metric("r_total", r_total)
+                        _add_metric("delta_phi", delta_phi)
+                        _add_metric("overtime_ratio", overtime_ratio)
+                        _add_metric("e_tx", e_tx)
+                        _add_metric("t_L", lat_debug.get("t_L"))
+                        _add_metric("t_R", lat_debug.get("t_R"))
+                        _add_metric("t_V", lat_debug.get("t_V"))
+                        _add_metric("t_a", lat_debug.get("t_a"))
+                        _add_metric("t_alt", lat_debug.get("t_alt"))
+                        _add_metric("A_t", lat_debug.get("A_t"))
+                        if phi_debug:
+                            _add_metric("cp_rem", phi_debug.get("cp_rem"))
+                            _add_metric("f_max", phi_debug.get("f_max"))
+                            _add_metric("d_cp_lb", phi_debug.get("d_cp_lb"))
+                            _add_metric("rate_best", phi_debug.get("rate_best"))
+                            _add_metric("comm_lb", phi_debug.get("comm_lb"))
+                            _add_metric("queue_lb", phi_debug.get("queue_lb"))
+                            _add_metric("lb", phi_debug.get("lb"))
+                            _add_metric("phi", phi_debug.get("phi"))
+                        if abs(r_shape - raw_shape) > 1e-9:
+                            self._reward_stats.add_counter("r_shape_clipped", 1)
+                        if abs(r_total) >= self.config.R_CLIP - 1e-9:
+                            self._reward_stats.add_counter("r_total_clipped", 1)
+                    else:
+                        _add_metric("r_base", r_base)
+                        _add_metric("r_shape", r_shape)
+                        _add_metric("r_term", r_term)
+                        _add_metric("r_illegal", r_illegal)
+                        _add_metric("r_timeout", r_timeout)
+                        _add_metric("r_total", r_total)
+                        _add_metric("delta_phi", delta_phi)
+                        if abs(r_base - raw_base) > 1e-9:
+                            self._reward_stats.add_counter("r_base_clipped", 1)
+                        if abs(r_shape - raw_shape) > 1e-9:
+                            self._reward_stats.add_counter("r_shape_clipped", 1)
+                        if abs(r_total) >= self.config.R_CLIP - 1e-9:
+                            self._reward_stats.add_counter("r_total_clipped", 1)
                     # [Stage 1] 统计 no_task 细分分布
                     illegal_reason = ctx.get("illegal_reason")
                     if illegal_reason:
@@ -2557,6 +2679,9 @@ class VecOffloadingEnv(gym.Env):
                 e_step = (p_ratio * p_max_watt + p_circuit) * float(self.config.DT)
                 e_max = max((p_max_watt + p_circuit) * float(self.config.DT), 1e-12)
                 energy_norm = float(np.clip(e_step / e_max, 0.0, 1.0))
+
+                if hasattr(self, '_reward_stats'):
+                    self._reward_stats.add_metric("power_ratio", p_ratio)
 
                 self._episode_dT_eff_values.append(dT_eff)
                 self._episode_energy_norm_values.append(energy_norm)
@@ -2989,6 +3114,10 @@ class VecOffloadingEnv(gym.Env):
         step_best_v2v_sum = 0.0
         step_best_v2v_valid = 0
         step_v2v_beats_rsu = 0.0
+        step_cost_gap_sum = 0.0
+        step_cost_rsu_sum = 0.0
+        step_cost_v2v_sum = 0.0
+        step_cost_pair_count = 0
 
         for v in self.vehicles:
             v_idx = vehicle_ids.index(v.id)
@@ -3214,6 +3343,10 @@ class VecOffloadingEnv(gym.Env):
                 min_v2v_time = min(info["total_time"] for info in v2v_slots if info is not None)
                 if min_v2v_time < rsu_total_time:
                     step_v2v_beats_rsu += 1.0
+                step_cost_gap_sum += float(min_v2v_time - rsu_total_time)
+                step_cost_rsu_sum += float(rsu_total_time)
+                step_cost_v2v_sum += float(min_v2v_time)
+                step_cost_pair_count += 1
 
             self._last_candidates[v.id] = list(candidate_ids[2:])
             self._last_candidate_set[v.id] = candidate_set
@@ -3410,6 +3543,10 @@ class VecOffloadingEnv(gym.Env):
                 "best_v2v_rate_sum": 0.0,
                 "best_v2v_valid_sum": 0.0,
                 "v2v_beats_rsu_sum": 0.0,
+                "cost_gap_sum": 0.0,
+                "cost_rsu_sum": 0.0,
+                "cost_v2v_sum": 0.0,
+                "cost_pair_count": 0.0,
             }
         step_avail_l /= num_veh
         step_avail_r /= num_veh
@@ -3427,6 +3564,10 @@ class VecOffloadingEnv(gym.Env):
         self._episode_obs_stats["best_v2v_rate_sum"] += best_v2v_rate_step
         self._episode_obs_stats["best_v2v_valid_sum"] += best_v2v_valid_step
         self._episode_obs_stats["v2v_beats_rsu_sum"] += v2v_beats_rsu_step
+        self._episode_obs_stats["cost_gap_sum"] += step_cost_gap_sum
+        self._episode_obs_stats["cost_rsu_sum"] += step_cost_rsu_sum
+        self._episode_obs_stats["cost_v2v_sum"] += step_cost_v2v_sum
+        self._episode_obs_stats["cost_pair_count"] += step_cost_pair_count
         return obs_list
 
     def _estimate_v2i_users(self):
@@ -3560,6 +3701,185 @@ class VecOffloadingEnv(gym.Env):
             self._last_phi_debug[vehicle.id] = f_max_info
         return phi
 
+    def _compute_cp_stats(self, dag):
+        """计算剩余关键路径计算量与边数据量下界（仅依赖DAG状态）"""
+        status = getattr(dag, "status", None)
+        if status is None:
+            return 0.0, 0.0
+        remaining_nodes = [idx for idx, s in enumerate(status) if s != 3]
+        if not remaining_nodes:
+            return 0.0, 0.0
+        rem_set = set(remaining_nodes)
+        adj = getattr(dag, "adj", None)
+        if adj is None:
+            return 0.0, 0.0
+
+        in_deg = {u: 0 for u in rem_set}
+        succ = {u: [] for u in rem_set}
+        for u in rem_set:
+            outs = list(np.where(adj[u] == 1)[0])
+            succ[u] = [v for v in outs if v in rem_set]
+        for v in rem_set:
+            preds = np.where(adj[:, v] == 1)[0]
+            in_deg[v] = int(np.sum([1 for p in preds if p in rem_set]))
+
+        topo = []
+        q = deque([u for u in rem_set if in_deg[u] == 0])
+        while q:
+            u = q.popleft()
+            topo.append(u)
+            for v in succ.get(u, []):
+                in_deg[v] -= 1
+                if in_deg[v] == 0:
+                    q.append(v)
+        if len(topo) < len(rem_set):
+            topo = list(rem_set)
+
+        dp_comp = {u: 0.0 for u in rem_set}
+        dp_data = {u: 0.0 for u in rem_set}
+        data_matrix = getattr(dag, "data_matrix", None)
+        for u in reversed(topo):
+            cyc = max(self._get_remaining_cycles(dag, u), 0.0)
+            best_child = None
+            best_comp = -float("inf")
+            best_data = 0.0
+            for v in succ.get(u, []):
+                comp_val = dp_comp[v]
+                data_val = dp_data[v]
+                if comp_val > best_comp or (comp_val == best_comp and data_val > best_data):
+                    best_comp = comp_val
+                    best_data = data_val
+                    best_child = v
+            if best_child is None:
+                dp_comp[u] = cyc
+                dp_data[u] = 0.0
+            else:
+                edge_data = 0.0
+                if data_matrix is not None:
+                    try:
+                        edge_data = float(data_matrix[u, best_child])
+                    except Exception:
+                        edge_data = 0.0
+                dp_comp[u] = cyc + best_comp
+                dp_data[u] = edge_data + best_data
+
+        entry_nodes = [u for u in rem_set if all((p not in rem_set) for p in np.where(adj[:, u] == 1)[0])]
+        if not entry_nodes:
+            entry_nodes = topo
+        best_entry = None
+        best_comp = -float("inf")
+        best_data = 0.0
+        for u in entry_nodes:
+            comp_val = dp_comp[u]
+            data_val = dp_data[u]
+            if comp_val > best_comp or (comp_val == best_comp and data_val > best_data):
+                best_comp = comp_val
+                best_data = data_val
+                best_entry = u
+
+        cp_rem = float(dp_comp[best_entry]) if best_entry is not None else 0.0
+        cp_edge_data = float(dp_data[best_entry]) if best_entry is not None else 0.0
+        return cp_rem, cp_edge_data
+
+    def _compute_queue_lb(self, vehicle):
+        """计算队列等待时间下界（本地/RSU/候选V2V取最小）"""
+        waits = []
+        freq_self = max(getattr(vehicle, "cpu_freq", 0.0), 1e-9)
+        waits.append(self._get_veh_queue_load(vehicle.id) / freq_self)
+
+        rsu_id = self._last_rsu_choice.get(vehicle.id)
+        candidate_set = self._last_candidate_set.get(vehicle.id)
+        if candidate_set is not None and len(candidate_set.get("ids", [])) > 1:
+            if bool(candidate_set["mask"][1]):
+                rsu_id = int(candidate_set["ids"][1])
+        if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
+            rsu = self.rsus[rsu_id]
+            freq_r = max(getattr(rsu, "cpu_freq", 0.0), 1e-9)
+            waits.append(self._get_rsu_queue_load(rsu_id) / freq_r)
+
+        if candidate_set is not None:
+            ids = candidate_set.get("ids", [])
+            mask = candidate_set.get("mask", [])
+            for idx in range(2, len(ids)):
+                if idx < len(mask) and bool(mask[idx]):
+                    cand_id = int(ids[idx])
+                    if cand_id >= 0:
+                        cand = self._get_vehicle_by_id(cand_id)
+                        if cand is not None:
+                            freq_c = max(getattr(cand, "cpu_freq", 0.0), 1e-9)
+                            waits.append(self._get_veh_queue_load(cand_id) / freq_c)
+
+        if not waits:
+            return 0.0
+        return float(min(waits))
+
+    def _compute_best_comm_rate(self, vehicle):
+        """计算候选集合内最优通信速率（使用冻结快照）"""
+        eps_rate = getattr(self.config, "EPS_RATE", 1e-9)
+        best_rate = 0.0
+        candidate_set = self._last_candidate_set.get(vehicle.id)
+
+        rsu_id = self._last_rsu_choice.get(vehicle.id)
+        if candidate_set is not None and len(candidate_set.get("ids", [])) > 1:
+            if bool(candidate_set["mask"][1]):
+                rsu_id = int(candidate_set["ids"][1])
+        if rsu_id is not None and rsu_id >= 0:
+            try:
+                rate = self._get_rate_from_snapshot(("VEH", vehicle.id), ("RSU", int(rsu_id)), "V2I")
+                best_rate = max(best_rate, rate)
+            except Exception:
+                pass
+
+        if candidate_set is not None:
+            ids = candidate_set.get("ids", [])
+            mask = candidate_set.get("mask", [])
+            v2v_slots = candidate_set.get("v2v_slots", [])
+            for idx in range(2, len(ids)):
+                if idx < len(mask) and bool(mask[idx]):
+                    cand_id = int(ids[idx])
+                    if cand_id < 0:
+                        continue
+                    try:
+                        rate = self._get_rate_from_snapshot(("VEH", vehicle.id), ("VEH", cand_id), "V2V")
+                        best_rate = max(best_rate, rate)
+                        continue
+                    except Exception:
+                        pass
+                    slot_idx = idx - 2
+                    if 0 <= slot_idx < len(v2v_slots) and v2v_slots[slot_idx] is not None:
+                        best_rate = max(best_rate, float(v2v_slots[slot_idx].get("rate", 0.0)))
+
+        return float(max(best_rate, eps_rate))
+
+    def _compute_phi_value_v2(self, dag, vehicle=None):
+        """PBRS_KP_V2: 基于关键路径下界 LB(s)=compute+comm+queue 的潜势ϕ"""
+        if vehicle is None:
+            return 0.0, {}
+        cp_rem, d_cp_lb = self._compute_cp_stats(dag)
+        f_max, f_max_info = self._get_reachable_f_max(vehicle)
+        rate_best = self._compute_best_comm_rate(vehicle)
+        comm_lb = d_cp_lb / max(rate_best, getattr(self.config, "EPS_RATE", 1e-9))
+        queue_lb = self._compute_queue_lb(vehicle)
+        lb = (cp_rem / max(f_max, 1e-9)) + comm_lb + queue_lb
+        phi = -float(lb) / max(self.config.T_REF, 1e-9)
+        phi = float(np.clip(phi, -self.config.PHI_CLIP, 0.0))
+
+        debug = {
+            "cp_rem": float(cp_rem),
+            "f_max": float(f_max),
+            "d_cp_lb": float(d_cp_lb),
+            "rate_best": float(rate_best),
+            "comm_lb": float(comm_lb),
+            "queue_lb": float(queue_lb),
+            "lb": float(lb),
+            "phi": float(phi),
+        }
+        if getattr(self.config, "DEBUG_PBRS_AUDIT", False):
+            f_max_info["f_max"] = f_max
+            f_max_info["phi"] = phi
+            self._last_phi_debug[vehicle.id] = f_max_info
+        return phi, debug
+
     def _check_phi_monotonicity(self, total_rem_comp, phi_avg):
         """调试用：检测剩余计算下降但Phi变得更负的频率"""
         if not getattr(self.config, "DEBUG_REWARD_ASSERTS", False):
@@ -3626,6 +3946,89 @@ class VecOffloadingEnv(gym.Env):
             return t_tx + wait + t_comp, t_tx
 
         return t_local, 0.0
+
+    def _compute_latency_advantage(self, vehicle, ctx):
+        """PBRS_KP_V2: 计算时延相对优势奖励及诊断字段"""
+        subtask_idx = ctx.get("subtask")
+        if subtask_idx is None or ctx.get("illegal"):
+            return 0.0, {}
+
+        cycles = float(ctx.get("cycles", 0.0))
+        if cycles <= 0:
+            return 0.0, {}
+
+        target = ctx.get("target")
+        t_a = float(ctx.get("t_actual", 0.0))
+        if not np.isfinite(t_a):
+            t_a = 0.0
+
+        t_L, _ = self._estimate_t_actual(vehicle, subtask_idx, 'Local', cycles, power_ratio=1.0)
+        t_R = None
+        t_V = None
+
+        candidate_set = self._last_candidate_set.get(vehicle.id)
+        rsu_id = self._last_rsu_choice.get(vehicle.id)
+        if candidate_set is not None and len(candidate_set.get("ids", [])) > 1:
+            if bool(candidate_set["mask"][1]):
+                rsu_id = int(candidate_set["ids"][1])
+        if rsu_id is not None and rsu_id >= 0:
+            try:
+                t_R, _ = self._estimate_t_actual(vehicle, subtask_idx, ("RSU", int(rsu_id)), cycles, power_ratio=1.0)
+            except Exception:
+                t_R = None
+
+        if candidate_set is not None:
+            ids = candidate_set.get("ids", [])
+            mask = candidate_set.get("mask", [])
+            v2v_slots = candidate_set.get("v2v_slots", [])
+            best_t = None
+            for idx in range(2, len(ids)):
+                if idx < len(mask) and bool(mask[idx]):
+                    cand_id = int(ids[idx])
+                    if cand_id < 0:
+                        continue
+                    try:
+                        t_v, _ = self._estimate_t_actual(vehicle, subtask_idx, cand_id, cycles, power_ratio=1.0)
+                        if best_t is None or t_v < best_t:
+                            best_t = t_v
+                    except Exception:
+                        slot_idx = idx - 2
+                        if 0 <= slot_idx < len(v2v_slots) and v2v_slots[slot_idx] is not None:
+                            t_v = float(v2v_slots[slot_idx].get("total_time", 0.0))
+                            if best_t is None or t_v < best_t:
+                                best_t = t_v
+            t_V = best_t
+
+        options = []
+        if t_L is not None and np.isfinite(t_L):
+            options.append(t_L)
+        if t_R is not None and np.isfinite(t_R):
+            options.append(t_R)
+        if t_V is not None and np.isfinite(t_V):
+            options.append(t_V)
+
+        t_alt = None
+        if options:
+            for val in options:
+                if np.isfinite(val) and abs(val - t_a) > 1e-9:
+                    if t_alt is None or val < t_alt:
+                        t_alt = val
+        if t_alt is None:
+            t_alt = t_a
+
+        A_t = (t_alt - t_a) / max(self.config.T_REF, 1e-9) if np.isfinite(t_alt) and np.isfinite(t_a) else 0.0
+        r_lat = float(self.config.LAT_ALPHA) * float(np.tanh(A_t))
+
+        details = {
+            "t_L": float(t_L) if t_L is not None and np.isfinite(t_L) else None,
+            "t_R": float(t_R) if t_R is not None and np.isfinite(t_R) else None,
+            "t_V": float(t_V) if t_V is not None and np.isfinite(t_V) else None,
+            "t_a": float(t_a) if np.isfinite(t_a) else None,
+            "t_alt": float(t_alt) if np.isfinite(t_alt) else None,
+            "A_t": float(A_t) if np.isfinite(A_t) else None,
+            "r_lat": float(r_lat),
+        }
+        return r_lat, details
 
     def _get_comm_rate(self, vehicle, pred_task_id, curr_loc, rsu_pos):
         """计算任务间通信速率（简化接口，向后兼容）"""
@@ -4425,6 +4828,7 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['idle_terminate_count'] = int(getattr(self, "_idle_terminate_count", 0))
         episode_metrics['seed'] = self.config.SEED if hasattr(self.config, 'SEED') else None
         episode_metrics['episode_time_seconds'] = self.time
+        episode_metrics['time_limit_rate'] = 1.0 if (truncated and not terminated) else 0.0
         
         # 成功率统计
         episode_vehicle_count = len(self.vehicles)
@@ -4541,6 +4945,15 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics['best_v2v_rate_mean'] = self._episode_obs_stats.get("best_v2v_rate_sum", 0.0) / obs_steps
             episode_metrics['best_v2v_valid_rate'] = self._episode_obs_stats.get("best_v2v_valid_sum", 0.0) / obs_steps
             episode_metrics['v2v_beats_rsu_rate'] = self._episode_obs_stats.get("v2v_beats_rsu_sum", 0.0) / obs_steps
+            cost_pair_count = self._episode_obs_stats.get("cost_pair_count", 0.0)
+            if cost_pair_count > 0:
+                episode_metrics['mean_cost_gap_v2v_minus_rsu'] = self._episode_obs_stats.get("cost_gap_sum", 0.0) / cost_pair_count
+                episode_metrics['mean_cost_rsu'] = self._episode_obs_stats.get("cost_rsu_sum", 0.0) / cost_pair_count
+                episode_metrics['mean_cost_v2v'] = self._episode_obs_stats.get("cost_v2v_sum", 0.0) / cost_pair_count
+            else:
+                episode_metrics['mean_cost_gap_v2v_minus_rsu'] = 0.0
+                episode_metrics['mean_cost_rsu'] = 0.0
+                episode_metrics['mean_cost_v2v'] = 0.0
 
         if self._episode_dT_eff_values:
             episode_metrics['dT_eff_mean'] = float(np.mean(self._episode_dT_eff_values))
@@ -4577,6 +4990,19 @@ class VecOffloadingEnv(gym.Env):
         else:
             episode_metrics['mean_cft'] = None
             episode_metrics['mean_cft_rem'] = None
+        vehicle_cfts = getattr(self, "vehicle_cfts", [])
+        finite_cfts = [val for val in vehicle_cfts if np.isfinite(val)]
+        episode_metrics['vehicle_cft_count'] = len(finite_cfts)
+        if finite_cfts:
+            episode_metrics['mean_cft_est'] = float(np.mean(finite_cfts))
+            episode_metrics['cft_est_valid'] = True
+        else:
+            episode_metrics['mean_cft_est'] = 0.0
+            episode_metrics['cft_est_valid'] = False
+        if self._episode_task_durations:
+            episode_metrics['mean_cft_completed'] = float(np.mean(self._episode_task_durations))
+        else:
+            episode_metrics['mean_cft_completed'] = 0.0
 
         # [P03新增] delta_phi分布统计
         if hasattr(self, '_episode_delta_phi_values') and len(self._episode_delta_phi_values) > 0:

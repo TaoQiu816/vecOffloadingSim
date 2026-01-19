@@ -509,7 +509,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
     # -------------------------------------------------------------------------
-    REWARD_SCHEME = "PBRS_KP"       # 奖励方案: "LEGACY_CFT" (旧) 或 "PBRS_KP" (潜势关键路径)
+    REWARD_SCHEME = "PBRS_KP"       # 奖励方案: "LEGACY_CFT" (旧) / "PBRS_KP" / "PBRS_KP_V2"
     REWARD_ALPHA = 1.5              # 基础奖励系数 alpha
     REWARD_BETA = 0.1               # PBRS 系数 beta [审计调优: 降低shape噪声]
     REWARD_GAMMA = 0.99             # PBRS 折扣 gamma（应与训练端 TC.GAMMA 保持一致）
@@ -530,10 +530,21 @@ class SystemConfig:
 
     TERMINAL_BONUS_SUCC = SUCCESS_BONUS       # 成功终局奖励
     TERMINAL_PENALTY_FAIL = PENALTY_FAILURE   # 失败终局惩罚
-    ENERGY_LAMBDA = 0.0             # 通信能耗权重（默认关闭）
+    ENERGY_LAMBDA_PBRS = 0.0       # PBRS_KP 通信能耗权重（默认关闭，保持旧方案）
     P_MAX_WATT = 10 ** ((TX_POWER_MAX_DBM - 30) / 10.0)  # 最大功率对应瓦特
     E_REF = 1.0                     # 能耗归一化参考
     E_CLIP = 10.0                   # 能耗裁剪上界
+
+    # -------------------------------------------------------------------------
+    # 6.7.2 PBRS_KP_V2 奖励参数 (Reward Scheme V2 Parameters)
+    # -------------------------------------------------------------------------
+    LAT_ALPHA = 1.5                 # 时延优势奖励系数 (tanh)
+    TIMEOUT_L1 = 1.0                # 超时惩罚第一段系数
+    TIMEOUT_L2 = 1.0                # 超时惩罚二段系数 (二次)
+    TIMEOUT_O0 = 0.2                # 超时分段阈值 (ratio)
+    TIMEOUT_K = 3.0                 # 超时惩罚tanh陡峭度
+    ENERGY_LAMBDA = 0.02            # V2通信能耗权重
+    POWER_LAMBDA = 0.01             # V2功率正则权重
     
 
     # =========================================================================

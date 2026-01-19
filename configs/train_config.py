@@ -122,7 +122,7 @@ class TrainConfig:
                             # 推荐范围: 0.90-0.95
                             # Recommended range: 0.90-0.95
 
-    MAX_GRAD_NORM = 2.0     # 梯度裁剪阈值 - Gradient clipping threshold [审慎调优: 0.5→2.0]
+    MAX_GRAD_NORM = 1.0     # 梯度裁剪阈值 - Gradient clipping threshold [审慎调优: 0.5→1.0]
                             # 影响: 防止梯度爆炸，保证训练稳定性
                             #       配合Value Loss归一化，温和放宽即可
                             #       - 过大: 可能梯度爆炸
