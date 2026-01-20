@@ -354,9 +354,9 @@ class SystemConfig:
     # 基于计算量的deadline (使用γ因子)
     # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
     # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
-    DEADLINE_TIGHTENING_MIN = 0.7       # γ最小值 [再次下调: 提高deadline压力]
+    DEADLINE_TIGHTENING_MIN = 0.75      # γ最小值 [再次下调: 提高deadline压力]
                                         # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
-    DEADLINE_TIGHTENING_MAX = 1.0       # γ最大值 [再次下调: 提高deadline压力]
+    DEADLINE_TIGHTENING_MAX = 0.9       # γ最大值 [再次下调: 提高deadline压力]
                                         # 目标: 基线有明显超时，便于体现训练优势
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
@@ -538,13 +538,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.7.2 PBRS_KP_V2 奖励参数 (Reward Scheme V2 Parameters)
     # -------------------------------------------------------------------------
-    LAT_ALPHA = 1.5                 # 时延优势奖励系数 (tanh)
-    TIMEOUT_L1 = 1.0                # 超时惩罚第一段系数
-    TIMEOUT_L2 = 1.0                # 超时惩罚二段系数 (二次)
+    LAT_ALPHA = 2.0                 # 时延优势奖励系数 (tanh)
+    TIMEOUT_L1 = 1.5                # 超时惩罚第一段系数
+    TIMEOUT_L2 = 1.5                # 超时惩罚二段系数 (二次)
     TIMEOUT_O0 = 0.2                # 超时分段阈值 (ratio)
     TIMEOUT_K = 3.0                 # 超时惩罚tanh陡峭度
-    ENERGY_LAMBDA = 0.02            # V2通信能耗权重
-    POWER_LAMBDA = 0.01             # V2功率正则权重
+    ENERGY_LAMBDA = 0.03            # V2通信能耗权重
+    POWER_LAMBDA = 0.015            # V2功率正则权重
     
 
     # =========================================================================

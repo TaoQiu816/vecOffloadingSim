@@ -86,7 +86,7 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate [P14: 对齐Critic比例]
+    LR_ACTOR = 2.5e-4       # Actor学习率 - Actor learning rate [P14: 对齐Critic比例]
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
@@ -96,7 +96,7 @@ class TrainConfig:
                             # 推荐范围: 1e-4 ~ 1e-3 (稳定性优先)
                             # Recommended range: 1e-4 ~ 1e-3 (stability first)
 
-    LR_CRITIC = 5e-4        # Critic学习率 - Critic learning rate [P14: 对齐测试基准]
+    LR_CRITIC = 4e-4        # Critic学习率 - Critic learning rate [P14: 对齐测试基准]
                             # 影响: 控制价值网络的更新速度，与Actor保持一致
                             # Impact: Controls value network update speed; consistent with Actor
                             # 推荐范围: 1e-4 ~ 1e-3
@@ -155,7 +155,7 @@ class TrainConfig:
                             # 推荐范围: 0.90-0.99 (0.95 balances immediate and long-term)
                             # Recommended range: 0.90-0.99
 
-    CLIP_PARAM = 0.25       # PPO裁剪阈值 epsilon - PPO clipping threshold (PPO_CLIP = 0.2)
+    CLIP_PARAM = 0.20       # PPO裁剪阈值 epsilon - PPO clipping threshold (PPO_CLIP = 0.2)
                             # 影响: 限制策略更新幅度，防止破坏性更新
                             #       - 过小: 更新保守，学习慢
                             #       - 过大: 更新激进，可能不稳定
@@ -185,7 +185,7 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.002    # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.003→0.002]
+    ENTROPY_COEF = 0.0015   # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.002→0.0015]
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -233,13 +233,13 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 1.6    # RSU的Logit偏置 - Logit bias for RSU action [调优: ln(5)≈1.6]
+    LOGIT_BIAS_RSU = 1.8    # RSU的Logit偏置 - Logit bias for RSU action [更强偏置]
                             # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
                             #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
                             #   需要 b = ln(5) ≈ 1.6094
                             # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 1.6  # Local的Logit偏置 - Logit bias for Local action [调优: ln(5)≈1.6]
+    LOGIT_BIAS_LOCAL = 1.8  # Local的Logit偏置 - Logit bias for Local action [更强偏置]
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
                             #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
                             #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
@@ -248,7 +248,7 @@ class TrainConfig:
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]
     # -------------------------------------------------------------------------
-    BIAS_DECAY_EVERY_EP = 200  # 每N个episode退火一次 - Decay bias every N episodes [适应中期]
+    BIAS_DECAY_EVERY_EP = 300  # 每N个episode退火一次 - Decay bias every N episodes [适应中期]
                                # 影响: 控制退火频率，短期训练使用较快退火
                                # Impact: Controls decay frequency; faster decay for short-term training
     
