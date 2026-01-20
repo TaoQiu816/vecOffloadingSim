@@ -21,6 +21,11 @@ class EFTPPolicy:
         self.env = env
         self.power = float(np.clip(power, 0.0, 1.0))
 
+    def _power_dbm(self):
+        p_min = getattr(Cfg, "TX_POWER_MIN_DBM", Cfg.TX_POWER_MAX_DBM)
+        p_max = getattr(Cfg, "TX_POWER_MAX_DBM", p_min)
+        return float(np.clip(p_min + self.power * (p_max - p_min), p_min, p_max))
+
     def _estimate_local(self, vehicle, task_comp):
         queue_wait = self.env._get_veh_queue_wait_time(vehicle.id, vehicle.cpu_freq)
         comp_time = task_comp / max(vehicle.cpu_freq, 1e-6)
@@ -30,6 +35,7 @@ class EFTPPolicy:
         rsu = self.env.rsus[serving_rsu_id]
         rate = self.env.channel.compute_one_rate(
             vehicle, rsu.position, "V2I", self.env.time,
+            power_dbm_override=self._power_dbm(),
             v2i_user_count=self.env._estimate_v2i_users()
         )
         rate = max(rate, 1e-6)
@@ -41,7 +47,7 @@ class EFTPPolicy:
     def _estimate_v2v(self, vehicle, target_veh, task_comp, task_data, comm_wait_v2v):
         rate = self.env.channel.compute_one_rate(
             vehicle, target_veh.pos, "V2V", self.env.time,
-            power_dbm_override=Cfg.TX_POWER_MAX_DBM
+            power_dbm_override=self._power_dbm()
         )
         rate = max(rate, 1e-6)
         tx_time = task_data / rate if task_data > 0 else 0.0

@@ -50,7 +50,8 @@ class StaticPolicy:
             action_mask = obs['action_mask']
             if target >= len(action_mask) or not action_mask[target]:
                 target = 0
-            act = {'target': int(target), 'power': 1.0}
+            power = 1.0 if target != 0 else 1.0
+            act = {'target': int(target), 'power': float(power)}
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

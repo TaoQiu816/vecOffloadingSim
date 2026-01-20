@@ -41,10 +41,11 @@ class GreedyPolicy:
         
         for i, obs in enumerate(obs_list):
             vehicle = self.env.vehicles[i]
-            
-            # 获取动作掩码（合法的卸载目标）
-            action_mask = obs['action_mask']
-            valid_targets = np.where(action_mask > 0)[0]
+
+            # 以candidate_mask为准，保证与候选集一致
+            candidate_mask = obs.get('candidate_mask', obs['action_mask'])
+            candidate_ids = obs.get('candidate_ids')
+            valid_targets = np.where(candidate_mask > 0)[0]
             
             if len(valid_targets) == 0:
                 # 如果没有合法目标，默认选择本地执行
@@ -63,21 +64,24 @@ class GreedyPolicy:
                     compute_power = vehicle.cpu_freq
                 elif target_idx == 1:
                     # RSU: RSU的CPU频率（通常最高）
-                    compute_power = Cfg.F_RSU
+                    rsu_id = None
+                    if candidate_ids is not None and len(candidate_ids) > 1:
+                        rsu_id = int(candidate_ids[1])
+                    if rsu_id is None or not (0 <= rsu_id < len(self.env.rsus)):
+                        compute_power = 0.0
+                    else:
+                        compute_power = self.env.rsus[rsu_id].cpu_freq
                 else:
                     # Neighbor: 邻居车辆的CPU频率
                     # target_idx = 2 + neighbor_index
-                    resource_ids = obs['resource_ids']
-                    neighbor_token = resource_ids[target_idx]
-                    if neighbor_token >= 3:
-                        neighbor_id = neighbor_token - 3
-                        neighbor_vehicle = next(
-                            (veh for veh in self.env.vehicles if veh.id == neighbor_id),
-                            None
-                        )
-                        compute_power = neighbor_vehicle.cpu_freq if neighbor_vehicle else 0.0
-                    else:
+                    neighbor_id = None
+                    if candidate_ids is not None and target_idx < len(candidate_ids):
+                        neighbor_id = int(candidate_ids[target_idx])
+                    if neighbor_id is None or neighbor_id < 0 or neighbor_id == vehicle.id:
                         compute_power = 0.0
+                    else:
+                        neighbor_vehicle = self.env._get_vehicle_by_id(neighbor_id)
+                        compute_power = neighbor_vehicle.cpu_freq if neighbor_vehicle else 0.0
                 
                 target_compute_power.append(compute_power)
             

@@ -45,9 +45,11 @@ class RandomPolicy:
                 # 从合法目标中随机选择
                 target = self.rng.choice(valid_targets)
             
-            # 随机选择功率比例 [0.2, 1.0]
-            # 避免过低功率导致传输时间过长
-            power = self.rng.uniform(0.2, 1.0)
+            # 随机选择功率比例 [0.2, 1.0]；本地执行不需要功率
+            if target == 0:
+                power = 1.0
+            else:
+                power = self.rng.uniform(0.2, 1.0)
             
             act = {
                 'target': int(target),
