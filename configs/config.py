@@ -116,7 +116,7 @@ class SystemConfig:
                             # 影响: V2I路径损耗，10m为标准高度
                             # Impact: V2I path loss; 10m is standard height
     
-    RSU_RANGE = 250.0       # RSU覆盖半径 (m) - RSU coverage radius (文献二: 500m直径)
+    RSU_RANGE = 350.0       # RSU覆盖半径 (m) - RSU coverage radius (文献二: 500m直径)
                             # 影响: V2I通信范围，250m半径对齐文献
                             # Impact: V2I communication range; 250m radius aligned with literature
     
@@ -197,7 +197,7 @@ class SystemConfig:
                                   # 影响: V2V SINR，降低V2V链路质量
                                   # Impact: V2V SINR; degrades V2V link quality
     
-    V2V_RANGE = 300.0       # V2V通信半径 (m) - V2V communication range
+    V2V_RANGE = 250.0       # V2V通信半径 (m) - V2V communication range
                             # 影响: 邻居发现范围，DVTP等文献常用值
                             # Impact: Neighbor discovery range; common value in DVTP literature
     

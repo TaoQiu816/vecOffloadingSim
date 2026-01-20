@@ -4138,6 +4138,8 @@ class VecOffloadingEnv(gym.Env):
         r_shape_nz = int(_stat("r_shape", "nonzero_count", 0))
         r_lat_nz = int(_stat("r_lat", "nonzero_count", 0))
         r_lat_abs_mean = float(_stat("r_lat", "abs_mean", 0.0))
+        comm_lb_count = int(_stat("comm_lb", "count", 0))
+        queue_lb_count = int(_stat("queue_lb", "count", 0))
         comm_lb_nz = int(_stat("comm_lb", "nonzero_count", 0))
         queue_lb_nz = int(_stat("queue_lb", "nonzero_count", 0))
         r_energy_nz = int(_stat("r_energy", "nonzero_count", 0))
@@ -4157,7 +4159,7 @@ class VecOffloadingEnv(gym.Env):
         elif scheme == "PBRS_KP_V2":
             if r_lat_nz <= 0 or r_lat_abs_mean <= 1e-6:
                 errors.append("PBRS_KP_V2 r_lat not active")
-            if comm_lb_nz <= 0 or queue_lb_nz <= 0:
+            if comm_lb_count <= 0 or queue_lb_count <= 0:
                 errors.append("PBRS_KP_V2 comm_lb/queue_lb missing")
             if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
                 errors.append("PBRS_KP_V2 energy_lambda active but r_energy all zero")
