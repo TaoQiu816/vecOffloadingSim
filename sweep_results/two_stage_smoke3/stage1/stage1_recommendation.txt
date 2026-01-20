@@ -1,8 +1,0 @@
-Stage1 Filtering Summary
-
-total_candidates=1
-filtered_nan_inf=0
-filtered_skipped_ratio=0
-
-Top-K candidates:
-- clip=0.2 min_active=64 reward_mean=0.1142 value_loss_std=nan clip_frac=0.5424

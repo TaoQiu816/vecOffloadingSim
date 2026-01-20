@@ -1,8 +1,0 @@
-Top-1 Recommendation
-
-clip_range=0.2 min_active_samples=64.0 reward_mean=0.1281±0.0000 value_loss=6.8930±0.0000 clip_frac=0.7244±0.0000
-
-
-Top-3 Candidates
-
-- clip_range=0.2 min_active_samples=64.0 reward_mean=0.1281±0.0000 value_loss=6.8930±0.0000 clip_frac=0.7244±0.0000
