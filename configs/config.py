@@ -509,7 +509,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
     # -------------------------------------------------------------------------
-    REWARD_SCHEME = "PBRS_KP"       # 奖励方案: "LEGACY_CFT" (旧) / "PBRS_KP" / "PBRS_KP_V2"
+    REWARD_SCHEME = "PBRS_KP_V2"    # 奖励方案: "LEGACY_CFT" (旧) / "PBRS_KP" / "PBRS_KP_V2"
     REWARD_ALPHA = 1.5              # 基础奖励系数 alpha
     REWARD_BETA = 0.1               # PBRS 系数 beta [审计调优: 降低shape噪声]
     REWARD_GAMMA = 0.99             # PBRS 折扣 gamma（应与训练端 TC.GAMMA 保持一致）

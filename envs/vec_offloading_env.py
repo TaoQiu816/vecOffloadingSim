@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
 import os
+import csv
 from collections import deque, defaultdict
 from configs.config import SystemConfig as Cfg
 from envs.modules.channel import ChannelModel
@@ -132,6 +133,13 @@ class VecOffloadingEnv(gym.Env):
         # [Deadline检查计数] 用于诊断是否触发deadline判定
         self._audit_deadline_checks = 0
         self._audit_deadline_misses = 0
+        # [审计] 奖励方案生效与t_est对比
+        self._audit_results_dir = os.environ.get("AUDIT_RESULTS_DIR")
+        self._audit_scheme_activation_written = False
+        self._audit_subtask_est = {}
+        self._audit_t_est_records = []
+        self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH")
+        self._audit_run_id = os.environ.get("RUN_ID")
         # [P2性能统计] 仅在active时间段统计服务速率
         self._active_time_steps = []  # 记录active_tasks>0的步数
         self._delta_w_active = []  # 对应步的计算量减少
@@ -1431,10 +1439,15 @@ class VecOffloadingEnv(gym.Env):
         if seed is not None:
             np.random.seed(seed)
 
+        if hasattr(self, "_reward_stats"):
+            self._reward_stats.reset()
+
         self.vehicles = []
         self.time = 0.0
         self.steps = 0
         self._episode_steps = 0
+        self._episode_id = getattr(self, "_episode_id", 0) + 1
+        self.episode_count = self._episode_id
         # [P2性能统计] Episode级统计清零
         self._p2_active_time = 0.0
         self._p2_idle_time = 0.0
@@ -1470,6 +1483,11 @@ class VecOffloadingEnv(gym.Env):
         self._last_candidates = {}
         self._last_candidate_set = {}
         self._last_rsu_choice = {}
+        self._audit_subtask_est = {}
+        self._audit_t_est_records = []
+        self._audit_results_dir = os.environ.get("AUDIT_RESULTS_DIR", self._audit_results_dir)
+        self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH", self._audit_t_est_path)
+        self._audit_run_id = os.environ.get("RUN_ID", self._audit_run_id)
         
         # =====================================================================
         # [FIFO队列系统] 清空所有队列与账本（防止跨episode污染）
@@ -1995,6 +2013,7 @@ class VecOffloadingEnv(gym.Env):
                 dag = v.task_dag
                 if dag.is_finished or dag.is_failed:
                     continue
+                self._audit_on_compute_done(job, self.time)
                 self._dag_handler.on_compute_done(
                     job, v, self.time, 
                     veh_cpu_q=self.veh_cpu_q,
@@ -2184,6 +2203,17 @@ class VecOffloadingEnv(gym.Env):
                 "illegal_reason": plan.get("illegal_reason") if plan else None,  # [Stage 1] 传播原因
                 "power_ratio": plan.get("power_ratio") if plan else step_power_ratio.get(v.id, 0.0),
             }
+            if subtask_idx is not None:
+                key = (int(v.id), int(subtask_idx))
+                if key not in self._audit_subtask_est:
+                    self._audit_subtask_est[key] = {
+                        "episode": int(getattr(self, "episode_count", 0)),
+                        "vehicle_id": int(v.id),
+                        "subtask_id": int(subtask_idx),
+                        "decision_time": float(snapshot_time),
+                        "t_est": float(t_actual) if np.isfinite(t_actual) else 0.0,
+                        "action_type": self._audit_action_type(target),
+                    }
             assert np.isfinite(reward_cache[v.id]["phi_prev"]), "[Assert] phi_prev not finite"
             assert np.isfinite(t_local) and np.isfinite(t_actual), "[Assert] time estimate not finite"
             if plan and plan.get("planned_kind") == "v2v" and subtask_idx is not None:
@@ -2403,6 +2433,10 @@ class VecOffloadingEnv(gym.Env):
                 self._episode_t_tx_values.append(step_tx_time.get(v.id, 0.0))
 
                 rewards.append(r)
+                if hasattr(self, "_reward_stats") and reward_parts is not None:
+                    self._reward_stats.add_metric("reward", r)
+                    self._reward_stats.add_metric("dT_clipped", reward_parts.get("dT", 0.0))
+                    self._reward_stats.add_metric("energy_norm", reward_parts.get("energy_norm", 0.0))
         else:
             assert self._rate_snapshot is None or self._rate_snapshot.get("step", -1) == self.steps
             phi_list = []
@@ -2657,6 +2691,7 @@ class VecOffloadingEnv(gym.Env):
                         _add_metric("r_term", r_term)
                         _add_metric("r_illegal", r_illegal)
                         _add_metric("r_timeout", r_timeout)
+                        _add_metric("r_energy", r_energy)
                         _add_metric("r_total", r_total)
                         _add_metric("delta_phi", delta_phi)
                         if abs(r_base - raw_base) > 1e-9:
@@ -4030,6 +4065,151 @@ class VecOffloadingEnv(gym.Env):
         }
         return r_lat, details
 
+    def _audit_action_type(self, target):
+        if target is None or target == "Local":
+            return "Local"
+        if isinstance(target, tuple) and len(target) > 0 and target[0] == "RSU":
+            return "RSU"
+        if isinstance(target, int):
+            return "V2V"
+        return "Other"
+
+    def _audit_energy_lambda_effective(self, scheme):
+        if scheme == "PBRS_KP_V2":
+            return ("ENERGY_LAMBDA", float(getattr(self.config, "ENERGY_LAMBDA", 0.0)))
+        if scheme == "PBRS_KP":
+            return ("ENERGY_LAMBDA_PBRS", float(getattr(self.config, "ENERGY_LAMBDA_PBRS", 0.0)))
+        return ("DELTA_CFT_ENERGY_WEIGHT", float(getattr(self.config, "DELTA_CFT_ENERGY_WEIGHT", 0.0)))
+
+    def _audit_append_t_est_record(self, record):
+        self._audit_t_est_records.append(record)
+        if not self._audit_t_est_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._audit_t_est_path), exist_ok=True)
+            import json
+            with open(self._audit_t_est_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=True) + "\n")
+        except Exception:
+            pass
+
+    def _audit_write_scheme_activation(self, row):
+        if self._audit_scheme_activation_written:
+            return
+        if not self._audit_results_dir:
+            return
+        os.makedirs(self._audit_results_dir, exist_ok=True)
+        path = os.path.join(self._audit_results_dir, "scheme_activation_check.csv")
+        header = [
+            "run_id",
+            "episode",
+            "scheme",
+            "passed",
+            "reason",
+            "decision_offload_frac",
+            "r_base_nonzero",
+            "r_shape_nonzero",
+            "r_lat_nonzero",
+            "r_lat_abs_mean",
+            "comm_lb_nonzero",
+            "queue_lb_nonzero",
+            "r_energy_nonzero",
+            "r_power_nonzero",
+            "energy_lambda_effective_name",
+            "energy_lambda_effective_value",
+        ]
+        file_exists = os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=header)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+        self._audit_scheme_activation_written = True
+
+    def _audit_check_reward_scheme(self, metrics_dict, episode_metrics):
+        if not self._audit_results_dir:
+            return
+        scheme = getattr(self.config, "REWARD_SCHEME", "LEGACY_CFT")
+
+        def _stat(name, field, default=0.0):
+            return metrics_dict.get(name, {}).get(field, default)
+
+        r_base_nz = int(_stat("r_base", "nonzero_count", 0))
+        r_shape_nz = int(_stat("r_shape", "nonzero_count", 0))
+        r_lat_nz = int(_stat("r_lat", "nonzero_count", 0))
+        r_lat_abs_mean = float(_stat("r_lat", "abs_mean", 0.0))
+        comm_lb_nz = int(_stat("comm_lb", "nonzero_count", 0))
+        queue_lb_nz = int(_stat("queue_lb", "nonzero_count", 0))
+        r_energy_nz = int(_stat("r_energy", "nonzero_count", 0))
+        r_power_nz = int(_stat("r_power", "nonzero_count", 0))
+        decision_offload_frac = float(
+            episode_metrics.get("decision_frac_rsu", 0.0) + episode_metrics.get("decision_frac_v2v", 0.0)
+        )
+
+        energy_name, energy_val = self._audit_energy_lambda_effective(scheme)
+
+        errors = []
+        if scheme == "PBRS_KP":
+            if max(r_base_nz, r_shape_nz) <= 0:
+                errors.append("PBRS_KP missing r_base/r_shape nonzero")
+            if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
+                errors.append("PBRS_KP energy_lambda active but r_energy all zero")
+        elif scheme == "PBRS_KP_V2":
+            if r_lat_nz <= 0 or r_lat_abs_mean <= 1e-6:
+                errors.append("PBRS_KP_V2 r_lat not active")
+            if comm_lb_nz <= 0 or queue_lb_nz <= 0:
+                errors.append("PBRS_KP_V2 comm_lb/queue_lb missing")
+            if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
+                errors.append("PBRS_KP_V2 energy_lambda active but r_energy all zero")
+            if float(getattr(self.config, "POWER_LAMBDA", 0.0)) > 0.0 and decision_offload_frac > 0.0 and r_power_nz <= 0:
+                errors.append("PBRS_KP_V2 power_lambda active but r_power all zero")
+        else:
+            if int(_stat("dT_clipped", "nonzero_count", 0)) <= 0:
+                errors.append("LEGACY_CFT missing dT_clipped nonzero")
+
+        row = {
+            "run_id": self._audit_run_id or "",
+            "episode": int(getattr(self, "episode_count", 0)),
+            "scheme": scheme,
+            "passed": "no" if errors else "yes",
+            "reason": ";".join(errors) if errors else "",
+            "decision_offload_frac": decision_offload_frac,
+            "r_base_nonzero": r_base_nz,
+            "r_shape_nonzero": r_shape_nz,
+            "r_lat_nonzero": r_lat_nz,
+            "r_lat_abs_mean": r_lat_abs_mean,
+            "comm_lb_nonzero": comm_lb_nz,
+            "queue_lb_nonzero": queue_lb_nz,
+            "r_energy_nonzero": r_energy_nz,
+            "r_power_nonzero": r_power_nz,
+            "energy_lambda_effective_name": energy_name,
+            "energy_lambda_effective_value": energy_val,
+        }
+        self._audit_write_scheme_activation(row)
+        if errors:
+            raise RuntimeError(f"[RewardSchemeAudit] {scheme} failed: {row['reason']}")
+
+    def _audit_on_compute_done(self, job, time_now):
+        key = (int(job.owner_vehicle_id), int(job.subtask_id))
+        if key not in self._audit_subtask_est:
+            return
+        record = self._audit_subtask_est.pop(key)
+        finish_time = job.finish_time if job.finish_time is not None else time_now
+        t_real = float(max(finish_time - record.get("decision_time", time_now), 0.0))
+        t_est = float(record.get("t_est", 0.0))
+        out = {
+            "episode": record.get("episode", int(getattr(self, "episode_count", 0))),
+            "vehicle_id": record.get("vehicle_id", int(job.owner_vehicle_id)),
+            "subtask_id": record.get("subtask_id", int(job.subtask_id)),
+            "action_type": record.get("action_type", "Unknown"),
+            "decision_time": record.get("decision_time", time_now),
+            "finish_time": float(finish_time),
+            "t_actual_est": t_est,
+            "t_actual_real": t_real,
+            "est_error": float(t_real - t_est),
+        }
+        self._audit_append_t_est_record(out)
+
     def _get_comm_rate(self, vehicle, pred_task_id, curr_loc, rsu_pos):
         """计算任务间通信速率（简化接口，向后兼容）"""
         return self._get_inter_task_comm_rate(vehicle, pred_task_id, 0, 'Local', curr_loc)
@@ -5029,11 +5209,39 @@ class VecOffloadingEnv(gym.Env):
         # 从reward_stats提取统计信息
         metrics_dict = {}
         for name, bucket in self._reward_stats.metrics.items():
-            if bucket.count > 0:
+            metrics_dict[name] = {
+                "mean": (bucket.sum / bucket.count) if bucket.count > 0 else 0.0,
+                "min": bucket.min if bucket.count > 0 else 0.0,
+                "max": bucket.max if bucket.count > 0 else 0.0,
+                "abs_mean": (bucket.abs_sum / bucket.count) if bucket.count > 0 else 0.0,
+                "p95": bucket.p95(),
+                "count": bucket.count,
+                "nonzero_count": bucket.nonzero_count,
+            }
+
+        scheme = getattr(self.config, "REWARD_SCHEME", "LEGACY_CFT")
+        if scheme == "PBRS_KP":
+            required_metrics = [
+                "r_base", "r_shape", "r_term", "r_illegal", "r_timeout", "r_energy", "r_total",
+            ]
+        elif scheme == "PBRS_KP_V2":
+            required_metrics = [
+                "r_lat", "comm_lb", "queue_lb", "lb", "r_shape", "r_timeout", "r_energy", "r_power", "r_total",
+            ]
+        else:
+            required_metrics = [
+                "reward", "dT_clipped", "energy_norm",
+            ]
+        for name in required_metrics:
+            if name not in metrics_dict:
                 metrics_dict[name] = {
-                    'mean': bucket.sum / bucket.count,
-                    'p95': bucket.get_percentile(0.95) if hasattr(bucket, 'get_percentile') else None,
-                    'count': bucket.count
+                    "mean": 0.0,
+                    "min": 0.0,
+                    "max": 0.0,
+                    "abs_mean": 0.0,
+                    "p95": 0.0,
+                    "count": 0,
+                    "nonzero_count": 0,
                 }
         
         # 保存到实例变量（供train.py使用）
@@ -5041,6 +5249,7 @@ class VecOffloadingEnv(gym.Env):
         
         # 只在episode结束时写入JSONL文件
         if terminated or truncated:
+            self._audit_check_reward_scheme(metrics_dict, episode_metrics)
             jsonl_path = os.environ.get('REWARD_JSONL_PATH')
             if jsonl_path:
                 try:

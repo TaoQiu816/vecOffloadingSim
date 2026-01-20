@@ -574,14 +574,18 @@ def main():
     metrics_dir = os.path.join(run_dir, "metrics")
     plots_dir = os.path.join(run_dir, "plots")
     models_dir = os.path.join(run_dir, "models")
+    audit_results_dir = os.path.join(run_dir, "audit_results")
     _ensure_dir(run_dir)
     _ensure_dir(logs_dir)
     _ensure_dir(plots_dir)
     _ensure_dir(models_dir)
+    _ensure_dir(audit_results_dir)
     os.environ["RUN_ID"] = run_id
     os.environ["RUN_DIR"] = run_dir
     os.environ["MAX_EPISODES"] = str(TC.MAX_EPISODES)
     os.environ["SEED"] = str(Cfg.SEED)
+    os.environ["AUDIT_RESULTS_DIR"] = audit_results_dir
+    os.environ["AUDIT_T_EST_REAL_PATH"] = os.path.join(audit_results_dir, "t_est_real_records.jsonl")
 
     reward_jsonl_path = os.environ.get("REWARD_JSONL_PATH")
     if not reward_jsonl_path:
@@ -673,6 +677,80 @@ def main():
     config_snapshot_path = os.path.join(logs_dir, "config_snapshot.json")
     with open(config_snapshot_path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=True, indent=2, default=_json_default)
+
+    reward_scheme = Cfg.REWARD_SCHEME
+    if reward_scheme == "PBRS_KP_V2":
+        energy_lambda_effective = {
+            "name": "ENERGY_LAMBDA",
+            "value": float(getattr(Cfg, "ENERGY_LAMBDA", 0.0)),
+        }
+    elif reward_scheme == "PBRS_KP":
+        energy_lambda_effective = {
+            "name": "ENERGY_LAMBDA_PBRS",
+            "value": float(getattr(Cfg, "ENERGY_LAMBDA_PBRS", 0.0)),
+        }
+    else:
+        energy_lambda_effective = {
+            "name": "DELTA_CFT_ENERGY_WEIGHT",
+            "value": float(getattr(Cfg, "DELTA_CFT_ENERGY_WEIGHT", 0.0)),
+        }
+
+    config_dump = {
+        "reward_scheme": reward_scheme,
+        "reward_params": {
+            "REWARD_ALPHA": Cfg.REWARD_ALPHA,
+            "REWARD_BETA": Cfg.REWARD_BETA,
+            "REWARD_GAMMA": Cfg.REWARD_GAMMA,
+            "T_REF": Cfg.T_REF,
+            "PHI_CLIP": Cfg.PHI_CLIP,
+            "SHAPE_CLIP": Cfg.SHAPE_CLIP,
+            "R_CLIP": Cfg.R_CLIP,
+            "LAT_ALPHA": getattr(Cfg, "LAT_ALPHA", None),
+        },
+        "timeout_params": {
+            "TIMEOUT_PENALTY_WEIGHT": getattr(Cfg, "TIMEOUT_PENALTY_WEIGHT", None),
+            "TIMEOUT_STEEPNESS": getattr(Cfg, "TIMEOUT_STEEPNESS", None),
+            "TIMEOUT_L1": getattr(Cfg, "TIMEOUT_L1", None),
+            "TIMEOUT_L2": getattr(Cfg, "TIMEOUT_L2", None),
+            "TIMEOUT_O0": getattr(Cfg, "TIMEOUT_O0", None),
+            "TIMEOUT_K": getattr(Cfg, "TIMEOUT_K", None),
+        },
+        "energy_power_params": {
+            "ENERGY_LAMBDA_PBRS": getattr(Cfg, "ENERGY_LAMBDA_PBRS", None),
+            "ENERGY_LAMBDA": getattr(Cfg, "ENERGY_LAMBDA", None),
+            "POWER_LAMBDA": getattr(Cfg, "POWER_LAMBDA", None),
+            "E_REF": getattr(Cfg, "E_REF", None),
+            "E_CLIP": getattr(Cfg, "E_CLIP", None),
+            "DELTA_CFT_ENERGY_WEIGHT": getattr(Cfg, "DELTA_CFT_ENERGY_WEIGHT", None),
+        },
+        "energy_lambda_raw_fields": {
+            "ENERGY_LAMBDA_PBRS": getattr(Cfg, "ENERGY_LAMBDA_PBRS", None),
+            "ENERGY_LAMBDA": getattr(Cfg, "ENERGY_LAMBDA", None),
+            "POWER_LAMBDA": getattr(Cfg, "POWER_LAMBDA", None),
+            "E_REF": getattr(Cfg, "E_REF", None),
+            "E_CLIP": getattr(Cfg, "E_CLIP", None),
+            "DELTA_CFT_ENERGY_WEIGHT": getattr(Cfg, "DELTA_CFT_ENERGY_WEIGHT", None),
+        },
+        "energy_lambda_effective": energy_lambda_effective,
+        "ppo_params": {
+            "TARGET_KL": getattr(TC, "TARGET_KL", None),
+            "MAX_GRAD_NORM": getattr(TC, "MAX_GRAD_NORM", None),
+            "CLIP_PARAM": getattr(TC, "CLIP_PARAM", None),
+            "LR_ACTOR": getattr(TC, "LR_ACTOR", None),
+            "LR_CRITIC": getattr(TC, "LR_CRITIC", None),
+        },
+        "run": env_snapshot,
+    }
+    config_dump_path = os.path.join(run_dir, "config_dump.json")
+    with open(config_dump_path, "w", encoding="utf-8") as f:
+        json.dump(config_dump, f, ensure_ascii=True, indent=2, default=_json_default)
+
+    print("[ConfigDump] reward_scheme:", reward_scheme, flush=True)
+    print("[ConfigDump] reward_params:", config_dump["reward_params"], flush=True)
+    print("[ConfigDump] timeout_params:", config_dump["timeout_params"], flush=True)
+    print("[ConfigDump] energy_power_params:", config_dump["energy_power_params"], flush=True)
+    print("[ConfigDump] energy_lambda_effective:", energy_lambda_effective, flush=True)
+    print("[ConfigDump] ppo_params:", config_dump["ppo_params"], flush=True)
 
     # 打印生效配置表（stdout仅保留这一张表 + 训练表格行）
     info_rows = [

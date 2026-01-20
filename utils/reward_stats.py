@@ -30,14 +30,22 @@ class ReservoirSampler:
 class StatBucket:
     def __init__(self, sample_size=256, seed=0):
         self.sum = 0.0
+        self.abs_sum = 0.0
         self.count = 0
+        self.nonzero_count = 0
+        self.min = float("inf")
         self.max = -float("inf")
         self.sampler = ReservoirSampler(size=sample_size, seed=seed)
 
     def add(self, value):
         v = float(value)
         self.sum += v
+        self.abs_sum += abs(v)
         self.count += 1
+        if abs(v) > 1e-12:
+            self.nonzero_count += 1
+        if v < self.min:
+            self.min = v
         if v > self.max:
             self.max = v
         self.sampler.add(v)
@@ -77,9 +85,12 @@ class RewardStats:
         for key, bucket in self.metrics.items():
             out["metrics"][key] = {
                 "mean": bucket.mean(),
+                "min": bucket.min if bucket.count > 0 else 0.0,
                 "max": bucket.max if bucket.count > 0 else 0.0,
+                "abs_mean": (bucket.abs_sum / bucket.count) if bucket.count > 0 else 0.0,
                 "p95": bucket.p95(),
                 "count": bucket.count,
+                "nonzero_count": bucket.nonzero_count,
             }
         return out
 
