@@ -42,6 +42,7 @@ import re
 import argparse
 import subprocess
 from pathlib import Path
+import traceback
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -997,7 +998,44 @@ def main():
     roll_tl = deque(maxlen=15)
     roll_v = deque(maxlen=15)
 
+    training_state = {
+        "current_episode": 0,
+        "current_step": -1,
+        "max_episodes": int(hyperparams["max_episodes"]),
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "completed": False,
+    }
+    prev_excepthook = sys.excepthook
+
+    def _train_excepthook(exc_type, exc, tb):
+        should_log = (
+            not training_state["completed"]
+            and training_state["current_episode"] < training_state["max_episodes"]
+        )
+        if should_log:
+            error_log_path = os.path.join(run_dir, "train_error.log")
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                with open(error_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] Abnormal termination\n")
+                    f.write(f"run_id={training_state['run_id']}\n")
+                    f.write(f"run_dir={training_state['run_dir']}\n")
+                    f.write(f"episode={training_state['current_episode']}\n")
+                    f.write(f"step={training_state['current_step']}\n")
+                    f.write(f"exception={exc_type.__name__}: {exc}\n")
+                    f.write("traceback:\n")
+                    f.write("".join(traceback.format_exception(exc_type, exc, tb)))
+                    f.write("\n")
+            except Exception:
+                pass
+        prev_excepthook(exc_type, exc, tb)
+
+    sys.excepthook = _train_excepthook
+
     for episode in range(1, hyperparams['max_episodes'] + 1):
+        training_state["current_episode"] = episode
+        training_state["current_step"] = -1
 
         # 学习率衰减
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
@@ -1034,6 +1072,7 @@ def main():
 
         # Rollout循环
         for step in range(hyperparams['max_steps_per_ep']):
+            training_state["current_step"] = step
             # 智能体决策
             action_dict = agent.select_action(obs_list, deterministic=False)
             actions = action_dict['actions']
@@ -1959,6 +1998,9 @@ def main():
 
         if episode % TC.SAVE_INTERVAL == 0:
             agent.save(os.path.join(recorder.model_dir, f"model_ep{episode}.pth"))
+
+    training_state["completed"] = True
+    sys.excepthook = prev_excepthook
 
     # =========================================================================
     # 训练结束：自动绘图 (Auto Plotting)
