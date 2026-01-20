@@ -3890,6 +3890,22 @@ class VecOffloadingEnv(gym.Env):
         """PBRS_KP_V2: 基于关键路径下界 LB(s)=compute+comm+queue 的潜势ϕ"""
         if vehicle is None:
             return 0.0, {}
+        status = getattr(dag, "status", None)
+        if status is None:
+            return 0.0, {}
+        remaining_nodes = [idx for idx, s in enumerate(status) if s != 3]
+        if not remaining_nodes or getattr(dag, "is_finished", False):
+            debug = {
+                "cp_rem": 0.0,
+                "f_max": 0.0,
+                "d_cp_lb": 0.0,
+                "rate_best": 0.0,
+                "comm_lb": 0.0,
+                "queue_lb": 0.0,
+                "lb": 0.0,
+                "phi": 0.0,
+            }
+            return 0.0, debug
         cp_rem, d_cp_lb = self._compute_cp_stats(dag)
         f_max, f_max_info = self._get_reachable_f_max(vehicle)
         rate_best = self._compute_best_comm_rate(vehicle)
