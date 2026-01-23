@@ -99,6 +99,7 @@ def apply_env_overrides():
         "BW_V2V": "BW_V2V",
         "MIN_CPU": "MIN_VEHICLE_CPU_FREQ",
         "MAX_CPU": "MAX_VEHICLE_CPU_FREQ",
+        "TIME_QUEUE_PENALTY_WEIGHT": "TIME_QUEUE_PENALTY_WEIGHT",  # P0-1 A/B对照
     }
     overrides_int = {
         "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",

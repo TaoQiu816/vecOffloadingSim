@@ -63,7 +63,9 @@ class SystemConfig:
                             # Impact: Reduces V2V redundancy, makes neighbor selection more meaningful
     
     MAX_NEIGHBORS = max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))  # 派生值 - Derived value
-    MAX_TARGETS = 2 + MAX_NEIGHBORS  # Local + RSU + Neighbors
+    
+    # Action space配置移至NUM_RSU定义之后（见1.4节末尾）
+    # ENABLE_RSU_SELECTION和MAX_TARGETS定义在NUM_RSU之后
     
     VEHICLE_ARRIVAL_RATE = 0.0  # 泊松到达率 (veh/s) - Poisson arrival rate
                                 # 影响: 动态车辆生成，0表示禁用动态到达
@@ -89,6 +91,13 @@ class SystemConfig:
                             # Impact: Urban expressway speed limit, controls max topology change rate
     
     MAX_VELOCITY = VEL_MAX  # 最大速度 - Maximum velocity
+    
+    # 车辆生成位置范围 (相对于MAP_SIZE的比例)
+    # Vehicle spawn position range (ratio of MAP_SIZE)
+    VEHICLE_SPAWN_X_MIN = 0.0   # 最小X位置比例 - Min X position ratio
+    VEHICLE_SPAWN_X_MAX = 0.8   # 最大X位置比例 - Max X position ratio
+                                # 0.8确保车辆能覆盖RSU_0,1,2（覆盖[0,800]m）
+                                # 0.8 ensures vehicles can reach RSU_0,1,2 (covers [0,800]m)
     
     DT = 0.1                # 仿真时间步长 (s) - Simulation time step (文献二)
                             # 影响: 精度与计算开销权衡，0.1s降低50%开销
@@ -122,6 +131,17 @@ class SystemConfig:
     
     RSU_POS = np.array([500.0, 500.0])  # 默认RSU位置（向后兼容）
                                          # Default RSU position (backward compatibility)
+    
+    # -------------------------------------------------------------------------
+    # 1.5 Action Space配置 (Action Space Configuration)
+    # -------------------------------------------------------------------------
+    ENABLE_RSU_SELECTION = True  # 是否启用RSU选择自由度
+                                 # True: agent可选择具体RSU_id (action space扩展)
+                                 # False: env自动选择最优RSU (原设计)
+    
+    # MAX_TARGETS = Local(1) + RSU选项 + V2V(MAX_NEIGHBORS)
+    # 定义在此处确保NUM_RSU已定义
+    MAX_TARGETS = (1 + NUM_RSU + MAX_NEIGHBORS) if ENABLE_RSU_SELECTION else (2 + MAX_NEIGHBORS)
 
     # =========================================================================
     # 2. 通信参数 (Communication Model)
@@ -561,6 +581,7 @@ class SystemConfig:
     DEBUG_REWARD_ASSERTS = False            # 奖励/速率快照强一致性断言
     DEBUG_PBRS_AUDIT = False                # PBRS一致性审计/打点开关
     DEBUG_PHI_MONO_PROB = 0.1               # Phi单调性抽样概率
+    AUDIT_PER_DECISION_REWARD = False       # per-decision奖励分项审计开关
     
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output
                                             # 影响: 是否在stdout打印每个episode的JSONL

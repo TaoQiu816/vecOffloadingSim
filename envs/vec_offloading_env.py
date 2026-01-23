@@ -2,6 +2,7 @@ import gymnasium as gym
 import numpy as np
 import os
 import csv
+import random
 from collections import deque, defaultdict
 from configs.config import SystemConfig as Cfg
 from envs.modules.channel import ChannelModel
@@ -138,6 +139,8 @@ class VecOffloadingEnv(gym.Env):
         self._audit_scheme_activation_written = False
         self._audit_subtask_est = {}
         self._audit_t_est_records = []
+        self._audit_per_decision_rewards = []  # [审计] per-decision奖励分项记录
+        self._last_commit_plans = []  # [审计] 保存commit_plans供per-decision审计使用
         self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH")
         self._audit_run_id = os.environ.get("RUN_ID")
         # [P2性能统计] 仅在active时间段统计服务速率
@@ -586,7 +589,17 @@ class VecOffloadingEnv(gym.Env):
         plans = []
         max_schedule = max(1, int(getattr(self.config, "MAX_SCHEDULE_PER_STEP", 1)))
         inflight_limit = int(getattr(self.config, "MAX_INFLIGHT_SUBTASKS_PER_VEHICLE", 0))
-        for i, v in enumerate(self.vehicles):
+        
+        # [P0修复] 随机打乱车辆处理顺序，消除queue_full检查的ID偏置
+        # 修复前：按vehicle_id顺序处理，低ID优先检查队列，高ID更易遇到队列满
+        # 修复后：可复现随机顺序，消除ID与queue_full的相关性
+        import random
+        vehicle_indices = list(range(len(self.vehicles)))
+        shuffle_rng = random.Random(self.episode_count * 10000 + self.steps)
+        shuffle_rng.shuffle(vehicle_indices)
+        
+        for i in vehicle_indices:
+            v = self.vehicles[i]
             schedule_limit = max_schedule
             if v.task_dag.is_finished or v.task_dag.is_failed:
                 plan = {
@@ -714,39 +727,44 @@ class VecOffloadingEnv(gym.Env):
 
             desired_target = 'Local'
             desired_kind = "local"
+            
+            # 计算RSU和V2V的action索引边界
+            enable_rsu_selection = getattr(self.config, 'ENABLE_RSU_SELECTION', False)
+            num_rsu = len(self.rsus)
+            rsu_start_idx = 1  # RSU选项从index 1开始
+            rsu_end_idx = (1 + num_rsu) if enable_rsu_selection else 2  # RSU选项结束索引(不含)
+            v2v_start_idx = rsu_end_idx  # V2V选项起始索引
 
             if target_idx >= self.config.MAX_TARGETS:
                 plan["illegal_reason"] = "idx_out_of_range"
             elif target_idx == 0:
                 desired_target = 'Local'
                 desired_kind = "local"
-            elif target_idx == 1:
+            elif rsu_start_idx <= target_idx < rsu_end_idx:
+                # RSU动作：target_idx映射到具体RSU_id
                 candidate_set = self._last_candidate_set.get(v.id)
-                candidate_ids = candidate_set["ids"] if candidate_set is not None else None
                 candidate_mask = candidate_set["mask"] if candidate_set is not None else None
-                serving_rsu_id = getattr(v, "serving_rsu_id", None)
-                if serving_rsu_id is None:
-                    serving_rsu_id = self._update_serving_rsu(v)
-                cached_choice = self._last_rsu_choice.get(v.id)
-                if cached_choice is not None and cached_choice != serving_rsu_id:
-                    raise RuntimeError(
-                        f"[Assert] Non-serving RSU choice detected veh={v.id} "
-                        f"cached={cached_choice} serving={serving_rsu_id}"
-                    )
+                
+                if enable_rsu_selection:
+                    # 新模式：agent直接选择RSU_id
+                    selected_rsu_id = target_idx - rsu_start_idx  # target_idx=1 -> RSU_0
+                else:
+                    # 旧模式：env自动选择serving RSU
+                    selected_rsu_id = getattr(v, "serving_rsu_id", None)
+                    if selected_rsu_id is None:
+                        selected_rsu_id = self._update_serving_rsu(v)
+                
+                # 检查mask
                 if candidate_mask is not None and (target_idx >= len(candidate_mask) or not candidate_mask[target_idx]):
                     plan["illegal_reason"] = "masked_target"
                     desired_target = 'Local'
                     desired_kind = "local"
-                elif serving_rsu_id is None:
+                elif selected_rsu_id is None or not (0 <= selected_rsu_id < num_rsu):
                     plan["illegal_reason"] = "rsu_unavailable"
                     desired_target = 'Local'
                     desired_kind = "local"
                 else:
-                    if not (0 <= serving_rsu_id < len(self.rsus)):
-                        raise RuntimeError(
-                            f"[Assert] serving_rsu_id out of range veh={v.id} rsu_id={serving_rsu_id}"
-                        )
-                    rsu = self.rsus[serving_rsu_id]
+                    rsu = self.rsus[selected_rsu_id]
                     if rsu is None:
                         plan["illegal_reason"] = "rsu_unavailable"
                         desired_target = 'Local'
@@ -755,12 +773,12 @@ class VecOffloadingEnv(gym.Env):
                         plan["illegal_reason"] = "rsu_out_of_coverage"
                         desired_target = 'Local'
                         desired_kind = "local"
-                    elif self._is_rsu_queue_full(serving_rsu_id, task_comp):
+                    elif self._is_rsu_queue_full(selected_rsu_id, task_comp):
                         plan["illegal_reason"] = "rsu_queue_full"
                         desired_target = 'Local'
                         desired_kind = "local"
                     else:
-                        desired_target = ('RSU', serving_rsu_id)
+                        desired_target = ('RSU', selected_rsu_id)
                         desired_kind = "rsu"
             else:
                 candidate_set = self._last_candidate_set.get(v.id)
@@ -833,7 +851,12 @@ class VecOffloadingEnv(gym.Env):
             proc_limits = [per_proc_limit] * num_procs
             proc_caps = [100] * num_procs  # 默认队列任务数上限
 
-            for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
+            # [P0修复] 使用随机顺序处理冲突，消除vehicle_id偏置
+            import random
+            shuffle_rng = random.Random(self.episode_count * 10000 + self.steps + rsu_id)
+            shuffled_reqs = list(reqs)
+            shuffle_rng.shuffle(shuffled_reqs)
+            for plan in shuffled_reqs:
                 chosen_pid = None
                 for pid, load in enumerate(proc_loads):
                     if proc_limits[pid] is not None:
@@ -882,7 +905,12 @@ class VecOffloadingEnv(gym.Env):
             limit_cycles = self.config.VEHICLE_QUEUE_CYCLES_LIMIT
             limit_size = 100  # 默认队列任务数上限
 
-            for plan in sorted(reqs, key=lambda p: p["vehicle_id"]):
+            # [P0修复] 使用随机顺序处理V2V冲突，消除vehicle_id偏置
+            import random
+            shuffle_rng = random.Random(self.episode_count * 10000 + self.steps + tgt_id)
+            shuffled_reqs = list(reqs)
+            shuffle_rng.shuffle(shuffled_reqs)
+            for plan in shuffled_reqs:
                 if limit_cycles is not None:
                     can_accept = (sim_load + plan["task_comp"]) <= limit_cycles
                 else:
@@ -958,14 +986,52 @@ class VecOffloadingEnv(gym.Env):
         return self.rsu_selector.get_all_rsus_in_range(position)
 
     def _update_serving_rsu(self, vehicle):
-        """为车辆更新最近RSU (serving_rsu_id)，仅允许单RSU连接"""
-        nearest = self._get_nearest_rsu(vehicle.pos)
-        serving_id = nearest.id if nearest is not None else None
+        """
+        为车辆选择serving RSU
+        
+        [P0修复] 方案B：负载感知的RSU选择
+        Agent无法直接选择RSU_id，由env基于距离+负载综合评分选择
+        这允许在保持action space不变的情况下实现基本的负载均衡
+        """
+        # 获取所有覆盖范围内的RSU
+        candidates = self._get_all_rsus_in_range(vehicle.pos)
+        if not candidates:
+            vehicle.serving_rsu_id = None
+            return None
+        
+        # 负载感知权重（0=纯距离，1=纯负载）
+        LOAD_WEIGHT = getattr(self.config, 'RSU_LOAD_WEIGHT', 0.3)
+        
+        best_score = float('inf')
+        best_rsu_id = None
+        
+        for rsu in candidates:
+            dist = np.linalg.norm(vehicle.pos - rsu.position)
+            
+            # 计算RSU当前负载
+            q_cycles = sum(
+                sum(j.rem_cycles for j in q) 
+                for q in self.rsu_cpu_q.get(rsu.id, {}).values()
+            )
+            q_limit = getattr(self.config, 'RSU_QUEUE_CYCLES_LIMIT', 1e11)
+            load_ratio = min(q_cycles / q_limit, 1.0) if q_limit > 0 else 0.0
+            
+            # 综合得分：距离 + 负载惩罚
+            # 归一化：dist/coverage_range + load_ratio
+            norm_dist = dist / rsu.coverage_range if rsu.coverage_range > 0 else 1.0
+            score = (1 - LOAD_WEIGHT) * norm_dist + LOAD_WEIGHT * load_ratio
+            
+            if score < best_score:
+                best_score = score
+                best_rsu_id = rsu.id
+        
         prev_id = getattr(vehicle, "serving_rsu_id", None)
-        vehicle.serving_rsu_id = serving_id
-        if getattr(self.config, "DEBUG_ASSERT_ILLEGAL_ACTION", False) and prev_id != serving_id:
-            print(f"[Debug] serving_rsu_id veh={vehicle.id} {prev_id} -> {serving_id}")
-        return serving_id
+        vehicle.serving_rsu_id = best_rsu_id
+        
+        if getattr(self.config, "DEBUG_ASSERT_ILLEGAL_ACTION", False) and prev_id != best_rsu_id:
+            print(f"[Debug] serving_rsu_id veh={vehicle.id} {prev_id} -> {best_rsu_id}")
+        
+        return best_rsu_id
 
     def _get_serving_rsu(self, vehicle):
         """获取车辆当前serving RSU实体与ID（若不在覆盖内返回None）"""
@@ -984,7 +1050,10 @@ class VecOffloadingEnv(gym.Env):
         return rsu, rsu_id
 
     def _assert_serving_rsu(self, vehicle, rsu_id, context):
-        """强制校验RSU目标必须等于serving_rsu_id"""
+        """强制校验RSU目标必须等于serving_rsu_id（仅在旧模式下）"""
+        # [RSU选择] 新模式下跳过此断言，因为agent可以选择任意覆盖范围内的RSU
+        if getattr(self.config, 'ENABLE_RSU_SELECTION', False):
+            return
         serving_id = getattr(vehicle, "serving_rsu_id", None)
         if serving_id is None:
             return
@@ -1030,14 +1099,18 @@ class VecOffloadingEnv(gym.Env):
         comp_time = task_comp / max(rsu.cpu_freq, 1e-6)
         # [改动B] T_finish_est = CommWait + CommTx + CPUWait + CPUExec
         metric = comm_wait_v2i + tx_time + wait_time + comp_time
+        
+        # [P0修复] 通信阶段时间，用于contact time约束
+        t_comm_phase = comm_wait_v2i + tx_time
 
         if speed > 0.1:
             contact_time = max(0.0, (rsu.coverage_range - dist) / speed)
         else:
             contact_time = self._max_rsu_contact_time
 
-        # [改动B] 用 T_finish_est 与 contact_time 比较（RSU场景通常 contact 够长，但保留判断）
-        if metric > contact_time and speed > 0.1:
+        # [P0修复] 仅用通信阶段时间与contact_time比较
+        # 物理语义：车辆只需在覆盖范围内完成数据上传，计算在RSU本地执行
+        if t_comm_phase > contact_time and speed > 0.1:
             return None, 0.0, 0.0, 0.0, 0.0
 
         return rsu_id, rate, wait_time, dist, contact_time
@@ -1147,7 +1220,10 @@ class VecOffloadingEnv(gym.Env):
         return True
 
     def _build_vehicle(self, vehicle_id: int, start_time: float):
-        x_pos = np.random.uniform(0, 0.3 * self.config.MAP_SIZE)
+        # [场景修复] 使用可配置的生成范围，确保覆盖所有RSU
+        x_min = getattr(self.config, 'VEHICLE_SPAWN_X_MIN', 0.0) * self.config.MAP_SIZE
+        x_max = getattr(self.config, 'VEHICLE_SPAWN_X_MAX', 0.8) * self.config.MAP_SIZE
+        x_pos = np.random.uniform(x_min, x_max)
         lane_centers = [(k + 0.5) * self.config.LANE_WIDTH for k in range(self.config.NUM_LANES)]
         y_pos = np.random.choice(lane_centers)
         pos = np.array([x_pos, y_pos])
@@ -1438,6 +1514,7 @@ class VecOffloadingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         if seed is not None:
             np.random.seed(seed)
+            random.seed(seed)  # [P0-2修复] 同时设置random模块
 
         if hasattr(self, "_reward_stats"):
             self._reward_stats.reset()
@@ -1485,6 +1562,8 @@ class VecOffloadingEnv(gym.Env):
         self._last_rsu_choice = {}
         self._audit_subtask_est = {}
         self._audit_t_est_records = []
+        self._audit_per_decision_rewards = []  # [审计] per-decision奖励分项记录
+        self._last_commit_plans = []  # [审计] 保存commit_plans供per-decision审计使用
         self._audit_results_dir = os.environ.get("AUDIT_RESULTS_DIR", self._audit_results_dir)
         self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH", self._audit_t_est_path)
         self._audit_run_id = os.environ.get("RUN_ID", self._audit_run_id)
@@ -2116,7 +2195,13 @@ class VecOffloadingEnv(gym.Env):
             active_agent_mask.append(1 if is_decision else 0)
             no_task_step_mask.append(bool(is_no_task))
         commit_plans = [p for p in plans if p["subtask_idx"] is not None]
-        commit_plans.sort(key=lambda p: p["vehicle_id"])
+        # [P0修复] 消除commit顺序效应
+        # 修复前：按vehicle_id排序，低ID车辆优先入队，高ID更易因队列满失败
+        # 修复后：使用可复现的随机打乱，消除ID与入队顺序的相关性
+        import random
+        shuffle_rng = random.Random(self.episode_count * 10000 + self.steps)
+        shuffle_rng.shuffle(commit_plans)
+        self._last_commit_plans = commit_plans  # [审计] 保存供per-decision审计使用
         
         # 更新功率（在Phase1之前）
         for plan in commit_plans:
@@ -2230,6 +2315,32 @@ class VecOffloadingEnv(gym.Env):
         # 职责: 写入exec_locations + 创建INPUT传输任务
         # =====================================================================
         self._phase1_commit_offload_decisions(commit_plans)
+        
+        # =====================================================================
+        # [P1修复] Post-Commit Snapshot: 重新估计t_actual
+        # 目的: 让奖励依赖"联合动作后"的队列状态，而非个人快照
+        # 修复前: t_actual在决策前估计，不包含并发入队效应
+        # 修复后: t_actual在决策提交后重新估计，包含所有并发入队
+        # =====================================================================
+        if getattr(self.config, 'USE_POST_COMMIT_SNAPSHOT', True):
+            for v in self.vehicles:
+                ctx = reward_cache.get(v.id)
+                if ctx is None or ctx.get("subtask") is None:
+                    continue
+                subtask_idx = ctx["subtask"]
+                target = ctx["target"]
+                cycles = ctx["cycles"]
+                power_ratio = ctx.get("power_ratio", 1.0)
+                
+                # 重新估计t_actual（此时队列已包含所有并发入队）
+                t_actual_post, t_tx_post = self._estimate_t_actual(
+                    v, subtask_idx, target, cycles, power_ratio
+                )
+                
+                # 更新reward_cache
+                reward_cache[v.id]["t_actual"] = t_actual_post
+                reward_cache[v.id]["t_tx"] = t_tx_post
+                reward_cache[v.id]["post_commit_updated"] = True
 
         # =====================================================================
         # [阶段2: 边激活] Activate EDGE Transfers (首次)
@@ -2522,8 +2633,17 @@ class VecOffloadingEnv(gym.Env):
                         p_ratio = float(np.clip(ctx.get("power_ratio", 0.0), 0.0, 1.0))
                         p_watt = getattr(self.config, "P_MAX_WATT", 0.0) * p_ratio
                         e_tx = p_watt * ctx.get("t_tx", 0.0)
-                        r_energy = -self.config.ENERGY_LAMBDA * float(np.tanh(e_tx / max(self.config.E_REF, 1e-9)))
-                        r_power = -self.config.POWER_LAMBDA * float(p_ratio ** 2)
+                        
+                        # [P0修复] 使用标定后的能耗惩罚
+                        # 原问题：E_REF=1.0太大，导致r_energy量级<0.001，完全失效
+                        # 修复：E_REF_CAL基于物理估算(P_max×typical_tx_time≈0.01J)
+                        E_REF_CAL = getattr(self.config, 'E_REF_CALIBRATED', 0.01)
+                        W_E = getattr(self.config, 'ENERGY_WEIGHT_CALIBRATED', 0.4)
+                        r_energy = -W_E * float(np.tanh(e_tx / max(E_REF_CAL, 1e-9)))
+                        
+                        # 功率正则（二次惩罚高功率）
+                        W_P = getattr(self.config, 'POWER_WEIGHT_CALIBRATED', 0.15)
+                        r_power = -W_P * float(p_ratio ** 2)
                     if dag.deadline > 0 and dag.is_failed and dag.fail_reason == 'deadline':
                         elapsed = self.time - dag.start_time
                         overtime_ratio = max((elapsed - dag.deadline) / dag.deadline, 0.0)
@@ -2550,6 +2670,65 @@ class VecOffloadingEnv(gym.Env):
                 if dag.is_finished:
                     assert np.isclose(phi_next, 0.0, atol=1e-6), "[Assert] Phi must be 0 when DAG finished"
                 assert abs(r_total) <= self.config.R_CLIP + 1e-6, "[Assert] reward exceeded clip bound"
+
+                # [审计] per-decision奖励分项记录
+                _is_decision = ctx.get("subtask") is not None
+                if getattr(self.config, "AUDIT_PER_DECISION_REWARD", False) and _is_decision:
+                    tgt = ctx.get("target")
+                    action_type = "Local"
+                    rsu_id = -1
+                    if isinstance(tgt, tuple):
+                        if tgt[0] == "RSU":
+                            action_type = "RSU"
+                            rsu_id = int(tgt[1]) if len(tgt) > 1 else -1
+                    elif isinstance(tgt, int):
+                        # V2V目标是int（邻居车辆ID）
+                        action_type = "V2V"
+                    elif tgt == 'Local':
+                        action_type = "Local"
+                    # 获取并发统计
+                    n_rsu_total = sum(1 for p in self._last_commit_plans if p.get("planned_kind") == "rsu")
+                    n_rsu_id = sum(1 for p in self._last_commit_plans 
+                                   if p.get("planned_kind") == "rsu" and 
+                                   isinstance(p.get("planned_target"), tuple) and 
+                                   len(p.get("planned_target", ())) > 1 and
+                                   p.get("planned_target", (None, -1))[1] == rsu_id) if rsu_id >= 0 else 0
+                    # 获取队列负载状态（审计用）
+                    r_queue = 0.0
+                    rsu_load_ratio = 0.0
+                    if rsu_id >= 0:
+                        rsu_load = self._get_rsu_queue_load(rsu_id)
+                        rsu_limit = getattr(self.config, 'RSU_QUEUE_CYCLES_LIMIT', 1e12)
+                        rsu_load_ratio = float(rsu_load / max(rsu_limit, 1e-9))
+                        load_weight = getattr(self.config, 'RSU_LOAD_WEIGHT', 0.3)
+                        r_queue = -load_weight * rsu_load_ratio
+                    # 获取t_est和est_error
+                    t_est = ctx.get("t_actual", 0.0)
+                    est_error = ctx.get("est_error", 0.0)  # 如果有的话
+                    
+                    self._audit_per_decision_rewards.append({
+                        "episode": self.episode_count,
+                        "step": self.steps,
+                        "veh_id": v.id,
+                        "subtask_idx": int(ctx.get("subtask", -1)) if ctx.get("subtask") is not None else -1,
+                        "action_type": action_type,
+                        "rsu_id": rsu_id,
+                        "n_rsu_total": n_rsu_total,
+                        "n_rsu_id": n_rsu_id,
+                        "t_est": float(t_est),
+                        "r_lat": float(r_lat) if 'r_lat' in dir() else 0.0,
+                        "r_shape": float(r_shape),
+                        "r_queue": float(r_queue),
+                        "r_energy": float(r_energy),
+                        "r_power": float(r_power),
+                        "r_timeout": float(r_timeout),
+                        "r_term": float(r_term),
+                        "r_illegal": float(r_illegal),
+                        "r_total": float(r_total),
+                        "power_ratio": float(ctx.get("power_ratio", 0.0)),
+                        "t_tx": float(ctx.get("t_tx", 0.0)),  # 从ctx获取t_tx
+                        "e_tx": float(e_tx),  # 使用局部计算的e_tx
+                    })
 
                 if getattr(self.config, "DEBUG_PBRS_AUDIT", False):
                     if np.random.rand() < getattr(self.config, "DEBUG_PHI_MONO_PROB", 0.1):
@@ -3192,6 +3371,10 @@ class VecOffloadingEnv(gym.Env):
             serving_rsu = None
             if serving_rsu_id is not None and 0 <= serving_rsu_id < len(self.rsus):
                 serving_rsu = self.rsus[serving_rsu_id]
+            
+            # [RSU选择] 获取所有覆盖范围内的RSU（用于ENABLE_RSU_SELECTION模式）
+            rsus_in_range_list = self._get_all_rsus_in_range(v.pos)
+            rsus_in_range_ids = [rsu.id for rsu in rsus_in_range_list] if rsus_in_range_list else []
             rsu_pos_for_v2i = serving_rsu.position if serving_rsu is not None else None
             if rsu_pos_for_v2i is None:
                 est_v2i_rate = 0.0
@@ -3278,21 +3461,24 @@ class VecOffloadingEnv(gym.Env):
                 if self._is_veh_queue_full(other.id, task_comp_size):
                     continue
 
-                # [改动B] 使用最大功率计算传输时间（最乐观估计）
-                est_v2v_rate_max_power = self.channel.compute_one_rate(
-                    v, other.pos, 'V2V', self.time,
-                    power_dbm_override=self.config.TX_POWER_MAX_DBM
+                # 使用当前发射功率估计V2V速率，避免对候选过度乐观
+                est_v2v_rate = self.channel.compute_one_rate(
+                    v, other.pos, 'V2V', self.time
                 )
-                est_v2v_rate_max_power = max(est_v2v_rate_max_power, 1e-6)
-                trans_time_max_power = task_data_size / est_v2v_rate_max_power if task_data_size > 0 else 0.0
+                est_v2v_rate = max(est_v2v_rate, 1e-6)
+                trans_time = task_data_size / est_v2v_rate if task_data_size > 0 else 0.0
 
                 # [处理器共享] 使用新的延迟估算方法
                 queue_wait_time = self._get_node_delay(other)
                 comp_time = task_comp_size / max(other.cpu_freq, 1e-6)
 
-                # [改动B] T_finish_est = CommWait + CommTx + CPUWait + CPUExec
-                # 使用最大功率（最乐观）做可行性判断
-                t_finish_est = comm_wait_v2v_for_mask + trans_time_max_power + queue_wait_time + comp_time
+                # T_finish_est = CommWait + CommTx + CPUWait + CPUExec
+                # 使用与候选排序一致的估计，减少V2V过选偏差
+                t_finish_est = comm_wait_v2v_for_mask + trans_time + queue_wait_time + comp_time
+                
+                # [P0修复] 通信阶段时间，用于contact time约束
+                # 物理语义：contact time仅约束数据传输阶段，计算在目标节点本地执行
+                t_comm_phase = comm_wait_v2v_for_mask + trans_time
 
                 rel_vel = other.vel - v.vel
                 pos_diff = other.pos - v.pos
@@ -3306,14 +3492,11 @@ class VecOffloadingEnv(gym.Env):
                     else:
                         time_to_break = self._max_v2v_contact_time
 
-                # [改动B] 使用 T_finish_est 与 contact_time 比较
-                if t_finish_est > time_to_break:
+                # [P0修复] 仅用通信阶段时间与contact_time比较
+                # 修复前：t_finish_est > time_to_break（包含CPU等待+计算，过于严格）
+                # 修复后：t_comm_phase > time_to_break（仅通信阶段）
+                if t_comm_phase > time_to_break:
                     continue
-
-                # 保存用于排序和显示的 rate（使用默认功率）
-                est_v2v_rate = self.channel.compute_one_rate(v, other.pos, 'V2V', self.time)
-                est_v2v_rate = max(est_v2v_rate, 1e-6)
-                trans_time = task_data_size / est_v2v_rate if task_data_size > 0 else 0.0
 
                 rel_pos = (other.pos - v.pos) * self._inv_v2v_range
                 candidate_info.append({
@@ -3329,7 +3512,8 @@ class VecOffloadingEnv(gym.Env):
                 })
 
             candidate_set = self.candidate_manager.build_candidate_set(
-                v, candidate_info, serving_rsu_id
+                v, candidate_info, serving_rsu_id,
+                rsus_in_range=rsus_in_range_ids  # [RSU选择] 传递覆盖范围内的RSU列表
             )
             candidate_ids = candidate_set["ids"]
             candidate_types = candidate_set["types"]
@@ -3956,7 +4140,14 @@ class VecOffloadingEnv(gym.Env):
             warnings.warn(f"[Debug] Phi monotonicity suspicion: bad_cnt={state['bad_cnt']} samples={state['samples']}", UserWarning)
 
     def _estimate_t_actual(self, vehicle, subtask_idx, target, cycles, power_ratio=1.0):
-        """估计动作目标的执行时间（使用冻结速率与队列快照）"""
+        """
+        估计动作目标的执行时间（使用冻结速率与队列快照）
+        
+        [V6修复] 加入通信队列等待时间 comm_wait，使 t_est 正确反映并发拥塞
+        可通过 USE_COMM_WAIT_IN_EST=False 回退旧口径
+        
+        完整估计: t_est = comm_wait + t_tx + cpu_wait + t_comp
+        """
         freq_self = max(getattr(vehicle, "cpu_freq", self.config.MIN_VEHICLE_CPU_FREQ), 1e-9)
         t_local = self._get_veh_queue_wait_time(vehicle.id, freq_self) + cycles / freq_self
         if target is None or target == 'Local':
@@ -3964,6 +4155,10 @@ class VecOffloadingEnv(gym.Env):
         eps_rate = getattr(self.config, "EPS_RATE", 1e-9)
         dag = vehicle.task_dag
         din = self._get_upload_bytes(dag, subtask_idx)
+        
+        # [V6修复] 获取通信队列等待时间（可配置开关）
+        use_comm_wait = getattr(self.config, 'USE_COMM_WAIT_IN_EST', True)
+        comm_wait_dict = self._compute_comm_wait(vehicle.id) if use_comm_wait else {'total_v2i': 0.0, 'total_v2v': 0.0}
 
         if self._is_rsu_location(target):
             rsu_id = self._get_rsu_id_from_location(target)
@@ -3976,12 +4171,13 @@ class VecOffloadingEnv(gym.Env):
             rate = max(rate if rate is not None else 0.0, eps_rate)
             t_tx = din / rate if din > 0 else 0.0
             freq_r = self.config.F_RSU
-            wait = 0.0
+            cpu_wait = 0.0
             if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
                 freq_r = self.rsus[rsu_id].cpu_freq
-                wait = self._get_rsu_queue_wait_time(rsu_id)
+                cpu_wait = self._get_rsu_queue_wait_time(rsu_id)
             t_comp = cycles / max(freq_r, 1e-9)
-            return t_tx + wait + t_comp, t_tx
+            comm_wait = comm_wait_dict['total_v2i']
+            return comm_wait + t_tx + cpu_wait + t_comp, t_tx
 
         if isinstance(target, int):
             dst_node = ("VEH", target)
@@ -3992,14 +4188,100 @@ class VecOffloadingEnv(gym.Env):
             t_tx = din / rate if din > 0 else 0.0
             tgt_veh = self._get_vehicle_by_id(target)
             freq_t = getattr(tgt_veh, "cpu_freq", self.config.MIN_VEHICLE_CPU_FREQ) if tgt_veh is not None else self.config.MIN_VEHICLE_CPU_FREQ
-            wait = self._get_veh_queue_wait_time(target, freq_t) if tgt_veh is not None else 0.0
+            cpu_wait = self._get_veh_queue_wait_time(target, freq_t) if tgt_veh is not None else 0.0
             t_comp = cycles / max(freq_t, 1e-9)
-            return t_tx + wait + t_comp, t_tx
+            comm_wait = comm_wait_dict['total_v2v']
+            return comm_wait + t_tx + cpu_wait + t_comp, t_tx
 
         return t_local, 0.0
 
+    def _compute_slack_based_time_reward(self, vehicle, ctx):
+        """
+        [P0修复] Slack-Based绝对效用时间奖励
+        
+        原r_lat使用相对优势tanh((t_alt-t_a)/T_REF)导致RSU获得系统性正奖励。
+        新设计基于deadline slack，直接与优化目标对齐。
+        
+        slack = deadline_remaining - t_finish_est
+        r_time = W_S * tanh(slack / S0)
+        
+        优点：
+        - 不比较不同动作，消除系统性偏置
+        - 直接反映任务完成与deadline的关系
+        - 正slack=有余量→正奖励，负slack=可能超时→负惩罚
+        """
+        subtask_idx = ctx.get("subtask")
+        if subtask_idx is None or ctx.get("illegal"):
+            return 0.0, {}
+        
+        t_a = float(ctx.get("t_actual", 0.0))
+        if not np.isfinite(t_a):
+            t_a = 0.0
+        
+        dag = vehicle.task_dag
+        if dag is None:
+            return 0.0, {}
+        
+        # 计算deadline slack
+        elapsed = self.time - dag.start_time
+        deadline_rem = dag.deadline - elapsed
+        slack = deadline_rem - t_a
+        
+        # 参数（可配置）
+        S0 = getattr(self.config, 'SLACK_S0', 3.0)  # 使tanh饱和合理的标定值
+        W_S = getattr(self.config, 'SLACK_WEIGHT', 1.0)
+        
+        # 计算slack-based奖励
+        r_time_base = W_S * float(np.tanh(slack / max(S0, 1e-9)))
+        
+        # [P0修复v2] 加入队列负载惩罚，解决"并发越高r_time越高"的问题
+        # 原因：t_a使用_get_rsu_queue_wait_time(返回最小处理器等待)，不随并发增长
+        # 修复：使用_get_rsu_queue_load(返回总负载)计算队列惩罚
+        r_queue_penalty = 0.0
+        target = ctx.get("target")
+        if self._is_rsu_location(target):
+            rsu_id = self._get_rsu_id_from_location(target)
+            if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
+                rsu_load = self._get_rsu_queue_load(rsu_id)
+                rsu_limit = getattr(self.config, 'RSU_QUEUE_CYCLES_LIMIT', 1e12)
+                load_ratio = float(rsu_load / max(rsu_limit, 1e-9))
+                # 队列负载惩罚权重（可配置）
+                # [P0v3] 增大权重从0.5到1.5，并降低敏感度使惩罚更线性
+                W_Q = getattr(self.config, 'TIME_QUEUE_PENALTY_WEIGHT', 1.5)
+                r_queue_penalty = -W_Q * float(np.tanh(load_ratio * 3.0))  # 3.0使惩罚更线性
+        
+        r_time = r_time_base + r_queue_penalty
+        
+        # 为了兼容原有代码，同时计算旧的t_L/t_R/t_V用于调试
+        cycles = float(ctx.get("cycles", 0.0))
+        t_L, _ = self._estimate_t_actual(vehicle, subtask_idx, 'Local', cycles, power_ratio=1.0) if cycles > 0 else (None, 0)
+        
+        details = {
+            "slack": float(slack),
+            "deadline_rem": float(deadline_rem),
+            "t_a": float(t_a),
+            "t_L": float(t_L) if t_L is not None and np.isfinite(t_L) else None,
+            "S0": float(S0),
+            "r_time_base": float(r_time_base),
+            "r_queue_penalty": float(r_queue_penalty),
+            "r_time": float(r_time),
+            # 兼容旧字段
+            "r_lat": float(r_time),
+        }
+        return r_time, details
+
     def _compute_latency_advantage(self, vehicle, ctx):
-        """PBRS_KP_V2: 计算时延相对优势奖励及诊断字段"""
+        """
+        PBRS_KP_V2: 计算时延奖励
+        
+        [P0修复] 默认使用slack-based绝对效用替代相对优势
+        可通过config.USE_RELATIVE_ADVANTAGE=True切换回原方案（用于对比实验）
+        """
+        # 新方案：slack-based绝对效用
+        if not getattr(self.config, 'USE_RELATIVE_ADVANTAGE', False):
+            return self._compute_slack_based_time_reward(vehicle, ctx)
+        
+        # ===== 以下为原有相对优势方案（保留用于对比） =====
         subtask_idx = ctx.get("subtask")
         if subtask_idx is None or ctx.get("illegal"):
             return 0.0, {}
@@ -4958,10 +5240,14 @@ class VecOffloadingEnv(gym.Env):
                 v = plan['vehicle']
                 target_idx = plan.get('target_idx', 0)
                 
-                # 判断action类型
+                # 判断action类型（支持RSU选择模式）
+                enable_rsu_selection = getattr(self.config, 'ENABLE_RSU_SELECTION', False)
+                num_rsu = len(self.rsus)
+                rsu_end_idx = (1 + num_rsu) if enable_rsu_selection else 2
+                
                 if target_idx == 0:
                     action_type = 'local'
-                elif target_idx == 1:
+                elif 1 <= target_idx < rsu_end_idx:
                     action_type = 'rsu'
                 else:
                     action_type = 'v2v'

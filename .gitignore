@@ -11,10 +11,14 @@ ENV/
 env/
 
 # 训练输出
-# runs/
+# runs/  # 训练结果需要同步（包括图表）
 logs/
+
+# 模型文件（较大，不同步）
 models/*.pth
 *.pth
+runs/**/*.pth
+runs/**/checkpoints/
 .cursor/
 .claude/
 .cursorrules
@@ -23,6 +27,7 @@ models/*.pth
 audit_results/
 eval_results/
 sweep_results/
+out/
 
 # 数据文件
 data/

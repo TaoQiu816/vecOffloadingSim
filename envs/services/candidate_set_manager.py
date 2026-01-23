@@ -49,24 +49,44 @@ class CandidateSetManager:
         vehicle,
         v2v_candidates: List[Dict],
         serving_rsu_id: Optional[int],
+        rsus_in_range: Optional[List[int]] = None,  # 新增：覆盖范围内的RSU列表
     ) -> Dict:
         max_targets = int(getattr(self.config, "MAX_TARGETS", 2))
-        max_neighbors = max(0, max_targets - 2)
+        enable_rsu_selection = getattr(self.config, "ENABLE_RSU_SELECTION", False)
+        num_rsu = int(getattr(self.config, "NUM_RSU", 3))
+        
+        # 计算RSU和V2V的索引边界
+        rsu_start_idx = 1
+        rsu_end_idx = (1 + num_rsu) if enable_rsu_selection else 2
+        v2v_start_idx = rsu_end_idx
+        max_neighbors = max(0, max_targets - v2v_start_idx)
+        
         ids = np.full(max_targets, -1, dtype=np.int64)
         types = np.zeros(max_targets, dtype=np.int8)
         mask = np.zeros(max_targets, dtype=bool)
 
-        # Index 0: Local
+        # Index 0: Local (always available)
         ids[0] = int(vehicle.id)
         types[0] = 1
         mask[0] = True
 
-        # Index 1: Serving RSU
-        types[1] = 2
-        if serving_rsu_id is not None:
-            ids[1] = int(serving_rsu_id)
-            mask[1] = True
+        if enable_rsu_selection:
+            # 新模式：每个RSU作为独立选项，仅mask覆盖范围内的RSU
+            rsus_available = set(rsus_in_range) if rsus_in_range else set()
+            for rsu_id in range(num_rsu):
+                idx = rsu_start_idx + rsu_id  # index 1,2,3 -> RSU_0,1,2
+                if idx < max_targets:
+                    ids[idx] = rsu_id
+                    types[idx] = 2
+                    mask[idx] = (rsu_id in rsus_available)
+        else:
+            # 旧模式：单一RSU选项（由env选择serving RSU）
+            types[1] = 2
+            if serving_rsu_id is not None:
+                ids[1] = int(serving_rsu_id)
+                mask[1] = True
 
+        # V2V candidates
         sorted_info = self._sort_candidates(v2v_candidates)
         selected_info = self._apply_dynamic_filter(sorted_info)
 
@@ -82,17 +102,19 @@ class CandidateSetManager:
             if cand_id == vehicle.id or cand_id in used_ids:
                 continue
             used_ids.add(cand_id)
-            ids[2 + slot_idx] = int(cand_id)
-            types[2 + slot_idx] = 3
-            mask[2 + slot_idx] = True
-            v2v_slots[slot_idx] = info
+            target_idx = v2v_start_idx + slot_idx
+            if target_idx < max_targets:
+                ids[target_idx] = int(cand_id)
+                types[target_idx] = 3
+                mask[target_idx] = True
+                v2v_slots[slot_idx] = info
             slot_idx += 1
 
         if getattr(self.config, "DEBUG_CANDIDATE_SET", False):
             info_list = []
             for idx in range(max_targets):
                 info_list.append(f"{idx}:{types[idx]}/{ids[idx]}/{int(mask[idx])}")
-            print(f"[Debug] candidate_set veh={vehicle.id} serving_rsu={serving_rsu_id} -> {', '.join(info_list)}")
+            print(f"[Debug] candidate_set veh={vehicle.id} serving_rsu={serving_rsu_id} rsus_in_range={rsus_in_range} -> {', '.join(info_list)}")
 
         return {
             "ids": ids,
