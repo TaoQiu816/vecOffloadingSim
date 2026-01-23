@@ -99,10 +99,27 @@ def apply_env_overrides():
         "BW_V2V": "BW_V2V",
         "MIN_CPU": "MIN_VEHICLE_CPU_FREQ",
         "MAX_CPU": "MAX_VEHICLE_CPU_FREQ",
-        "TIME_QUEUE_PENALTY_WEIGHT": "TIME_QUEUE_PENALTY_WEIGHT",  # P0-1 A/B对照
+        "TIME_QUEUE_PENALTY_WEIGHT": "TIME_QUEUE_PENALTY_WEIGHT",
+        # Experiment config overrides
+        "MAP_SIZE": "MAP_SIZE",
+        "RSU_RANGE": "RSU_RANGE",
+        "V2V_RANGE": "V2V_RANGE",
+        "MIN_COMP": "MIN_COMP",
+        "MAX_COMP": "MAX_COMP",
+        "NORM_MAX_COMP": "NORM_MAX_COMP",
+        "DEADLINE_TIGHTENING_MIN": "DEADLINE_TIGHTENING_MIN",
+        "DEADLINE_TIGHTENING_MAX": "DEADLINE_TIGHTENING_MAX",
+        "RSU_QUEUE_CYCLES_LIMIT": "RSU_QUEUE_CYCLES_LIMIT",
+        "VEHICLE_QUEUE_CYCLES_LIMIT": "VEHICLE_QUEUE_CYCLES_LIMIT",
+        "VEHICLE_SPAWN_X_MAX": "VEHICLE_SPAWN_X_MAX",
     }
     overrides_int = {
         "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",
+        "NUM_VEHICLES": "NUM_VEHICLES",
+        "NUM_RSU": "NUM_RSU",
+        "V2V_TOP_K": "V2V_TOP_K",
+        "MIN_NODES": "MIN_NODES",
+        "MAX_NODES": "MAX_NODES",
     }
     for env_key, cfg_attr in overrides_float.items():
         val = _env_float(env_key)
@@ -123,10 +140,13 @@ def apply_env_overrides():
         "LOGIT_BIAS_LOCAL": "LOGIT_BIAS_LOCAL",
         "LOGIT_BIAS_RSU": "LOGIT_BIAS_RSU",
         "VALUE_CLIP_RANGE": "VALUE_CLIP_RANGE",
+        "LR_DECAY_RATE": "LR_DECAY_RATE",
     }
     tc_int = {
         "MINI_BATCH_SIZE": "MINI_BATCH_SIZE",
         "MIN_ACTIVE_SAMPLES": "MIN_ACTIVE_SAMPLES",
+        "LR_DECAY_STEPS": "LR_DECAY_STEPS",
+        "SAVE_INTERVAL": "SAVE_INTERVAL",
     }
     for env_key, attr in tc_float.items():
         val = _env_float(env_key)
@@ -145,6 +165,10 @@ def apply_env_overrides():
     use_value_target_norm = _env_bool("USE_VALUE_TARGET_NORM")
     if use_value_target_norm is not None:
         TC.USE_VALUE_TARGET_NORM = use_value_target_norm
+
+    # Recalculate derived values after overrides
+    Cfg.MAX_NEIGHBORS = max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
+    Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
 
 
 def _collect_obs_stats(obs_list):
