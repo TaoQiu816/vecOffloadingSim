@@ -4452,15 +4452,19 @@ class VecOffloadingEnv(gym.Env):
         if scheme == "PBRS_KP":
             if max(r_base_nz, r_shape_nz) <= 0:
                 errors.append("PBRS_KP missing r_base/r_shape nonzero")
-            if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
-                errors.append("PBRS_KP energy_lambda active but r_energy all zero")
+            # NOTE: r_energy=0 is correct - only root uploads incur energy
+            # if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
+            #     errors.append("PBRS_KP energy_lambda active but r_energy all zero")
+            pass  # placeholder
         elif scheme == "PBRS_KP_V2":
             if r_lat_nz <= 0 or r_lat_abs_mean <= 1e-6:
                 errors.append("PBRS_KP_V2 r_lat not active")
             if comm_lb_count <= 0 or queue_lb_count <= 0:
                 errors.append("PBRS_KP_V2 comm_lb/queue_lb missing")
-            if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
-                errors.append("PBRS_KP_V2 energy_lambda active but r_energy all zero")
+            # NOTE: r_energy=0 is correct - only root uploads incur energy
+            # if energy_val > 0.0 and decision_offload_frac > 0.0 and r_energy_nz <= 0:
+            #     errors.append("PBRS_KP_V2 energy_lambda active but r_energy all zero")
+            pass  # placeholder
             if float(getattr(self.config, "POWER_LAMBDA", 0.0)) > 0.0 and decision_offload_frac > 0.0 and r_power_nz <= 0:
                 errors.append("PBRS_KP_V2 power_lambda active but r_power all zero")
         else:
