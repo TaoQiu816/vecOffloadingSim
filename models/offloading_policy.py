@@ -256,9 +256,9 @@ class OffloadingPolicyNetwork(nn.Module):
         # 1. DAG节点嵌入
         node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
 
-        # 2. 计算边偏置和空间偏置
-        edge_bias = self.edge_encoder(data_matrix)
-        spatial_bias = self.spatial_encoder(delta)
+        # 2. 计算边偏置和空间偏置（支持消融开关）
+        edge_bias = self.edge_encoder(data_matrix) if getattr(TC, "USE_EDGE_BIAS", True) else None
+        spatial_bias = self.spatial_encoder(delta) if getattr(TC, "USE_SPATIAL_BIAS", True) else None
 
         # 2.5 [方案A] 计算Rank偏置（可通过配置开关禁用）
         # rank_bias仅用于提升DAG表征质量，不参与调度决策

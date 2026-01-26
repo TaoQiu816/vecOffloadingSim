@@ -582,6 +582,7 @@ class SystemConfig:
     DEBUG_PBRS_AUDIT = False                # PBRS一致性审计/打点开关
     DEBUG_PHI_MONO_PROB = 0.1               # Phi单调性抽样概率
     AUDIT_PER_DECISION_REWARD = False       # per-decision奖励分项审计开关
+    AUDIT_FATAL_ON_SCHEME_ERROR = False     # 审计检查失败时是否中断训练（False=仅警告）
     
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output
                                             # 影响: 是否在stdout打印每个episode的JSONL

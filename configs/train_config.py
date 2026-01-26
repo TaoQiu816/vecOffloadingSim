@@ -55,6 +55,14 @@ class TrainConfig:
     USE_NO_READY_EMBEDDING = True   # subtask_index<0 时使用专用嵌入（避免误用节点0）
     COMMWAIT_DIRECT_TO_CRITIC = False  # 是否将CommWait特征直连拼接到Critic输入
 
+    # -------------------------------------------------------------------------
+    # 算法消融开关 (Algorithm Ablation Switches)
+    # -------------------------------------------------------------------------
+    USE_EDGE_BIAS = True            # Edge-Enhanced Attention中的边特征偏置
+    USE_SPATIAL_BIAS = True         # Edge-Enhanced Attention中的空间距离偏置
+    USE_PHYSICS_BIAS = True         # Cross-Attention中的物理偏置(距离+负载)
+    USE_FIXED_POWER = False         # 使用固定功率(0.5)代替Beta分布学习
+
     NUM_HEADS = 4           # 注意力头数 - Number of attention heads (Multi-Head Attention)
                             # 影响: 更多头数可以捕获更多样化的依赖关系，必须被EMBED_DIM整除
                             # Impact: More heads capture diverse dependencies; must divide EMBED_DIM evenly

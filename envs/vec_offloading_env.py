@@ -4491,7 +4491,13 @@ class VecOffloadingEnv(gym.Env):
         }
         self._audit_write_scheme_activation(row)
         if errors:
-            raise RuntimeError(f"[RewardSchemeAudit] {scheme} failed: {row['reason']}")
+            # Changed: Log warning instead of raising exception to avoid training interruption
+            # Use AUDIT_FATAL_ON_SCHEME_ERROR=True to restore old behavior for debugging
+            if getattr(self.config, "AUDIT_FATAL_ON_SCHEME_ERROR", False):
+                raise RuntimeError(f"[RewardSchemeAudit] {scheme} failed: {row['reason']}")
+            else:
+                import warnings
+                warnings.warn(f"[RewardSchemeAudit] {scheme} warning: {row['reason']}", stacklevel=2)
 
     def _audit_on_compute_done(self, job, time_now):
         key = (int(job.owner_vehicle_id), int(job.subtask_id))

@@ -130,19 +130,21 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         # 计算语义注意力分数 [B, H, 1, N_res]
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
         
-        # 2. 物理流：计算物理偏置
+        # 2. 物理流：计算物理偏置（支持消融开关）
         # resource_raw: [B, N_res, RESOURCE_RAW_DIM]
         # [CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type]
-        dist_norm = resource_raw[:, :, 2]  # Dist_Norm
-        load_norm = resource_raw[:, :, 1]  # Queue_Norm
-        
-        # Bias = -λ_dist * dist - λ_load * load
-        # [B, N_res] -> [B, 1, 1, N_res] (广播到多头)
-        bias_phy = -self.lambda_dist * dist_norm - self.lambda_load * load_norm
-        bias_phy = bias_phy.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, N_res]
-        
-        # 3. 融合：语义分数 + 物理偏置
-        attn_scores = attn_scores + bias_phy
+        from configs.train_config import TrainConfig as TC
+        if getattr(TC, "USE_PHYSICS_BIAS", True):
+            dist_norm = resource_raw[:, :, 2]  # Dist_Norm
+            load_norm = resource_raw[:, :, 1]  # Queue_Norm
+            
+            # Bias = -λ_dist * dist - λ_load * load
+            # [B, N_res] -> [B, 1, 1, N_res] (广播到多头)
+            bias_phy = -self.lambda_dist * dist_norm - self.lambda_load * load_norm
+            bias_phy = bias_phy.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, N_res]
+            
+            # 3. 融合：语义分数 + 物理偏置
+            attn_scores = attn_scores + bias_phy
         
         # 4. 应用Padding Mask
         if key_padding_mask is not None:

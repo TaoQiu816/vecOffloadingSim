@@ -165,6 +165,33 @@ def apply_env_overrides():
     use_value_target_norm = _env_bool("USE_VALUE_TARGET_NORM")
     if use_value_target_norm is not None:
         TC.USE_VALUE_TARGET_NORM = use_value_target_norm
+    use_rank_bias = _env_bool("USE_RANK_BIAS")
+    if use_rank_bias is not None:
+        TC.USE_RANK_BIAS = use_rank_bias
+
+    # Algorithm ablation overrides
+    use_edge_bias = _env_bool("USE_EDGE_BIAS")
+    if use_edge_bias is not None:
+        TC.USE_EDGE_BIAS = use_edge_bias
+    use_spatial_bias = _env_bool("USE_SPATIAL_BIAS")
+    if use_spatial_bias is not None:
+        TC.USE_SPATIAL_BIAS = use_spatial_bias
+    use_physics_bias = _env_bool("USE_PHYSICS_BIAS")
+    if use_physics_bias is not None:
+        TC.USE_PHYSICS_BIAS = use_physics_bias
+    use_fixed_power = _env_bool("USE_FIXED_POWER")
+    if use_fixed_power is not None:
+        TC.USE_FIXED_POWER = use_fixed_power
+
+    # Ablation: Transformer layers
+    num_layers = _env_int("NUM_LAYERS")
+    if num_layers is not None:
+        TC.NUM_LAYERS = num_layers
+
+    # Ablation study overrides (SystemConfig)
+    reward_beta = _env_float("REWARD_BETA")
+    if reward_beta is not None:
+        Cfg.REWARD_BETA = reward_beta
 
     # Recalculate derived values after overrides
     Cfg.MAX_NEIGHBORS = max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
