@@ -1,0 +1,7 @@
+Method,Success Rate (%),Mean Reward,Convergence Ep,Local (%),RSU (%),V2V (%),RSU Queue
+Full Model (Ours),92.4,0.538,89,0.4,44.5,55.1,9.8
+w/o Transformer,94.0,0.552,75,0.4,46.5,53.0,11.1
+w/o Edge Bias,94.4,0.562,147,0.4,44.9,54.7,10.1
+w/o Physics Bias,94.5,0.563,116,0.3,45.8,53.9,10.6
+High Pressure (B),78.1,0.363,-1,0.5,48.4,51.1,12.5
+Hard Mode,11.8,-0.213,-1,0.3,41.5,58.1,14.9
