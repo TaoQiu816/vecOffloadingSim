@@ -29,6 +29,9 @@ eval_results/
 sweep_results/
 out/
 
+# 审计脚本（测试/调试用，不同步）
+scripts/audit/
+
 # 数据文件
 data/
 #*.csv
