@@ -1,0 +1,6 @@
+Scene,Method,Success Rate (%),Mean Reward,RSU Queue,Convergence Ep
+largedag,full,1.0,0.000,0.0,24
+largedag,no_transformer,1.0,0.000,0.0,19
+resource,full,0.9,0.000,0.0,169
+resource,no_edge_bias,0.9,0.000,0.0,39
+resource,no_physics_bias,0.9,0.000,0.0,118
