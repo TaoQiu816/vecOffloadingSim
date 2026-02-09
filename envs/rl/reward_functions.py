@@ -106,6 +106,7 @@ def compute_unified_step_reward(
         'r_interf': float(r_interf),
         'r_risk': float(r_risk),
         'r_illegal': float(r_illegal),
+        'energy_norm': float(max(E_tx, 0.0) / E_ref),
         'E_tx': float(E_tx),
         'I_caused': float(I_caused),
         'rho_target': float(rho_target),

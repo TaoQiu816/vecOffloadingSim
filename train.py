@@ -1726,7 +1726,7 @@ def main():
             print(
                 "\n"
                 f"{'Ep':>6} {'Wall':>7} {'R/step':>9} {'T_SR':>8} {'V_SR':>8} {'S_SR':>8} "
-                f"{'L/R/V':>16} {'Lat(s)':>8} {'En':>8} {'Miss':>8} {'Ill':>8} {'KL':>8} {'Clip':>8}",
+                f"{'L/R/V':>16} {'Lat(s)':>8} {'En':>8} {'Miss':>8} {'Ill':>8} {'Ent':>8} {'KL':>8} {'Clip':>8}",
                 flush=True,
             )
             print("-" * 128, flush=True)
@@ -1737,7 +1737,7 @@ def main():
             f"{_fmt_pct(task_success_rate):>8} {_fmt_pct(vehicle_sr):>8} {_fmt_pct(subtask_success):>8} "
             f"{deci_str:>16} {_fmt_float(task_duration_mean, 3):>8} {_fmt_float(energy_norm_mean, 3):>8} "
             f"{_fmt_pct(deadline_miss_rate):>8} {_fmt_pct(illegal_rate_display):>8} "
-            f"{_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
+            f"{_fmt_float(entropy_val, 4):>8} {_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
             flush=True,
         )
 
