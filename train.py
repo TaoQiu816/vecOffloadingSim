@@ -579,6 +579,7 @@ def evaluate_single_baseline_episode(env, policy_name):
     
     last_info = None
     for step in range(TC.MAX_STEPS):
+        current_obs_list = obs_list  # classify decision types based on the obs used to select actions
         actions = policy.select_action(obs_list)
         _inject_obs_stamp(obs_list, actions)
         obs_list, rewards, done, truncated, info = env.step(actions)
@@ -588,12 +589,27 @@ def evaluate_single_baseline_episode(env, policy_name):
         
         # 统计决策分布
         for i, act in enumerate(actions):
-            if act['target'] == 0:
-                stats['local_cnt'] += 1
-            elif act['target'] == 1:
-                stats['rsu_cnt'] += 1
+            target = int(act.get("target", 0))
+
+            # Prefer candidate_types metadata for correct multi-RSU accounting.
+            obs_i = current_obs_list[i] if i < len(current_obs_list) else {}
+            candidate_types = obs_i.get("candidate_types") if isinstance(obs_i, dict) else None
+            if candidate_types is not None and 0 <= target < len(candidate_types):
+                ctype = int(candidate_types[target])
+                if ctype == 1:
+                    stats["local_cnt"] += 1
+                elif ctype == 2:
+                    stats["rsu_cnt"] += 1
+                else:
+                    stats["neighbor_cnt"] += 1
             else:
-                stats['neighbor_cnt'] += 1
+                # Fallback: target index convention
+                if target == 0:
+                    stats["local_cnt"] += 1
+                elif getattr(Cfg, "ENABLE_RSU_SELECTION", False) and 1 <= target <= int(getattr(Cfg, "NUM_RSU", 1)):
+                    stats["rsu_cnt"] += 1
+                else:
+                    stats["neighbor_cnt"] += 1
             
             stats['power_sum'] += act.get('power', 0.0)
             stats['queue_len_sum'] += env.vehicles[i].task_queue_len if i < len(env.vehicles) else 0

@@ -46,6 +46,7 @@ COLORS = {
     'Random': '#e74c3c',       # Baseline: Random
     'Local-Only': '#95a5a6',   # Baseline: Local
     'Greedy': '#f39c12',       # Baseline: Greedy
+    'EFT': '#16a34a',          # Baseline: EFT
     'Static': '#7c3aed',       # Baseline: Static
 }
 
@@ -104,7 +105,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
             color=COLORS['primary'], linewidth=2.5, label='MAPPO')
     
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        for policy in sorted(df_baseline['policy'].unique()):
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty:
                 # 使用平滑曲线绘制baseline，与MAPPO风格一致
@@ -126,7 +127,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
             color=COLORS['secondary'], linewidth=2.5, label='MAPPO')
     
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        for policy in sorted(df_baseline['policy'].unique()):
             policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
             if not policy_data.empty and 'task_sr' in policy_data.columns:
                 # 使用平滑曲线绘制baseline，与MAPPO风格一致
@@ -371,7 +372,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
             color=COLORS['primary'], linewidth=3, label='MAPPO')
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        for policy in sorted(df_baseline['policy'].unique()):
             policy_data = df_baseline[df_baseline['policy'] == policy]
             if not policy_data.empty:
                 ax.plot(policy_data['episode'], policy_data['reward_mean'],
@@ -388,7 +389,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['task_sr'], 50) * 100, 
             color=COLORS['secondary'], linewidth=3, label='MAPPO T_SR')
     if df_baseline is not None:
-        for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+        for policy in sorted(df_baseline['policy'].unique()):
             policy_data = df_baseline[df_baseline['policy'] == policy]
             if not policy_data.empty and 'task_sr' in policy_data.columns:
                 ax.plot(policy_data['episode'], policy_data['task_sr'] * 100,
@@ -586,7 +587,28 @@ def main():
     
     df = pd.read_csv(args.log_file)
     print(f"✓ Loaded {len(df)} episodes from {args.log_file}")
-    
+
+    # Accept both "training_stats.csv" schema and the newer "metrics.csv" schema by normalizing key columns.
+    # This keeps the plotting code stable across runs copied between machines / versions.
+    if "task_sr" not in df.columns and "task_success_rate" in df.columns:
+        df["task_sr"] = df["task_success_rate"]
+    if "subtask_sr" not in df.columns and "subtask_success_rate" in df.columns:
+        df["subtask_sr"] = df["subtask_success_rate"]
+    if "vehicle_sr" not in df.columns:
+        if "success_rate_end" in df.columns:
+            df["vehicle_sr"] = df["success_rate_end"]
+        elif "task_success_rate" in df.columns:
+            df["vehicle_sr"] = df["task_success_rate"]
+    if "ratio_local" not in df.columns:
+        if "decision_frac_local" in df.columns:
+            df["ratio_local"] = df["decision_frac_local"]
+            df["ratio_rsu"] = df.get("decision_frac_rsu", 0.0)
+            df["ratio_v2v"] = df.get("decision_frac_v2v", 0.0)
+        elif "decision_local_frac" in df.columns:
+            df["ratio_local"] = df["decision_local_frac"]
+            df["ratio_rsu"] = df.get("decision_rsu_frac", 0.0)
+            df["ratio_v2v"] = df.get("decision_v2v_frac", 0.0)
+
     # 加载baseline数据
     df_baseline = load_baseline_data(args.log_file)
     if df_baseline is not None:

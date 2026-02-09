@@ -1,0 +1,3 @@
+episode,policy,reward_mean,reward_total,vehicle_sr,task_sr,subtask_sr,v2v_subtask_sr,ratio_local,ratio_rsu,ratio_v2v,avg_power,avg_queue_len,avg_rsu_queue
+1,Greedy,-1.470483542077643,-7.352417710388215,0.0,0.0,0.0217917675544794,0.0,0.0,1.0,0.0,1.0,0.0,18.2
+1,Random,-2.6053960927954423,-13.026980463977212,0.0,0.0,0.0112359550561797,0.1666666666666666,0.08,0.23,0.69,0.6564632547977611,0.54,2.8
