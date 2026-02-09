@@ -9,6 +9,7 @@ P01修复验证测试：Phase1-2时序冲突
 
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -109,6 +110,7 @@ def test_edge_activation_idempotency():
     print(f"  Idempotency verified: {edges_before} edges unchanged after 5 calls")
 
 
+@pytest.mark.nightly
 def test_dag_completion_flow():
     """
     测试：完整DAG完成流程

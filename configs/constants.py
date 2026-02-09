@@ -116,13 +116,37 @@ class ResourceRole:
 
 class ActionIndex:
     """
-    动作索引常量
+    动作索引常量（静态默认值仅用于回退兼容）
 
-    用于action_mask和target动作
+    [通用化] 推荐使用 from_candidate_types() 动态获取边界，
+    而非假设固定的 LOCAL=0/RSU=1/V2V_START=2 布局。
     """
-    LOCAL = 0       # 本地执行
-    RSU = 1         # RSU执行
-    V2V_START = 2   # V2V动作起始索引（2, 3, 4, ...）
+    LOCAL = 0       # 本地执行（始终index 0）
+    RSU = 1         # RSU执行（默认index 1，多RSU时为1..N_RSU）
+    V2V_START = 2   # V2V动作起始索引（默认2，多RSU时为 1+NUM_RSU）
+
+    @classmethod
+    def from_config(cls):
+        """从config动态计算V2V_START（不修改类属性，返回新值）"""
+        from configs.config import SystemConfig as Cfg
+        enable_rsu = getattr(Cfg, "ENABLE_RSU_SELECTION", False)
+        num_rsu = getattr(Cfg, "NUM_RSU", 3)
+        v2v_start = (1 + num_rsu) if enable_rsu else 2
+        return cls.LOCAL, cls.RSU, v2v_start
+
+    @classmethod
+    def from_candidate_types(cls, types):
+        """
+        [通用化] 从 candidate_types 数组动态获取各类型索引。
+        types: np.ndarray 或 list，1=Local, 2=RSU, 3=V2V
+        返回: (local_indices, rsu_indices, v2v_indices) 三个列表
+        """
+        import numpy as np
+        types = np.asarray(types)
+        local_idx = np.where(types == 1)[0].tolist()
+        rsu_idx = np.where(types == 2)[0].tolist()
+        v2v_idx = np.where(types == 3)[0].tolist()
+        return local_idx, rsu_idx, v2v_idx
 
     @classmethod
     def get_v2v_index(cls, neighbor_idx: int) -> int:

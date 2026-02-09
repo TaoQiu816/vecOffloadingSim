@@ -23,13 +23,14 @@ class CandidateSetManager:
             key_fn = lambda x: (x.get("total_time", float("inf")), x.get("dist", float("inf")), x.get("id", -1))
         return sorted(candidates, key=key_fn)
 
-    def _apply_dynamic_filter(self, sorted_info: List[Dict]) -> List[Dict]:
+    def _apply_dynamic_filter(self, sorted_info: List[Dict], max_k: Optional[int] = None) -> List[Dict]:
+        if max_k is None:
+            max_k = int(getattr(self.config, "V2V_TOP_K", self.config.MAX_NEIGHBORS))
         if not getattr(self.config, "V2V_DYNAMIC_K", False):
-            return sorted_info
+            return sorted_info[:max_k] if max_k > 0 else []
         if not sorted_info:
             return []
         min_k = int(getattr(self.config, "V2V_TOP_K_MIN", 1))
-        max_k = int(getattr(self.config, "V2V_TOP_K", self.config.MAX_NEIGHBORS))
         max_k = max(0, min(max_k, self.config.MAX_NEIGHBORS))
         best_time = sorted_info[0].get("total_time", None)
         if best_time is None:
@@ -88,7 +89,22 @@ class CandidateSetManager:
 
         # V2V candidates
         sorted_info = self._sort_candidates(v2v_candidates)
-        selected_info = self._apply_dynamic_filter(sorted_info)
+        reachable_cnt = len(sorted_info)
+        mode = str(getattr(self.config, "CANDIDATE_MODE", "TOPK")).upper()
+        if mode == "ALL":
+            selected_info = sorted_info
+        elif mode == "RANDOMK":
+            max_k = int(getattr(self.config, "RANDOMK_K", self.config.MAX_NEIGHBORS))
+            max_k = max(0, min(max_k, self.config.MAX_NEIGHBORS))
+            if max_k <= 0 or not sorted_info:
+                selected_info = []
+            else:
+                k = min(max_k, len(sorted_info))
+                idx = np.random.choice(len(sorted_info), size=k, replace=False)
+                selected_info = [sorted_info[i] for i in idx]
+        else:
+            max_k = int(getattr(self.config, "TOPK_K", self.config.MAX_NEIGHBORS))
+            selected_info = self._apply_dynamic_filter(sorted_info, max_k=max_k)
 
         used_ids = set()
         v2v_slots: List[Optional[Dict]] = [None] * max_neighbors
@@ -110,6 +126,9 @@ class CandidateSetManager:
                 v2v_slots[slot_idx] = info
             slot_idx += 1
 
+        selected_cnt = sum(1 for info in v2v_slots if info is not None)
+        dropped_cnt = max(0, reachable_cnt - selected_cnt)
+        padded_cnt_v2v = max_neighbors - selected_cnt  # padding空位数
         if getattr(self.config, "DEBUG_CANDIDATE_SET", False):
             info_list = []
             for idx in range(max_targets):
@@ -121,6 +140,15 @@ class CandidateSetManager:
             "types": types,
             "mask": mask,
             "v2v_slots": v2v_slots,
+            "rsu_start_idx": rsu_start_idx,
+            "rsu_end_idx": rsu_end_idx,
+            "v2v_start_idx": v2v_start_idx,
+            "max_neighbors": max_neighbors,
+            "reachable_cnt": reachable_cnt,
+            "dropped_cnt": dropped_cnt,
+            "feasible_cnt_v2v": selected_cnt,
+            "padded_cnt_v2v": padded_cnt_v2v,
+            "masked_cnt_total": int(np.sum(mask)),
         }
 
 

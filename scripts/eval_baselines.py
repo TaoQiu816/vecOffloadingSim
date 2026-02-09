@@ -31,15 +31,57 @@ import torch
 import os
 import sys
 import json
+import argparse
+from pathlib import Path
 from tqdm import tqdm
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
 from models.offloading_policy import OffloadingPolicyNetwork
+
+
+def _json_default(obj):
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+def _classify_action_type(action, obs):
+    """Classify action as local/rsu/v2v using observation metadata first."""
+    target = int(action.get("target", 0))
+    candidate_types = obs.get("candidate_types")
+    if candidate_types is not None and 0 <= target < len(candidate_types):
+        ctype = int(candidate_types[target])
+        if ctype == 1:
+            return "local"
+        if ctype == 2:
+            return "rsu"
+        if ctype == 3:
+            return "v2v"
+
+    # Fallback path for older observations without candidate_types.
+    explicit_type = action.get("target_type")
+    if isinstance(explicit_type, str):
+        t = explicit_type.strip().lower()
+        if t in ("local", "rsu", "v2v"):
+            return t
+    if target == 0:
+        return "local"
+    if getattr(Cfg, "ENABLE_RSU_SELECTION", False):
+        if 1 <= target <= int(getattr(Cfg, "NUM_RSU", 1)):
+            return "rsu"
+        return "v2v"
+    return "rsu" if target == 1 else "v2v"
 
 
 def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False):
@@ -71,7 +113,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     avg_powers = []
     
     for ep in tqdm(range(num_episodes), desc=f"{policy_name}"):
-        obs_list, _ = env.reset()
+        obs_list, _ = env.reset(seed=ep)
         policy.reset()
         
         ep_reward = 0
@@ -82,6 +124,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         
         for step in range(TC.MAX_STEPS):
             # 获取动作
+            current_obs = obs_list
             if use_network:
                 with torch.no_grad():
                     target_actions, power_actions, _, _ = policy.get_action_and_value(
@@ -107,13 +150,13 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
             ep_reward += sum(rewards) / len(rewards)
             
             for i, action in enumerate(actions):
-                target = action['target']
+                action_type = _classify_action_type(action, current_obs[i] if i < len(current_obs) else {})
                 power = action['power']
                 
                 # 决策分布统计
-                if target == 0:
+                if action_type == "local":
                     ep_decisions['local'] += 1
-                elif target == 1:
+                elif action_type == "rsu":
                     ep_decisions['rsu'] += 1
                 else:
                     ep_decisions['v2v'] += 1
@@ -204,8 +247,18 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     return results
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate baselines and trained MAPPO policy.")
+    parser.add_argument("--num-episodes", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model-path", type=str, default="checkpoints/best_model.pth")
+    parser.add_argument("--output-dir", type=str, default="eval_results")
+    return parser.parse_args()
+
+
 def main():
     """主评估流程"""
+    args = _parse_args()
     print("="*60)
     print("基准策略对比评估")
     print("="*60)
@@ -214,12 +267,12 @@ def main():
     env = VecOffloadingEnv()
     
     # 评估配置
-    num_episodes = 50  # 每个策略评估50个回合
+    num_episodes = int(args.num_episodes)
     
     all_results = []
     
     # 1. 评估随机策略
-    random_policy = RandomPolicy(seed=42)
+    random_policy = RandomPolicy(seed=int(args.seed))
     results_random = evaluate_policy(env, random_policy, "Random Policy", num_episodes)
     all_results.append(results_random)
     
@@ -234,7 +287,7 @@ def main():
     all_results.append(results_greedy)
     
     # 4. 评估训练好的MAPPO（如果存在）
-    mappo_model_path = "checkpoints/best_model.pth"
+    mappo_model_path = args.model_path
     if os.path.exists(mappo_model_path):
         print(f"\n检测到训练好的MAPPO模型: {mappo_model_path}")
         
@@ -246,7 +299,7 @@ def main():
         )
         
         checkpoint = torch.load(mappo_model_path, map_location='cpu')
-        network.load_state_dict(checkpoint['network_state_dict'])
+        network.load_state_dict(checkpoint['network_state_dict'], strict=False)
         network.eval()
         
         results_mappo = evaluate_policy(
@@ -257,14 +310,14 @@ def main():
         print(f"\n未找到训练好的MAPPO模型，跳过MAPPO评估")
     
     # 保存结果
-    output_dir = "eval_results"
+    output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
     
     with open(f"{output_dir}/baseline_comparison.json", 'w') as f:
-        json.dump(all_results, f, indent=2)
+        json.dump(all_results, f, indent=2, default=_json_default)
     
     print(f"\n{'='*60}")
-    print("评估完成！结果已保存到: eval_results/baseline_comparison.json")
+    print(f"评估完成！结果已保存到: {output_dir}/baseline_comparison.json")
     print(f"{'='*60}")
     
     # 生成对比表格
@@ -277,6 +330,7 @@ def main():
               f"{result['avg_vehicle_success_rate']*100:<12.1f} "
               f"{result['avg_subtask_success_rate']*100:<12.1f} "
               f"{result['avg_completion_time']:<12.2f}")
+    env.close()
 
 
 if __name__ == "__main__":

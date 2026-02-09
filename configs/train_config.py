@@ -276,6 +276,11 @@ class TrainConfig:
                                # 影响: LOGIT_BIAS_LOCAL不会低于此值，保持Local探索
                                # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 
+    # V2V 探索 bias（确保 early training 中 V2V tx 发生，使干扰惩罚与功率可学习）
+    LOGIT_BIAS_V2V_INIT = 1.0  # V2V 初始 logit bias
+    LOGIT_BIAS_V2V_ANNEAL_STEPS = 20000  # 线性退火步数（global_step 达到此值时 bias→0）
+    _logit_bias_v2v_current = 1.0  # 运行时动态值（由 train.py 更新）
+
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
@@ -405,3 +410,25 @@ class TrainConfig:
     RANK_MEAN_RATE = 20e6       # 平均通信速率(bps)用于static模式 - Mean rate for static mode
     RANK_EXEC_COST_MODE = 'mean_cpu'  # exec_cost估计方式
     RANK_COMM_COST_MODE = 'mean_rate' # comm_cost估计方式
+
+    # =========================================================================
+    # 6. Settlement Risk Layer (Chain Proxy)
+    # =========================================================================
+    CHAIN_ENABLED = False
+    CHAIN_MODE = "NONE"
+    CHAIN_OBS_DIM = 5
+    CHAIN_USE_IN_OBS = True
+    CHAIN_RISK_WEIGHT_DEPOSIT = 0.0
+    CHAIN_RISK_WEIGHT_FAIL = 0.0
+    CHAIN_DEPOSIT_BASE = 1.0
+    CHAIN_DEPOSIT_SCALE = 0.0
+    CHAIN_CHARGE_RSU = True
+    CHAIN_BATCH_K = 1
+    CHAIN_SWITCH_PERIOD_STEPS = 200
+    CHAIN_P50_LOW = 0.0
+    CHAIN_P95_LOW = 0.0
+    CHAIN_PFAIL_LOW = 0.0
+    CHAIN_P50_HIGH = 0.0
+    CHAIN_P95_HIGH = 0.0
+    CHAIN_PFAIL_HIGH = 0.0
+    CHAIN_NOISE_STD = 0.0

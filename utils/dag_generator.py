@@ -170,18 +170,30 @@ class DAGGenerator:
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
+        def _bytes_to_bits(val):
+            return float(val) * 8.0
+
         nodes = payload.get("nodes")
         node_comp = payload.get("node_comp_cycles")
-        node_input = payload.get("node_input_bytes")
+        node_input_bits = payload.get("node_input_bits")
+        node_input_bytes = payload.get("node_input_bytes")
         if nodes is not None:
             num_nodes = len(nodes)
             comp_arr = [float(n.get("comp_cycles", 0.0)) for n in nodes]
-            input_arr = [float(n.get("input_data_bytes", 0.0)) for n in nodes]
+            input_arr = []
+            for n in nodes:
+                if "input_data_bits" in n:
+                    input_arr.append(float(n.get("input_data_bits", 0.0)))
+                else:
+                    # workflow_json的*_bytes字段统一转换为bit
+                    input_arr.append(_bytes_to_bits(n.get("input_data_bytes", 0.0)))
         elif node_comp is not None:
             num_nodes = len(node_comp)
             comp_arr = [float(x) for x in node_comp]
-            if node_input is not None and len(node_input) == num_nodes:
-                input_arr = [float(x) for x in node_input]
+            if node_input_bits is not None and len(node_input_bits) == num_nodes:
+                input_arr = [float(x) for x in node_input_bits]
+            elif node_input_bytes is not None and len(node_input_bytes) == num_nodes:
+                input_arr = [_bytes_to_bits(x) for x in node_input_bytes]
             else:
                 input_arr = [0.0] * num_nodes
         else:
@@ -202,11 +214,15 @@ class DAGGenerator:
             if isinstance(edge, dict):
                 u = edge.get("src")
                 v = edge.get("dst")
-                data_bytes = edge.get("data_bytes", 0.0)
+                if "data_bits" in edge:
+                    data_bits = edge.get("data_bits", 0.0)
+                else:
+                    # workflow_json的*_bytes字段统一转换为bit
+                    data_bits = _bytes_to_bits(edge.get("data_bytes", 0.0))
             else:
                 u = edge[0] if len(edge) > 0 else None
                 v = edge[1] if len(edge) > 1 else None
-                data_bytes = edge[2] if len(edge) > 2 else 0.0
+                data_bits = edge[2] if len(edge) > 2 else 0.0
             if u is None or v is None:
                 continue
             u_idx = int(u)
@@ -216,7 +232,7 @@ class DAGGenerator:
             if not (0 <= u_idx < num_nodes and 0 <= v_idx < num_nodes):
                 raise ValueError(f"workflow_json edge out of range: {u_idx}->{v_idx}")
             adj_matrix[u_idx, v_idx] = 1
-            data_matrix[u_idx, v_idx] = float(data_bytes)
+            data_matrix[u_idx, v_idx] = float(data_bits)
 
         # DAG校验
         graph = nx.DiGraph(adj_matrix)

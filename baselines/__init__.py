@@ -12,6 +12,6 @@ from .random_policy import RandomPolicy
 from .local_only_policy import LocalOnlyPolicy
 from .greedy_policy import GreedyPolicy
 from .static_policy import StaticPolicy
-from .eft_policy import EFTPPolicy
+from .eft_policy import EFTPolicy, EFTPPolicy  # EFTPPolicy 为旧名兼容
 
-__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPPolicy']
+__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPolicy', 'EFTPPolicy']

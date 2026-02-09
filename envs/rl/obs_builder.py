@@ -4,7 +4,7 @@
 职责：
 - 从环境状态提取特征
 - 生成node_x, self_info, rsu_info, adj, neighbors等
-- 计算action_mask和target_mask
+- 计算action_mask
 - 固定维度填充以满足批处理要求
 
 设计原则：
@@ -29,7 +29,7 @@ class ObsBuilder:
     
     【重要】保持与原实现完全一致：
     - 观测维度、归一化系数、特征顺序
-    - mask逻辑（task_mask, target_mask）
+    - mask逻辑（task_mask, action_mask）
     - 固定维度填充（MAX_NODES, MAX_NEIGHBORS, MAX_TARGETS）
     - 死锁兜底（所有目标不可用时强制开启Local）
     """
@@ -90,4 +90,3 @@ class ObsBuilder:
             "ObsBuilder当前作为框架存在，实际逻辑仍在VecOffloadingEnv._get_obs中。"
             "阶段6的目标是建立框架并集成，逐步迁移逻辑需要更细致的测试。"
         )
-

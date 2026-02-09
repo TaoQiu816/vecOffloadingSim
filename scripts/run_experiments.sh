@@ -12,8 +12,9 @@
 
 set -e
 
-# 设置基础路径
-BASE_DIR="/Users/qiutao/研/毕设/毕设/vecOffloadingSim"
+# 设置基础路径（自动定位仓库根目录）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$BASE_DIR"
 
 # 时间戳

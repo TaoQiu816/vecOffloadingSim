@@ -43,6 +43,7 @@ import argparse
 import subprocess
 from pathlib import Path
 import traceback
+from typing import Any, Dict, List
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -57,9 +58,6 @@ from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy,
 from utils.train_helpers import (
     ensure_dir as _ensure_dir,
     read_last_jsonl as _read_last_jsonl,
-    format_table_header as _format_table_header,
-    format_table_divider as _format_table_divider,
-    format_table_row as _format_table_row,
     compute_time_limit_penalty as _compute_time_limit_penalty,
     env_int as _env_int,
     env_float as _env_float,
@@ -82,6 +80,12 @@ def _parse_args():
     parser.add_argument("--cfg-profile", type=str, default=None, help="[DEPRECATED] Config profiles removed")
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--run-dir", type=str, default=None)
+    parser.add_argument(
+        "--exact-run-dir",
+        action="store_true",
+        default=False,
+        help="Use --run-dir exactly as provided (no timestamp suffix).",
+    )
     parser.add_argument("--step-metrics", action="store_true", default=False)
     parser.add_argument("--no-step-metrics", action="store_true", default=False)
     parser.add_argument("--step-logs", action="store_true", default=False)
@@ -193,8 +197,20 @@ def apply_env_overrides():
     if reward_beta is not None:
         Cfg.REWARD_BETA = reward_beta
 
+    # String overrides (CANDIDATE_MODE等)
+    cand_mode = os.environ.get("CANDIDATE_MODE")
+    if cand_mode:
+        Cfg.CANDIDATE_MODE = cand_mode.upper()
+    topk_k = _env_int("TOPK_K")
+    if topk_k is not None:
+        Cfg.TOPK_K = topk_k
+    randomk_k = _env_int("RANDOMK_K")
+    if randomk_k is not None:
+        Cfg.RANDOMK_K = randomk_k
+
     # Recalculate derived values after overrides
-    Cfg.MAX_NEIGHBORS = max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
+    Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "TOPK")).upper() == "ALL")
+    Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
     Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
 
 
@@ -227,9 +243,6 @@ def _collect_obs_stats(obs_list):
     action_mask = _stack("action_mask")
     if action_mask is not None:
         stats["obs/action_mask_true_frac"] = float(np.mean(action_mask))
-    target_mask = _stack("target_mask")
-    if target_mask is not None:
-        stats["obs/target_mask_true_frac"] = float(np.mean(target_mask))
     return stats
 
 
@@ -262,6 +275,184 @@ def _inject_obs_stamp(obs_list, actions):
             continue
         if i < len(obs_list) and "obs_stamp" in obs_list[i] and "obs_stamp" not in act:
             act["obs_stamp"] = int(obs_list[i]["obs_stamp"])
+
+
+def _safe_float(val):
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(f):
+        return None
+    return f
+
+
+def _fmt_float(val, precision=3, fallback="-"):
+    f = _safe_float(val)
+    if f is None:
+        return fallback
+    return f"{f:.{precision}f}"
+
+
+def _fmt_pct(val, precision=1, fallback="-"):
+    f = _safe_float(val)
+    if f is None:
+        return fallback
+    return f"{f * 100.0:.{precision}f}%"
+
+
+def _print_startup_summary(
+    run_id: str,
+    run_dir: str,
+    logs_dir: str,
+    plots_dir: str,
+    models_dir: str,
+    device: str,
+    baseline_eval_enabled: bool,
+    log_step_metrics: bool,
+    log_step_logs: bool,
+):
+    p_min_dbm = getattr(Cfg, "TX_POWER_MIN_DBM", None)
+    p_max_dbm = getattr(Cfg, "TX_POWER_MAX_DBM", None)
+    p_min_w = getattr(Cfg, "P_MIN_WATT", None)
+    p_max_w = getattr(Cfg, "P_MAX_WATT", None)
+    if p_min_w is None and p_min_dbm is not None:
+        p_min_w = 10 ** ((float(p_min_dbm) - 30.0) / 10.0)
+    if p_max_w is None and p_max_dbm is not None:
+        p_max_w = 10 ** ((float(p_max_dbm) - 30.0) / 10.0)
+
+    print("\n" + "=" * 118, flush=True)
+    print("[Train] MAPPO VEC training started", flush=True)
+    print("=" * 118, flush=True)
+    print(
+        f"[Run] id={run_id} seed={Cfg.SEED} device={device} reward={Cfg.REWARD_SCHEME} "
+        f"candidate={getattr(Cfg, 'CANDIDATE_MODE', 'N/A')} "
+        f"(all_feasible={bool(getattr(Cfg, 'ALL_FEASIBLE', False))})",
+        flush=True,
+    )
+    print(
+        f"[Train] episodes={TC.MAX_EPISODES} steps/ep={TC.MAX_STEPS} eval_interval={TC.EVAL_INTERVAL} "
+        f"save_interval={TC.SAVE_INTERVAL} baseline_eval={'on' if baseline_eval_enabled else 'off'}",
+        flush=True,
+    )
+    print(
+        f"[Scenario] vehicles={Cfg.NUM_VEHICLES} rsu={Cfg.NUM_RSU} map={Cfg.MAP_SIZE}m lanes={Cfg.NUM_LANES} "
+        f"v2v_range={Cfg.V2V_RANGE}m rsu_range={Cfg.RSU_RANGE}m",
+        flush=True,
+    )
+    print(
+        f"[Physics] BW_V2I={Cfg.BW_V2I/1e6:.2f}MHz BW_V2V={Cfg.BW_V2V/1e6:.2f}MHz RB={Cfg.V2V_NUM_RB} "
+        f"Ptx=[{_fmt_float(p_min_w, 4)},{_fmt_float(p_max_w, 4)}]W "
+        f"({_fmt_float(p_min_dbm, 1)},{_fmt_float(p_max_dbm, 1)} dBm) DT={Cfg.DT:.3f}s",
+        flush=True,
+    )
+    print(
+        f"[Compute] f_local=[{Cfg.MIN_VEHICLE_CPU_FREQ/1e9:.2f},{Cfg.MAX_VEHICLE_CPU_FREQ/1e9:.2f}]GHz "
+        f"f_rsu={Cfg.F_RSU/1e9:.2f}GHz",
+        flush=True,
+    )
+    print(
+        f"[PPO] lr={TC.LR_ACTOR:.2e} gamma={TC.GAMMA:.3f} gae={TC.GAE_LAMBDA:.3f} clip={TC.CLIP_PARAM:.3f} "
+        f"ent={TC.ENTROPY_COEF:.3f} batch={TC.MINI_BATCH_SIZE} epochs={TC.PPO_EPOCH} d_model={TC.EMBED_DIM} layers={TC.NUM_LAYERS}",
+        flush=True,
+    )
+    print(
+        f"[Logging] step_metrics={'on' if log_step_metrics else 'off'} "
+        f"step_logs={'on' if log_step_logs else 'off'} tb_obs={'on' if _bool_env('TB_LOG_OBS', True) else 'off'}",
+        flush=True,
+    )
+    print(f"[Paths] run={run_dir}", flush=True)
+    print(f"[Paths] logs={logs_dir}  models={models_dir}  plots={plots_dir}", flush=True)
+    print("=" * 118 + "\n", flush=True)
+
+
+def _collect_plot_manifest(plots_dir: str) -> List[Dict[str, Any]]:
+    plot_root = Path(plots_dir)
+    if not plot_root.exists():
+        return []
+    figures: List[Dict[str, Any]] = []
+    for fig_path in sorted(plot_root.glob("*.png")):
+        name = fig_path.name.lower()
+        tags = []
+        if "reward" in name:
+            tags.append("reward")
+        if "success" in name:
+            tags.append("success")
+        if "policy" in name or "offloading" in name or "decision" in name:
+            tags.append("policy")
+        if "diagnostic" in name or "stability" in name or "loss" in name or "convergence" in name:
+            tags.append("rl_diagnostics")
+        if "physical" in name or "resource" in name or "queue" in name or "power" in name:
+            tags.append("simulation")
+        if "baseline" in name or "comparison" in name:
+            tags.append("baseline")
+        if "fairness" in name or "collaboration" in name or "multi_agent" in name:
+            tags.append("multi_agent")
+        stat = fig_path.stat()
+        figures.append(
+            {
+                "file": fig_path.name,
+                "path": str(fig_path),
+                "size_bytes": int(stat.st_size),
+                "tags": tags,
+            }
+        )
+    return figures
+
+
+def _write_plot_manifest(plots_dir: str, jobs: List[Dict[str, Any]]) -> str:
+    figures = _collect_plot_manifest(plots_dir)
+    tag_counts: Dict[str, int] = {}
+    for fig in figures:
+        for tag in fig.get("tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    manifest = {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "plots_dir": str(Path(plots_dir).resolve()),
+        "plot_count": len(figures),
+        "tag_counts": tag_counts,
+        "jobs": jobs,
+        "figures": figures,
+    }
+    manifest_path = Path(plots_dir) / "plot_manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return str(manifest_path)
+
+
+def _run_plot_job(label: str, cmd: List[str]) -> Dict[str, Any]:
+    print(f"[Auto Plot] {label} ...", flush=True)
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        dt = time.time() - t0
+        out = (proc.stdout or "").strip()
+        out_lines = [line for line in out.splitlines() if line.strip()]
+        tail = out_lines[-3:] if out_lines else []
+        if tail:
+            print("[Auto Plot] " + " | ".join(tail), flush=True)
+        print(f"[Auto Plot] {label} done in {dt:.1f}s", flush=True)
+        return {"job": label, "ok": True, "seconds": dt, "tail": tail}
+    except subprocess.CalledProcessError as e:
+        dt = time.time() - t0
+        out = (e.stdout or "").strip()
+        out_lines = [line for line in out.splitlines() if line.strip()]
+        tail = out_lines[-6:] if out_lines else [str(e)]
+        print(f"[Auto Plot] {label} failed in {dt:.1f}s", flush=True)
+        print("[Auto Plot] " + " | ".join(tail), flush=True)
+        return {"job": label, "ok": False, "seconds": dt, "tail": tail}
+    except Exception as e:
+        dt = time.time() - t0
+        print(f"[Auto Plot] {label} failed in {dt:.1f}s: {e}", flush=True)
+        return {"job": label, "ok": False, "seconds": dt, "tail": [str(e)]}
 
 
 def evaluate_baselines(env, num_episodes=10):
@@ -611,11 +802,12 @@ def main():
     if run_dir_env:
         run_dir = run_dir_env
         base = os.path.basename(run_dir.rstrip(os.sep))
-        if not _has_ts(base):
+        # Keep existing default behavior unless caller explicitly requests exact run-dir.
+        if (not args.exact_run_dir) and (not _has_ts(base)):
             run_dir = f"{run_dir_env}_{start_ts}"
             base = os.path.basename(run_dir)
         run_id = run_id_env or base
-        if not _has_ts(run_id):
+        if (not args.exact_run_dir) and (not _has_ts(run_id)):
             run_id = f"{run_id}_{start_ts}"
     else:
         run_id = run_id_env or f"run_{start_ts}"
@@ -663,21 +855,6 @@ def main():
     device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
     if device == "cuda":
         torch.cuda.empty_cache()
-
-    # =========================================================================
-    # 启动参数自检 (Startup Parameter Verification)
-    # =========================================================================
-    print("\n" + "="*80)
-    print("  STARTUP PARAMETER VERIFICATION")
-    print("="*80)
-    print(f"  RESOURCE_RAW_DIM:             {Cfg.RESOURCE_RAW_DIM} (Expected: 14)")
-    print(f"  DEADLINE_TIGHTENING_MIN:      {Cfg.DEADLINE_TIGHTENING_MIN:.2f} (Expected: 0.70)")
-    print(f"  DEADLINE_TIGHTENING_MAX:      {Cfg.DEADLINE_TIGHTENING_MAX:.2f} (Expected: 0.80)")
-    print(f"  LOGIT_BIAS_LOCAL:             {TC.LOGIT_BIAS_LOCAL:.1f} (Expected: 1.0)")
-    print(f"  LOGIT_BIAS_RSU:               {TC.LOGIT_BIAS_RSU:.1f} (Expected: 2.0)")
-    print(f"  F_RSU:                        {Cfg.F_RSU/1e9:.1f} GHz (Expected: 12.0 GHz)")
-    print(f"  Device:                       {device}")
-    print("="*80 + "\n")
 
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
@@ -797,41 +974,19 @@ def main():
     config_dump_path = os.path.join(run_dir, "config_dump.json")
     with open(config_dump_path, "w", encoding="utf-8") as f:
         json.dump(config_dump, f, ensure_ascii=True, indent=2, default=_json_default)
-
-    print("[ConfigDump] reward_scheme:", reward_scheme, flush=True)
-    print("[ConfigDump] reward_params:", config_dump["reward_params"], flush=True)
-    print("[ConfigDump] timeout_params:", config_dump["timeout_params"], flush=True)
-    print("[ConfigDump] energy_power_params:", config_dump["energy_power_params"], flush=True)
-    print("[ConfigDump] energy_lambda_effective:", energy_lambda_effective, flush=True)
-    print("[ConfigDump] ppo_params:", config_dump["ppo_params"], flush=True)
-
-    # 打印生效配置表（stdout仅保留这一张表 + 训练表格行）
-    info_rows = [
-        ("SEED", Cfg.SEED),
-        ("DT", Cfg.DT),
-        ("MAX_STEPS", TC.MAX_STEPS),
-        ("MAX_EPISODES", TC.MAX_EPISODES),
-        ("BW_V2I", Cfg.BW_V2I),
-        ("BW_V2V", Cfg.BW_V2V),
-        ("V2V_RANGE", Cfg.V2V_RANGE),
-        ("RSU_RANGE", Cfg.RSU_RANGE),
-        ("MIN_CPU", Cfg.MIN_VEHICLE_CPU_FREQ),
-        ("MAX_CPU", Cfg.MAX_VEHICLE_CPU_FREQ),
-        ("F_RSU", Cfg.F_RSU),
-        ("MIN_NODES", Cfg.MIN_NODES),
-        ("MAX_NODES", Cfg.MAX_NODES),
-        ("MIN_COMP", Cfg.MIN_COMP),
-        ("MAX_COMP", Cfg.MAX_COMP),
-        ("MIN_DATA", Cfg.MIN_DATA),
-        ("MAX_DATA", Cfg.MAX_DATA),
-    ]
-    info_cols = [("key", 18), ("value", 32)]
-    print(_format_table_divider(info_cols), flush=True)
-    print(_format_table_header(info_cols), flush=True)
-    print(_format_table_divider(info_cols), flush=True)
-    for key, val in info_rows:
-        print(_format_table_row({"key": key, "value": val}, info_cols), flush=True)
-    print(_format_table_divider(info_cols), flush=True)
+    print(f"[ConfigDump] saved: {config_dump_path}", flush=True)
+    print(f"[ConfigSnapshot] saved: {config_snapshot_path}", flush=True)
+    _print_startup_summary(
+        run_id=run_id,
+        run_dir=run_dir,
+        logs_dir=logs_dir,
+        plots_dir=plots_dir,
+        models_dir=models_dir,
+        device=device,
+        baseline_eval_enabled=not disable_baseline_eval,
+        log_step_metrics=log_step_metrics,
+        log_step_logs=log_step_logs,
+    )
 
     # 初始化环境
     env = VecOffloadingEnv()
@@ -866,18 +1021,24 @@ def main():
         # 基本信息
         "episode", "steps", "wall_time", "sim_time",
         # 奖励指标（与控制台打印一致）
-        "reward_mean", "reward_total", "reward_p95",
+        "reward_mean", "reward_total", "reward_p95", "reward_abs_mean",
         # 成功率指标（0-1范围，绘图时转换为百分比）
         "vehicle_sr", "task_sr", "subtask_sr",
         # 物理性能指标
         "task_duration_mean", "task_duration_p95", "completed_tasks",
-        "energy_mean", "deadline_misses",
+        "energy_mean", "energy_p95", "t_tx_mean", "dT_eff_mean",
+        "deadline_misses", "deadline_miss_rate",
         # 卸载决策分布（0-1范围，绘图时转换为百分比）
         "ratio_local", "ratio_rsu", "ratio_v2v",
+        # 系统负载与资源
+        "avg_power", "avg_rsu_queue", "rsu_queue_p95", "power_ratio_mean",
         # 服务指标
         "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
+        # 约束与安全
+        "time_limit_rate", "illegal_action_rate", "hard_trigger_rate",
         # 训练诊断指标
         "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
+        "grad_norm", "active_ratio", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
         # Bias状态
         "bias_rsu", "bias_local",
     ]
@@ -1033,22 +1194,12 @@ def main():
         "energy_norm_mean",
         "delay_norm_mean",
     ]
-    table_columns = [
-        ("ep", 4), ("steps", 6), ("term", 7), ("tlr", 5),
-        ("t_ep", 7),
-        ("r_mean", 8), ("r_sum", 8), ("r_p95", 8),
-        ("succ", 6), ("miss", 6),
-        ("L", 5), ("R", 5), ("V", 5),
-        ("v2v_win", 8), ("gap", 7), ("c_rsu", 7), ("c_v2v", 7),
-        ("ent", 6), ("kl", 7), ("clip", 6), ("v_loss", 8),
-        ("rSum15", 8), ("succ15", 7), ("miss15", 7), ("tl15", 6), ("V15", 6),
-    ]
-    table_row_count = 0
-    roll_rsum = deque(maxlen=15)
-    roll_succ = deque(maxlen=15)
-    roll_miss = deque(maxlen=15)
-    roll_tl = deque(maxlen=15)
-    roll_v = deque(maxlen=15)
+    log_header_every = max(20, int(TC.LOG_INTERVAL) if int(TC.LOG_INTERVAL) > 0 else 20)
+    roll_reward = deque(maxlen=20)
+    roll_task_sr = deque(maxlen=20)
+    roll_miss = deque(maxlen=20)
+    roll_tl = deque(maxlen=20)
+    roll_v2v = deque(maxlen=20)
 
     training_state = {
         "current_episode": 0,
@@ -1084,6 +1235,9 @@ def main():
         prev_excepthook(exc_type, exc, tb)
 
     sys.excepthook = _train_excepthook
+
+    # V2V 探索 bias 全局步计数器
+    _global_train_steps = 0
 
     for episode in range(1, hyperparams['max_episodes'] + 1):
         training_state["current_episode"] = episode
@@ -1474,13 +1628,6 @@ def main():
         episode_vehicle_count = env_stats.get("episode_vehicle_count", episode_vehicle_count) if env_stats else episode_vehicle_count
         episode_task_count = env_stats.get("episode_task_count", episode_task_count) if env_stats else episode_task_count
         total_subtasks_metric = env_stats.get("total_subtasks", total_subtasks) if env_stats else total_subtasks
-        update_stats = getattr(agent, "last_update_stats", {}) or {}
-        policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
-        if policy_entropy_val is None:
-            policy_entropy_val = 0.0
-        entropy_loss_val = update_stats.get("entropy_loss")
-        if entropy_loss_val is None and policy_entropy_val is not None:
-            entropy_loss_val = -policy_entropy_val
         v2v_beats_rsu_rate = env_stats.get("v2v_beats_rsu_rate", 0.0) if env_stats else 0.0
         mean_cost_gap = env_stats.get("mean_cost_gap_v2v_minus_rsu") if env_stats else float("nan")
         mean_cost_rsu = env_stats.get("mean_cost_rsu") if env_stats else float("nan")
@@ -1524,6 +1671,13 @@ def main():
         buffer.compute_returns_and_advantages(last_value)
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
         buffer.clear()
+        update_stats = getattr(agent, "last_update_stats", {}) or {}
+        policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
+        if policy_entropy_val is None:
+            policy_entropy_val = 0.0
+        entropy_loss_val = update_stats.get("entropy_loss")
+        if entropy_loss_val is None and policy_entropy_val is not None:
+            entropy_loss_val = -policy_entropy_val
 
         # 显存清理
         if episode % 10 == 0 and device == "cuda":
@@ -1537,56 +1691,80 @@ def main():
             TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
             TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
 
-        # =====================================================================
-        # 控制台输出（精简且全面的单行格式 - 每个episode都打印）
-        # =====================================================================
-        if True:  # 每个episode都打印
-            # [物理指标] 使用真实任务完成时间（current_time - arrival_time）
-            # 这是给人类看的物理指标，必然 > 0，有直观意义
-            # dT_eff_mean是给RL看的奖励信号，对人类不直观
-            avg_latency = task_duration_mean if task_duration_mean is not None else 0.0
-            avg_energy = energy_norm_mean if energy_norm_mean is not None else 0.0
-            
-            # 获取训练诊断指标
-            actor_loss = update_stats.get("policy_loss", 0.0) if update_stats.get("policy_loss") is not None else 0.0
-            critic_loss = update_stats.get("value_loss", 0.0) if update_stats.get("value_loss") is not None else 0.0
-            entropy_val = update_stats.get("entropy", 0.0) if update_stats.get("entropy") is not None else 0.0
-            
-            # 获取关键健康指标（从info中提取）
-            deadlock_count = env_stats.get('deadlock_vehicle_count', 0) if env_stats else 0
-            deadline_misses = env_stats.get('audit_deadline_misses', 0) if env_stats else 0
-            tx_created = env_stats.get('tx_tasks_created_count', 0) if env_stats else 0
-            same_node_no_tx = env_stats.get('same_node_no_tx_count', 0) if env_stats else 0
-            vehicle_sr = env_stats.get('vehicle_success_rate', veh_success_rate) if env_stats else veh_success_rate
-            episode_all_success = env_stats.get('episode_all_success', 0.0) if env_stats else 0.0
-            service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
-            idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
-            
-            # 计算仿真时间
-            sim_time = total_steps * Cfg.DT
-            
-            # 打印表头（每个episode都打印，但只在episode 1或每20个episode打印表头）
-            if episode == 1 or episode % 20 == 1:
-                print("\n" + "="*180)
-                print(f"| {'Ep':>5} | {'Time':>6} | {'Reward':>7} | {'V_SR':>5} | {'T_SR':>5} | {'Deci(L/R/V)':>14} | {'P_Loss':>7} | {'V_Loss':>7} | {'Ent':>6} | {'KL':>6} | {'Clip':>5} | {'GNorm':>6} |")
-                print("="*180)
-            
-            # 获取PPO诊断指标
-            approx_kl = update_stats.get("approx_kl", 0.0) if update_stats.get("approx_kl") is not None else 0.0
-            clip_frac = update_stats.get("clip_fraction", 0.0) if update_stats.get("clip_fraction") is not None else 0.0
-            grad_norm_val = update_stats.get("grad_norm", 0.0) if update_stats.get("grad_norm") is not None else 0.0
-            
-            # 打印数据行（每个episode都打印）
-            deci_str = f"{frac_local:4.1%}/{frac_rsu:4.1%}/{frac_v2v:4.1%}"
-            print(f"| {episode:5d} | {duration:6.1f}s | {reward_mean:7.4f} | {vehicle_sr:5.1%} | {task_success_rate:5.1%} | {deci_str:>14} | {actor_loss:7.4f} | {critic_loss:7.2f} | {entropy_val:6.3f} | {approx_kl:6.4f} | {clip_frac*100:5.1f}% | {grad_norm_val:6.3f} |", flush=True)
+        # V2V 探索 bias 线性退火（step-based）
+        _global_train_steps += total_steps
+        _v2v_anneal = getattr(TC, 'LOGIT_BIAS_V2V_ANNEAL_STEPS', 20000)
+        _v2v_init = getattr(TC, 'LOGIT_BIAS_V2V_INIT', 1.0)
+        TC._logit_bias_v2v_current = max(0.0, _v2v_init * (1.0 - _global_train_steps / max(_v2v_anneal, 1)))
 
-        update_stats = getattr(agent, "last_update_stats", {}) or {}
-        policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
-        if policy_entropy_val is None:
-            policy_entropy_val = 0.0
-        entropy_loss_val = update_stats.get("entropy_loss")
-        if entropy_loss_val is None and policy_entropy_val is not None:
-            entropy_loss_val = -policy_entropy_val
+        # =====================================================================
+        # 控制台输出（每轮一行 + 周期诊断）
+        # =====================================================================
+        actor_loss = _safe_float(update_stats.get("policy_loss"))
+        critic_loss = _safe_float(update_stats.get("value_loss"))
+        entropy_val = _safe_float(update_stats.get("entropy"))
+        approx_kl = _safe_float(update_stats.get("approx_kl"))
+        clip_frac = _safe_float(update_stats.get("clip_fraction"))
+        grad_norm_val = _safe_float(update_stats.get("grad_norm"))
+        active_ratio_val = _safe_float(update_stats.get("active_ratio"))
+        vehicle_sr = env_stats.get('vehicle_success_rate', veh_success_rate) if env_stats else veh_success_rate
+        illegal_rate_display = 0.0 if illegal_action_rate is None else illegal_action_rate
+        deadlock_count = env_stats.get('deadlock_vehicle_count', 0) if env_stats else 0
+        deadline_misses = env_stats.get('audit_deadline_misses', 0) if env_stats else 0
+        tx_created = env_stats.get('tx_tasks_created_count', 0) if env_stats else 0
+        same_node_no_tx = env_stats.get('same_node_no_tx_count', 0) if env_stats else 0
+        service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
+        idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
+
+        roll_reward.append(reward_mean)
+        roll_task_sr.append(task_success_rate if task_success_rate is not None else 0.0)
+        roll_miss.append(deadline_miss_rate if deadline_miss_rate is not None else 0.0)
+        roll_tl.append(time_limit_rate if time_limit_rate is not None else 0.0)
+        roll_v2v.append(frac_v2v if frac_v2v is not None else 0.0)
+
+        if episode == 1 or episode % log_header_every == 1:
+            print(
+                "\n"
+                f"{'Ep':>6} {'Wall':>7} {'R/step':>9} {'T_SR':>8} {'V_SR':>8} {'S_SR':>8} "
+                f"{'L/R/V':>16} {'Lat(s)':>8} {'En':>8} {'Miss':>8} {'Ill':>8} {'KL':>8} {'Clip':>8}",
+                flush=True,
+            )
+            print("-" * 128, flush=True)
+
+        deci_str = f"{_fmt_pct(frac_local, 0)}/{_fmt_pct(frac_rsu, 0)}/{_fmt_pct(frac_v2v, 0)}"
+        print(
+            f"{episode:6d} {duration:7.1f}s {reward_mean:9.4f} "
+            f"{_fmt_pct(task_success_rate):>8} {_fmt_pct(vehicle_sr):>8} {_fmt_pct(subtask_success):>8} "
+            f"{deci_str:>16} {_fmt_float(task_duration_mean, 3):>8} {_fmt_float(energy_norm_mean, 3):>8} "
+            f"{_fmt_pct(deadline_miss_rate):>8} {_fmt_pct(illegal_rate_display):>8} "
+            f"{_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
+            flush=True,
+        )
+
+        if episode == 1 or episode % max(1, int(TC.LOG_INTERVAL)) == 0:
+            ma_reward = float(np.mean(roll_reward)) if roll_reward else 0.0
+            ma_sr = float(np.mean(roll_task_sr)) if roll_task_sr else 0.0
+            ma_miss = float(np.mean(roll_miss)) if roll_miss else 0.0
+            ma_tl = float(np.mean(roll_tl)) if roll_tl else 0.0
+            ma_v2v = float(np.mean(roll_v2v)) if roll_v2v else 0.0
+            print(
+                f"  [MA20] reward={ma_reward:.4f} task_sr={ma_sr*100:.1f}% miss={ma_miss*100:.1f}% "
+                f"time_limit={ma_tl*100:.1f}% v2v={ma_v2v*100:.1f}%",
+                flush=True,
+            )
+            print(
+                f"  [PPO ] p_loss={_fmt_float(actor_loss, 4)} v_loss={_fmt_float(critic_loss, 4)} "
+                f"entropy={_fmt_float(entropy_val, 4)} grad={_fmt_float(grad_norm_val, 4)} "
+                f"active={_fmt_pct(active_ratio_val)}",
+                flush=True,
+            )
+            print(
+                f"  [SIM ] avg_power={_fmt_float(avg_power, 4)}W rsu_q={_fmt_float(avg_rsu_queue, 3)} "
+                f"tx={int(tx_created)} no_tx={int(same_node_no_tx)} deadlock={int(deadlock_count)} "
+                f"svc={_fmt_float(service_rate_active / 1e9, 3)}GHz idle={_fmt_pct(idle_fraction)}",
+                flush=True,
+            )
+
         metrics_row = {
             # episode metadata
             "episode": episode,
@@ -1756,6 +1934,9 @@ def main():
         same_node_no_tx = env_stats.get('same_node_no_tx_count', 0) if env_stats else 0
         service_rate_active = env_stats.get('service_rate_when_active', 0.0) if env_stats else 0.0
         idle_fraction = env_stats.get('idle_fraction', 0.0) if env_stats else 0.0
+        current_lr = None
+        if hasattr(agent, "optimizer") and getattr(agent.optimizer, "param_groups", None):
+            current_lr = agent.optimizer.param_groups[0].get("lr")
 
         training_stats_row = {
             # 基本信息
@@ -1767,6 +1948,7 @@ def main():
             "reward_mean": reward_mean,  # 每步平均奖励（控制台显示的Reward）
             "reward_total": ep_reward,   # episode总奖励
             "reward_p95": reward_p95,
+            "reward_abs_mean": reward_abs_mean if reward_abs_mean is not None else 0.0,
             # 成功率指标（0-1范围）
             "vehicle_sr": veh_success_rate,  # V_SR
             "task_sr": task_success_rate,    # T_SR
@@ -1776,22 +1958,41 @@ def main():
             "task_duration_p95": task_duration_p95 if task_duration_p95 is not None else 0.0,
             "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,
             "energy_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
+            "energy_p95": energy_norm_p95 if energy_norm_p95 is not None else 0.0,
+            "t_tx_mean": t_tx_mean if t_tx_mean is not None else 0.0,
+            "dT_eff_mean": dT_eff_mean if dT_eff_mean is not None else 0.0,
             "deadline_misses": deadline_misses,  # D_Miss
+            "deadline_miss_rate": deadline_miss_rate if deadline_miss_rate is not None else 0.0,
             # 卸载决策分布（0-1范围）
             "ratio_local": frac_local,  # Local
             "ratio_rsu": frac_rsu,      # RSU
             "ratio_v2v": frac_v2v,      # V2V
+            # 系统负载与资源
+            "avg_power": avg_power if avg_power is not None else 0.0,
+            "avg_rsu_queue": avg_rsu_queue if avg_rsu_queue is not None else 0.0,
+            "rsu_queue_p95": rsu_queue_p95 if rsu_queue_p95 is not None else 0.0,
+            "power_ratio_mean": power_ratio_mean if power_ratio_mean is not None else 0.0,
             # 服务指标
             "tx_created": tx_created,             # TX
             "same_node_no_tx": same_node_no_tx,   # NoTX
             "service_rate_ghz": service_rate_active / 1e9,  # SvcRate (GHz)
             "idle_fraction": idle_fraction,       # Idle
+            # 约束与安全
+            "time_limit_rate": time_limit_rate if time_limit_rate is not None else 0.0,
+            "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # 训练诊断指标
             "actor_loss": update_stats.get("policy_loss"),
             "critic_loss": update_stats.get("value_loss"),
             "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
             "approx_kl": update_stats.get("approx_kl"),
             "clip_frac": update_stats.get("clip_fraction"),
+            "grad_norm": update_stats.get("grad_norm"),
+            "active_ratio": update_stats.get("active_ratio"),
+            "value_clip_fraction": update_stats.get("value_clip_fraction"),
+            "skipped_update_count": update_stats.get("skipped_update_count"),
+            "early_stop": update_stats.get("early_stop"),
+            "lr": current_lr,
             # Bias状态
             "bias_rsu": TC.LOGIT_BIAS_RSU,
             "bias_local": TC.LOGIT_BIAS_LOCAL,
@@ -2053,67 +2254,96 @@ def main():
 
     training_state["completed"] = True
     sys.excepthook = prev_excepthook
+    print(
+        f"\n[Train] completed: episodes={TC.MAX_EPISODES} "
+        f"best_reward={best_reward:.4f} best_success_rate(50ep)={best_success_rate:.4f}",
+        flush=True,
+    )
+    print(f"[Train] key outputs: {metrics_csv_path}, {training_stats_csv}, {os.path.join(recorder.model_dir, 'best_model.pth')}", flush=True)
 
     # =========================================================================
     # 训练结束：自动绘图 (Auto Plotting)
     # =========================================================================
     if not disable_auto_plot:
-        # 1. 使用DataRecorder的新绘图方法绘制完整训练分析图
-        print("\n[Auto Plotting] Generating comprehensive training plots...")
+        print("\n[Auto Plot] Generating training plots...", flush=True)
         baseline_stats_csv = os.path.join(logs_dir, "baseline_stats.csv")
-        recorder.plot_training_stats(training_stats_csv, baseline_stats_csv)
+        plot_jobs: List[Dict[str, Any]] = []
 
-        # 2. 调用plot_results.py生成额外图表
-        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_results.py")
-        if os.path.exists(training_stats_csv):
-            print("[Auto Plotting] Generating additional plots from training_stats.csv...")
+        # 1) DataRecorder 基础训练图
         try:
-            subprocess.run(
-                [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            print(f"✓ Plots saved to: {plots_dir}")
-        except subprocess.CalledProcessError as e:
-            print(f"⚠ plot_results.py failed: {e.stdout}")
+            t0 = time.time()
+            recorder.plot_training_stats(training_stats_csv, baseline_stats_csv)
+            plot_jobs.append({"job": "DataRecorder.plot_training_stats", "ok": True, "seconds": time.time() - t0, "tail": []})
         except Exception as e:
-            print(f"⚠ plot_results.py failed: {e}")
+            plot_jobs.append({"job": "DataRecorder.plot_training_stats", "ok": False, "seconds": 0.0, "tail": [str(e)]})
+            print(f"[Auto Plot] DataRecorder.plot_training_stats failed: {e}", flush=True)
 
-        # 2.5 调用generate_all_plots.py生成MAPPO独立图表
+        # 2) plot_results.py（training_stats 主图）
+        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_results.py")
+        if os.path.exists(plot_script) and os.path.exists(training_stats_csv):
+            plot_jobs.append(
+                _run_plot_job(
+                    "plot_results.py",
+                    [sys.executable, plot_script, "--log-file", training_stats_csv, "--output-dir", plots_dir],
+                )
+            )
+        else:
+            plot_jobs.append({"job": "plot_results.py", "ok": False, "seconds": 0.0, "tail": ["missing script or training_stats.csv"]})
+
+        # 3) generate_all_plots.py（episode_log 扩展图）
         generate_plots_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "generate_all_plots.py")
         if os.path.exists(generate_plots_script):
-            try:
-                subprocess.run(
+            plot_jobs.append(
+                _run_plot_job(
+                    "generate_all_plots.py",
                     [sys.executable, generate_plots_script, "--run-dir", run_dir],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
                 )
-            except subprocess.CalledProcessError as e:
-                print(f"⚠ generate_all_plots.py failed: {e.stdout}")
-            except Exception as e:
-                print(f"⚠ generate_all_plots.py failed: {e}")
+            )
+        else:
+            plot_jobs.append({"job": "generate_all_plots.py", "ok": False, "seconds": 0.0, "tail": ["script not found"]})
 
-        # 3. 调用DataRecorder的auto_plot保持兼容性
-        print("[Auto Plotting] Generating legacy episode_log plots...")
-        recorder.auto_plot(baseline_history=baseline_history)
-
-        # 4. 保留旧的绘图脚本调用（兼容性）
-        legacy_plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_key_metrics_v4.py")
-        if os.path.exists(legacy_plot_script):
-            try:
-                subprocess.run(
-                    [sys.executable, legacy_plot_script, "--run-dir", run_dir],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+        # 4) 可选：MAPPO vs baseline 对比图
+        compare_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "plot_mappo_vs_baselines.py")
+        if os.path.exists(compare_script) and os.path.exists(baseline_stats_csv) and os.path.getsize(baseline_stats_csv) > 0:
+            plot_jobs.append(
+                _run_plot_job(
+                    "plot_mappo_vs_baselines.py",
+                    [sys.executable, compare_script, "--run-dir", run_dir, "--output-dir", plots_dir],
                 )
-            except Exception:
-                pass  # 静默失败，不影响新绘图
+            )
+        else:
+            plot_jobs.append(
+                {
+                    "job": "plot_mappo_vs_baselines.py",
+                    "ok": True,
+                    "skipped": True,
+                    "seconds": 0.0,
+                    "tail": ["baseline_stats.csv missing/empty or script not found"],
+                }
+            )
+
+        # 5) DataRecorder 兼容图（episode_log）
+        try:
+            t0 = time.time()
+            recorder.auto_plot(baseline_history=baseline_history)
+            plot_jobs.append({"job": "DataRecorder.auto_plot", "ok": True, "seconds": time.time() - t0, "tail": []})
+        except Exception as e:
+            plot_jobs.append({"job": "DataRecorder.auto_plot", "ok": False, "seconds": 0.0, "tail": [str(e)]})
+            print(f"[Auto Plot] DataRecorder.auto_plot failed: {e}", flush=True)
+
+        manifest_path = _write_plot_manifest(plots_dir, plot_jobs)
+        figures = _collect_plot_manifest(plots_dir)
+        ok_jobs = sum(1 for job in plot_jobs if job.get("ok") and not job.get("skipped"))
+        skipped_jobs = sum(1 for job in plot_jobs if job.get("skipped"))
+        failed_jobs = len(plot_jobs) - ok_jobs - skipped_jobs
+        print(f"[Auto Plot] jobs: ok={ok_jobs} skipped={skipped_jobs} failed={failed_jobs}", flush=True)
+        print(f"[Auto Plot] generated figures: {len(figures)}", flush=True)
+        if figures:
+            preview = ", ".join([fig["file"] for fig in figures[:8]])
+            print(f"[Auto Plot] sample: {preview}", flush=True)
+        print(f"[Auto Plot] manifest: {manifest_path}", flush=True)
+    else:
+        print("[Auto Plot] disabled by DISABLE_AUTO_PLOT", flush=True)
 
 
 if __name__ == "__main__":

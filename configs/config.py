@@ -53,6 +53,11 @@ class SystemConfig:
                             # Impact: Network load and V2V candidates; aligned with literature
 
     V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
+    # 候选集模式（锁定为ALL_FEASIBLE）
+    # ALL: 保留通信范围内所有可达邻居，仅通过action_mask屏蔽不可行动作
+    CANDIDATE_MODE = "ALL"
+    TOPK_K = V2V_TOP_K
+    RANDOMK_K = V2V_TOP_K
     CANDIDATE_SORT_BY = "t_finish"  # t_finish | rate | distance (V2V候选排序规则)
     DEBUG_CANDIDATE_SET = False     # 是否打印候选集排序与映射
     V2V_DYNAMIC_K = True    # 是否启用动态邻居数选择 - Enable dynamic V2V candidate filtering
@@ -62,7 +67,10 @@ class SystemConfig:
                             # 影响: 减少V2V冗余，使邻居选择更有意义
                             # Impact: Reduces V2V redundancy, makes neighbor selection more meaningful
     
-    MAX_NEIGHBORS = max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))  # 派生值 - Derived value
+    # ALL-feasible模式：使用固定上界 NUM_VEHICLES-1 作为V2V slot数
+    # TOPK/RANDOMK模式：使用 V2V_TOP_K 作为上限
+    ALL_FEASIBLE = (CANDIDATE_MODE == "ALL")
+    MAX_NEIGHBORS = (NUM_VEHICLES - 1) if ALL_FEASIBLE else max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))
     
     # Action space配置移至NUM_RSU定义之后（见1.4节末尾）
     # ENABLE_RSU_SELECTION和MAX_TARGETS定义在NUM_RSU之后
@@ -146,8 +154,8 @@ class SystemConfig:
     # =========================================================================
     # 2. 通信参数 (Communication Model)
     # =========================================================================
-    # Block Fading 开关：同一时隙内复用 V2V 小尺度衰落（保证口径一致）
-    USE_BLOCK_FADING = True
+    # V2V 小尺度衰落开关（关闭=只用大尺度路损，训练可复现、方差可控）
+    USE_BLOCK_FADING = False
     # CFT缓存哈希严格模式：包含DAG状态/队列摘要，避免错误复用
     CFT_CACHE_STRICT_KEY = True
     # -------------------------------------------------------------------------
@@ -220,6 +228,45 @@ class SystemConfig:
     V2V_RANGE = 250.0       # V2V通信半径 (m) - V2V communication range
                             # 影响: 邻居发现范围，DVTP等文献常用值
                             # Impact: Neighbor discovery range; common value in DVTP literature
+
+    # -------------------------------------------------------------------------
+    # 2.5.1 V2V RB 干扰模型 (V2V Resource Block Interference)
+    # -------------------------------------------------------------------------
+    V2V_NUM_RB = 4                  # V2V 子信道（RB）数量
+    V2V_BW_PER_RB = BW_V2V / V2V_NUM_RB  # 每 RB 带宽 (Hz)
+    # 功率映射硬编码对数域: P = Pmin*(Pmax/Pmin)^a_power, a_power∈[0,1]
+
+    # -------------------------------------------------------------------------
+    # 2.5.2 RSU 切换代价 (RSU Handover Cost)
+    # -------------------------------------------------------------------------
+    HO_FREEZE_STEPS = 2            # 切换后冻结步数（V2I 速率=0）
+    HO_HYST_DB = 3.0               # 滞回门限 (dB)，新 RSU 参考信号须超过当前+此值
+    MIN_RSU_STAY_STEPS = 5         # 最小驻留步数，切换后至少驻留此步数才可再切换
+
+    # -------------------------------------------------------------------------
+    # 2.5.3 信誉外生过程 (Reputation / Trust External Process)
+    # -------------------------------------------------------------------------
+    TRUST_ENABLED = True            # 是否启用信誉外生过程
+    TRUST_P_RELIABLE_RANGE = (0.7, 1.0)   # 可靠节点 p_j 范围
+    TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围
+    TRUST_RELIABLE_PROB = 0.8       # 节点为可靠类型的先验概率
+    TRUST_PRIOR_A = 1.0             # Beta 先验 a
+    TRUST_PRIOR_B = 1.0             # Beta 先验 b
+    TRUST_DELAY_STEPS = 3           # 证据延迟步数 tau_rep_steps
+    TRUST_RESET_PER_EPISODE = True  # 每 episode 重采样隐藏可靠性
+
+    # -------------------------------------------------------------------------
+    # 2.6 域随机化 (Domain Randomization)
+    # -------------------------------------------------------------------------
+    DOMAIN_RANDOMIZATION = False
+    DR_V2V_RANGE_MIN = 200.0
+    DR_V2V_RANGE_MAX = 300.0
+    DR_RSU_RANGE_MIN = 280.0
+    DR_RSU_RANGE_MAX = 420.0
+    DR_DAG_FAT_MIN = 0.3
+    DR_DAG_FAT_MAX = 0.7
+    DR_DAG_DENSITY_MIN = 0.1
+    DR_DAG_DENSITY_MAX = 0.4
     
     # -------------------------------------------------------------------------
     # 2.5 速率估计参数 (Rate Estimation - Shannon Capacity Approximation)
@@ -248,14 +295,17 @@ class SystemConfig:
                             # 影响: RSU算力优势明显但不绝对，与强车形成竞争
                             # Impact: RSU computing advantage significant but not absolute
     
-    RSU_NUM_PROCESSORS = 6  # RSU处理器核心数 - RSU processor cores
+    # [N=20对比建议] 适度收紧RSU并行度，避免Greedy在RSU侧形成绝对优势，
+    # 让“干扰/队列/信誉感知”的策略收益更可见（Ours相对Greedy更容易拉开差距）。
+    RSU_NUM_PROCESSORS = 4  # RSU处理器核心数 - RSU processor cores
                              # 影响: 降低并行度，提高调度压力
                              # Impact: Lower parallelism, higher scheduling pressure
     
-    K_ENERGY = 1e-28        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
+    K_ENERGY = 1e-27        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
                             # 影响: 计算能耗估计，频率平方关系
                             # Impact: Computation energy estimation; quadratic frequency relationship
+    KAPPA = K_ENERGY        # 兼容别名（cpu_queue_service读取KAPPA）
     
     # -------------------------------------------------------------------------
     # 3.2 队列限制 (Queue Limits - Cycle-Based)
@@ -264,7 +314,9 @@ class SystemConfig:
                                         # 影响: 约8个平均任务(1.25G each)，适应新负载
                                         # Impact: ~8 average tasks (1.25G each); adapted to new load
 
-    RSU_QUEUE_CYCLES_LIMIT = 150.0e9    # RSU队列上限 (cycles) - RSU queue limit
+    # [N=20对比建议] 收紧RSU队列上限，提升“集中卸载到RSU”的拥塞代价，
+    # 促使策略进行更细粒度分流（Local/RSU/V2V）。
+    RSU_QUEUE_CYCLES_LIMIT = 100.0e9    # RSU队列上限 (cycles) - RSU queue limit
                                         # 影响: 适度收紧RSU负载，避免过度偏向RSU
                                         # Impact: Moderately tightens RSU load to avoid over-reliance
 
@@ -317,26 +369,25 @@ class SystemConfig:
                             # 影响: 大任务必须卸载，增加决策复杂度
                             # Impact: Large tasks require offloading; increases decision complexity
 
-    MIN_DATA = 2.0e5        # 子任务最小数据量 (bits) - Min subtask data (25 KB) [审计调优]
-                            # 影响: 传输时间适中，确保功率梯度可见
-                            # Impact: Moderate transmission time; ensures power gradient visibility
+    # IMPORTANT UNIT: BITS（不是 bytes）
+    MIN_DATA = 5.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.5 Mbit)
+                            # 影响: 传输开销可感知，避免“过快传输”导致决策退化
+                            # Impact: Perceivable transmission cost; avoids trivial too-fast links
 
-    MAX_DATA = 1.0e6        # 子任务最大数据量 (bits) - Max subtask data (125 KB) [审计调优]
-                            # 影响: V2I传输约0.03s @33Mbps，计算仍占主导
-                            # Impact: V2I transmission ~0.03s @33Mbps; computation still dominant
+    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2.0 Mbit)
+                            # 影响: 在拥塞/RB复用下形成明显时延压力
+                            # Impact: Creates clear latency pressure under congestion/RB reuse
 
-    MIN_EDGE_DATA = 1.0e5   # DAG边最小数据量 (bits) - Min edge data (12.5 KB) [审计调优]
-                            # 影响: 依赖数据传输开销适中
-                            # Impact: Moderate dependency transmission overhead
+    MIN_EDGE_DATA = 2.5e5   # DAG边最小数据量 (bits) - Min edge data (0.25 Mbit)
+                            # 影响: 依赖边传输具有可学习代价
+                            # Impact: Inter-task transfer carries learnable cost
 
-    MAX_EDGE_DATA = 5.0e5   # DAG边最大数据量 (bits) - Max edge data (62.5 KB) [审计调优]
-                            # 影响: 依赖数据传输开销适中
-                            # Impact: Moderate dependency transmission overhead
+    MAX_EDGE_DATA = 1.0e6   # DAG边最大数据量 (bits) - Max edge data (1.0 Mbit)
+                            # 影响: 强化拓扑依赖对调度与链路选择的影响
+                            # Impact: Strengthens topology-dependence in scheduling/link choice
     
-    MEAN_COMP_LOAD = (8.0e8 + 2.5e9) / 2  # 平均计算负载 (cycles) - Average computation load
-                                          # 动态计算：(MIN_COMP + MAX_COMP) / 2 = 1.65e9
-                                          # Dynamically computed: (MIN_COMP + MAX_COMP) / 2 = 1.65e9
-    AVG_COMP = MEAN_COMP_LOAD             # 同上 - Same as above
+    MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles) = 2.0e9
+    AVG_COMP = MEAN_COMP_LOAD
     
     # -------------------------------------------------------------------------
     # 4.3 Deadline计算参数 (Deadline Calculation - Ideal Local Anchoring)
@@ -374,10 +425,10 @@ class SystemConfig:
     # 基于计算量的deadline (使用γ因子)
     # 公式: deadline = max(γ × T_base + slack, (1+eps) × LB0)
     # 其中 T_base = CP_total / f_ref, LB0 = CP_total / f_max
-    DEADLINE_TIGHTENING_MIN = 0.8       # γ最小值 [再次下调: 提高deadline压力]
-                                        # 当前f_max/f_median=2.4，需要gamma<2.4才有卸载压力
-    DEADLINE_TIGHTENING_MAX = 1.0       # γ最大值 [再次下调: 提高deadline压力]
-                                        # 目标: 基线有明显超时，便于体现训练优势
+    DEADLINE_TIGHTENING_MIN = 1.2       # γ最小值（基于T_base）
+                                        # 目标: 形成可行但紧迫的deadline
+    DEADLINE_TIGHTENING_MAX = 1.5       # γ最大值（基于T_base）
+                                        # 目标: 保持样本多样性与可学习性
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -504,6 +555,9 @@ class SystemConfig:
     TIME_LIMIT_PENALTY = -1.0       # 时间截断惩罚 - Time truncation penalty
                                     # 影响: Episode因时间截断的额外terminal惩罚
                                     # Impact: Additional terminal penalty for time truncation
+    TIME_LIMIT_PENALTY_MODE = "fixed"      # fixed / scaled
+    TIME_LIMIT_PENALTY_K = 2.0             # scaled模式下的惩罚斜率
+    TIME_LIMIT_PENALTY_RATIO_CLIP = 3.0    # scaled模式时间比例裁剪上限
     
     # -------------------------------------------------------------------------
     # 6.5 成功奖励 (Success Bonuses - Sparse Reward)
@@ -529,7 +583,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
     # -------------------------------------------------------------------------
-    REWARD_SCHEME = "PBRS_KP_V2"    # 奖励方案: "LEGACY_CFT" (旧) / "PBRS_KP" / "PBRS_KP_V2"
+    REWARD_SCHEME = "UNIFIED"       # 奖励方案: "LEGACY_CFT" / "PBRS_KP" / "PBRS_KP_V2" / "UNIFIED"
     REWARD_ALPHA = 1.5              # 基础奖励系数 alpha
     REWARD_BETA = 0.1               # PBRS 系数 beta [审计调优: 降低shape噪声]
     REWARD_GAMMA = 0.99             # PBRS 折扣 gamma（应与训练端 TC.GAMMA 保持一致）
@@ -539,6 +593,9 @@ class SystemConfig:
     R_CLIP = 40.0                   # 总奖励裁剪上界（绝对值）
     EPS_RATE = 1e-9                 # 速率下界，防止除0
     ILLEGAL_PENALTY = -2.0          # 非法动作额外惩罚
+    PBRS_PHI_MODE = "STATE_ONLY"    # STATE_ONLY / LEGACY_ACTION_SNAPSHOT
+    PBRS_PHI_POWER_DBM = TX_POWER_MAX_DBM  # state-only Phi固定功率
+    PBRS_PHI_ACTION_INVARIANT_CHECK = False  # Phi与action无关性检查
 
     # -------------------------------------------------------------------------
     # 6.7.1 非法动作惩罚细分 (Illegal Action Penalty Refinement)
@@ -565,24 +622,69 @@ class SystemConfig:
     TIMEOUT_K = 3.0                 # 超时惩罚tanh陡峭度
     ENERGY_LAMBDA = 0.03            # V2通信能耗权重
     POWER_LAMBDA = 0.015             # V2功率正则权重
+
+    # -------------------------------------------------------------------------
+    # 6.7.3 新统一奖励参数 (Unified Reward - nonlinear, dimensionless)
+    # -------------------------------------------------------------------------
+    # 终局 Terminal
+    R_SUCC = 10.0                   # 成功奖励系数 R_s
+    R_FAIL = 10.0                   # 失败惩罚系数 R_f
+    P_SUCC = 1.3                    # 成功奖励指数 p_s (>1 超线性奖励提前完成)
+    P_FAIL = 1.5                    # 失败惩罚指数 p_f (超线性)
+    # 每步 Step-wise
+    W_TIME = 0.2                    # 时间推进惩罚权重 w_t
+    W_ENERGY = 0.5                  # 能耗惩罚权重 w_e
+    P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
+    W_INTERF = 0.5                  # 干扰惩罚权重 w_I
+    P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
+    W_RISK = 0.5                    # 信誉风险惩罚权重 w_risk
+    P_RISK = 1.5                    # 信誉风险惩罚指数 p_risk
+    W_ILLEGAL = 2.0                 # 非法动作惩罚 w_ill
+    # E_ref / I_ref
+    # [N=20对比建议] 统一奖励中的能耗项当前包含了本地计算能耗分量，量级可到J~10J以上；
+    # 若仍使用0.02J会导致能耗项过强、训练退化为近单目标。取15J可保持能耗敏感且不过度主导。
+    E_REF_UNIFIED = 15.0
+    I_REF_D0 = V2V_RANGE / 2.0     # I_ref 参考距离 d0
+    # PBRS
+    PBRS_BETA = 0.1                 # PBRS 系数 beta
+    PBRS_GAMMA = 0.99               # PBRS 折扣 gamma
+    PBRS_Q = 1.2                    # Phi 指数 q (>1 超线性势函数)
+    PBRS_EPS = 1e-3                 # Phi 下界 eps
+    PBRS_PHI_CLIP_UNIFIED = 5.0     # Phi 裁剪
+
+    # -------------------------------------------------------------------------
+    # 6.8 结算风险层 (Settlement Risk Layer - Chain Proxy)
+    # -------------------------------------------------------------------------
+    CHAIN_ENABLED = False
+    CHAIN_MODE = "NONE"             # NONE / CONST / SWITCH
+    CHAIN_OBS_DIM = 5               # [p50, p95, p_fail, mempool_len, rho]
+    CHAIN_USE_IN_OBS = True
+    CHAIN_RISK_WEIGHT_DEPOSIT = 0.0  # alpha_D
+    CHAIN_RISK_WEIGHT_FAIL = 0.0     # alpha_F
+    CHAIN_DEPOSIT_BASE = 1.0
+    CHAIN_DEPOSIT_SCALE = 0.0
+    CHAIN_CHARGE_RSU = True
+    CHAIN_BATCH_K = 1
+
+    # Level-1: switch mode parameters
+    CHAIN_SWITCH_PERIOD_STEPS = 200
+    CHAIN_P50_LOW = 0.0
+    CHAIN_P95_LOW = 0.0
+    CHAIN_PFAIL_LOW = 0.0
+    CHAIN_P50_HIGH = 0.0
+    CHAIN_P95_HIGH = 0.0
+    CHAIN_PFAIL_HIGH = 0.0
+    CHAIN_NOISE_STD = 0.0
     
 
     # =========================================================================
     # 7. 调试与日志参数 (Debug & Logging)
     # =========================================================================
-    DEBUG_ASSERT_ILLEGAL_ACTION = False     # 非法动作断言 - Illegal action assertion
-                                            # 影响: True时illegal_action直接断言崩溃
-                                            # Impact: True causes assertion crash on illegal action
-    
-    DEBUG_ASSERT_METRICS = False            # 指标范围断言 - Metrics range assertion
-                                            # 影响: True时对成功率/决策分布做范围断言
-                                            # Impact: True asserts success rate/decision distribution ranges
-
-    DEBUG_REWARD_ASSERTS = False            # 奖励/速率快照强一致性断言
     DEBUG_PBRS_AUDIT = False                # PBRS一致性审计/打点开关
-    DEBUG_PHI_MONO_PROB = 0.1               # Phi单调性抽样概率
     AUDIT_PER_DECISION_REWARD = False       # per-decision奖励分项审计开关
     AUDIT_FATAL_ON_SCHEME_ERROR = False     # 审计检查失败时是否中断训练（False=仅警告）
+    EDGE_RATE_RECOMPUTE_AUDIT = False       # EDGE速率重算审计开关
+    DEBUG_ASSERT_METRICS = False            # 训练端指标范围断言（用于调试）
     
     EPISODE_JSONL_STDOUT = True             # Episode JSONL输出 - Episode JSONL output
                                             # 影响: 是否在stdout打印每个episode的JSONL
@@ -591,9 +693,11 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 14           # 资源原始特征维度 - Resource raw feature dimension (CommWait 4维已移除)
-                                    # 影响: 14原始特征 + 4 CommWait特征 (total/edge × v2i/v2v)
-                                    # Impact: 14 raw features + 4 CommWait features (total/edge × v2i/v2v)
+    RESOURCE_RAW_DIM = 14           # 资源原始特征维度 (14列)
+                                    # [0] cpu  [1] queue_wait  [2] dist  [3] rate
+                                    # [4] rel_x  [5] rel_y  [6] vel_x  [7] vel_y
+                                    # [8] node_type  [9] slack_norm  [10] contact_norm
+                                    # [11] t_comp_lb  [12] hat_rho  [13] uncertainty
 
     # -------------------------------------------------------------------------
     # 8.1 通信等待时间归一化 (CommWait Normalization)

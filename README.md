@@ -290,6 +290,33 @@ pytest tests/test_env_overrides_take_effect.py -v
 
 ---
 
+## 测试说明 (Testing)
+
+- 默认 `pytest -q` 运行主训练回归集合（obs/mask/reward/rate_prev/embedding/RSU映射等），等价于：
+  - `pytest -q -m "not nightly and not optional_feature"`
+- 以下测试标记为可选功能 `optional_feature`，当前不作为主训练要求：
+  - 事件驱动SMDP/NOOP 相关（`tests/test_event_driven_smdp.py`）
+  - NOOP/动作空间变体检查（`tests/test_variable_action_logits.py`）
+  - RSU serving-only 白盒检查（`tests/test_rsu_serving_only.py`）
+  - 变长DAG规模与固定 MAX_NODES 期望（`tests/test_variable_dag_size.py`）
+  - DAG deadline extras 字段完整性（`tests/test_deadline_feasibility.py`）
+  - 无ID泄露白盒检查（`tests/test_no_id_leakage.py`）
+- 以下测试标记为 nightly（长仿真/覆盖语义白盒）：
+  - RSU覆盖语义检查（`tests/nightly/test_rsu_coverage_semantics.py`）
+  - 长步数仿真稳定性（`tests/nightly/test_sim_invariants.py`）
+
+**运行全部可选测试：**
+```bash
+pytest -q -m optional_feature
+```
+
+**运行 nightly：**
+```bash
+pytest -q -m nightly
+```
+
+---
+
 ## 许可证 (License)
 
 本项目仅供学术研究使用。

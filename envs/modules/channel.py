@@ -4,132 +4,234 @@ from configs.config import SystemConfig as Cfg
 
 class ChannelModel:
     """
-    [物理信道模型] - Final Revised Version
-    负责计算 V2I (Vehicle-to-Infrastructure) 和 V2V (Vehicle-to-Vehicle) 的真实传输速率。
-
-    修改记录:
-    1. [V2I Model] 移除了不稳定的线性干扰模型，完全采用带宽分时复用 (Time Division / Bandwidth Sharing) 模型。
-    2. [Observation] compute_one_rate 不再硬编码用户数，而是基于系统车辆总数进行动态悲观估算。
-    3. [Interface] 支持 curr_time 参数输入。
+    [物理信道模型] - V2V RB-SINR + V2I 带宽共享
+    
+    V2I: per-RSU 带宽共享（无衰落）
+    V2V: RB 确定性分配 + per-RB SINR（含瑞利衰落 + 同 RB 干扰）
     """
 
     def __init__(self):
-        # 1. 噪声功率谱密度 (含噪声系数)，基于带宽动态计算噪声功率
         noise_psd_dbm_hz = Cfg.NOISE_POWER_DENSITY_DBM + Cfg.NOISE_FIGURE
         self.noise_psd_w_hz = Cfg.dbm2watt(noise_psd_dbm_hz)
 
-        # 2. 路径损耗常数 Beta0
         beta0_db = getattr(Cfg, 'BETA_0_DB', -30)
         self.beta0 = 10 ** (beta0_db / 10.0)
 
-        # 3. V2V瑞利衰落参数（用于信号功率计算）
-        # 注意：V2I不使用衰落，V2V使用瑞利衰落
-        # 瑞利衰落：h ~ CN(0, 1)，|h|^2 服从指数分布
-        # 每次计算时重新采样，模拟快变信道
-        # [Block Fading] 同一时隙对同一(src,dst)复用衰落系数，避免口径不一致
         self.use_block_fading = getattr(Cfg, "USE_BLOCK_FADING", True)
         self.v2v_fading_cache = {}
         self._v2v_cache_slot = None
 
-    def compute_rates(self, vehicles, rsu_pos):
+        # RB 干扰模型参数
+        self.num_rb = getattr(Cfg, 'V2V_NUM_RB', 4)
+        self.bw_per_rb = getattr(Cfg, 'V2V_BW_PER_RB', Cfg.BW_V2V / self.num_rb)
+
+        # 每步干扰统计（供 env 读取）
+        self.last_v2v_stats = {
+            'sinr_values': [],        # 所有 link 的 SINR (linear)
+            'i_caused': {},           # link_idx -> 该 link 对同 RB 其他接收端的干扰总和
+            'i_total': {},            # link_idx -> 该 link 接收端收到的总干扰
+            'rb_occupancy': np.zeros(self.num_rb, dtype=int),  # 每 RB 并发链路数
+            'rb_assignment': {},      # link_idx -> rb_id
+        }
+
+    # ------------------------------------------------------------------
+    # 显式链路列表驱动的 V2V RB-SINR 计算（不依赖 curr_target）
+    # ------------------------------------------------------------------
+    def compute_v2v_rb_sinr(self, v2v_links):
         """
-        [批量计算] 计算当前这一帧所有活跃传输的真实速率
+        对显式 V2V 链路列表做 RB 确定性分配 + per-RB SINR + I_caused。
+
+        Args:
+            v2v_links: list of dict, 每条需含:
+                sender_id, tx_pos (np.array), rx_pos (np.array), power_w (float)
+        Returns:
+            v2v_rates: dict  sender_id -> rate (bps)
+            （同时更新 self.last_v2v_stats）
+        """
+        # 重置统计
+        self.last_v2v_stats = {
+            'sinr_values': [], 'i_caused': {}, 'i_total': {},
+            'rb_occupancy': np.zeros(self.num_rb, dtype=int),
+            'rb_assignment': {},
+        }
+        v2v_rates = {}
+        if not v2v_links:
+            return v2v_rates
+
+        n = len(v2v_links)
+        tx_positions = np.array([lk['tx_pos'] for lk in v2v_links])
+        rx_positions = np.array([lk['rx_pos'] for lk in v2v_links])
+        tx_powers = np.array([lk['power_w'] for lk in v2v_links])
+
+        sig_dists = np.linalg.norm(tx_positions - rx_positions, axis=1)
+        h_bar_sig = self._path_loss(sig_dists, Cfg.PL_BETA_V2V)
+        if self.use_block_fading:
+            signal_powers = tx_powers * h_bar_sig * self._rayleigh_fading(n)
+        else:
+            signal_powers = tx_powers * h_bar_sig
+
+        # 干扰路径损耗矩阵 G(d_{mj})
+        dist_mat = np.linalg.norm(
+            rx_positions[:, None, :] - tx_positions[None, :, :], axis=2
+        )
+        g_mat = self._path_loss(dist_mat, Cfg.PL_BETA_V2V)
+
+        # RB 分配（复用已有贪心逻辑，但输入是坐标而非 vehicle 对象）
+        w = self._path_loss(sig_dists, Cfg.PL_BETA_V2V)
+        order = np.argsort(-w)
+        rb_assign = np.full(n, -1, dtype=int)
+        rb_links_list = [[] for _ in range(self.num_rb)]
+        for li in order:
+            best_rb, best_cost = 0, np.inf
+            for c in range(self.num_rb):
+                cost = 0.0
+                for m in rb_links_list[c]:
+                    cost += tx_powers[li] * g_mat[m, li] + tx_powers[m] * g_mat[li, m]
+                if cost < best_cost:
+                    best_cost, best_rb = cost, c
+            rb_assign[li] = best_rb
+            rb_links_list[best_rb].append(li)
+
+        noise_rb = self._noise_power(self.bw_per_rb)
+        sinr_arr = np.zeros(n)
+        i_total_arr = np.zeros(n)
+        i_caused_arr = np.zeros(n)
+
+        for i in range(n):
+            same = [j for j in range(n) if rb_assign[j] == rb_assign[i] and j != i]
+            interf = sum(tx_powers[j] * g_mat[i, j] for j in same)
+            i_total_arr[i] = interf
+            sinr_arr[i] = signal_powers[i] / (noise_rb + interf)
+            i_caused_arr[i] = sum(tx_powers[i] * g_mat[j, i] for j in same)
+
+        rates_vec = self.bw_per_rb * np.log2(1 + sinr_arr)
+
+        rb_occ = np.zeros(self.num_rb, dtype=int)
+        for i in range(n):
+            sid = v2v_links[i]['sender_id']
+            rb_occ[rb_assign[i]] += 1
+            v2v_rates[sid] = float(rates_vec[i])
+            self.last_v2v_stats['rb_assignment'][sid] = int(rb_assign[i])
+            self.last_v2v_stats['i_caused'][sid] = float(i_caused_arr[i])
+            self.last_v2v_stats['i_total'][sid] = float(i_total_arr[i])
+        self.last_v2v_stats['sinr_values'] = sinr_arr.tolist()
+        self.last_v2v_stats['rb_occupancy'] = rb_occ
+        return v2v_rates
+
+    # ------------------------------------------------------------------
+    # 显式链路列表驱动的 V2I 批量速率计算
+    # ------------------------------------------------------------------
+    def compute_v2i_rates(self, v2i_links, rsu_pos_map=None, rsu_pos_default=None):
+        """
+        Args:
+            v2i_links: list of dict, 含 sender_id, tx_pos, rsu_id, power_w
+            rsu_pos_map: {rsu_id: position}
+            rsu_pos_default: 默认 RSU 位置
+        Returns:
+            dict  sender_id -> rate
         """
         rates = {}
-
-        # ==========================================
-        # A. V2I 通信 (带宽竞争模型，无衰落)
-        # ==========================================
-        v2i_group = [v for v in vehicles if isinstance(v.curr_target, tuple) and v.curr_target[0] == 'RSU']
-        # 兼容旧代码：单个RSU场景
-        if len(v2i_group) == 0:
-            v2i_group = [v for v in vehicles if v.curr_target == 'RSU']
-
-        if v2i_group:
-            num_users = len(v2i_group)
-
-            # 带宽竞争模型: 总带宽被所有用户均分
-            eff_bandwidth = Cfg.BW_V2I / max(num_users, 1)
-            noise_w = self._noise_power(eff_bandwidth)
-
-            for v in v2i_group:
-                # 距离计算
-                dist = np.linalg.norm(v.pos - rsu_pos)
-
-                # 信道增益: 只有路径损耗，无衰落（LoS链路）
-                h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2I)
-
-                # 接收功率
-                p_tx = Cfg.dbm2watt(v.tx_power_dbm)
-                p_rx = p_tx * h_bar
-
-                # SINR = P_rx / Noise (V2I 正交，忽略内部干扰)
-                sinr = p_rx / noise_w
-
-                # Shannon Capacity
-                rates[v.id] = eff_bandwidth * np.log2(1 + sinr)
-
-        # ==========================================
-        # B. V2V 通信 (全干扰模型)
-        # ==========================================
-        v2v_senders = [v for v in vehicles if isinstance(v.curr_target, int)]
-
-        # 构建配对列表
-        valid_pairs = []
-        veh_map = {v.id: v for v in vehicles}
-
-        for tx_veh in v2v_senders:
-            rx_id = tx_veh.curr_target
-            rx_veh = veh_map.get(rx_id)
-            if rx_veh:
-                valid_pairs.append((tx_veh, rx_veh))
-
-        if valid_pairs:
-            n_pairs = len(valid_pairs)
-
-            # 提取位置与功率向量
-            tx_positions = np.array([p[0].pos for p in valid_pairs])  # [N, 2]
-            rx_positions = np.array([p[1].pos for p in valid_pairs])  # [N, 2]
-            tx_powers = np.array([Cfg.dbm2watt(p[0].tx_power_dbm) for p in valid_pairs])  # [N]
-
-            # 1. 信号强度 (Signal Power)
-            sig_dists = np.linalg.norm(tx_positions - rx_positions, axis=1)
-            # V2V 使用瑞利衰落（每个step重新采样）
-            # 大尺度路径损耗
-            h_bar_sig = self._path_loss(sig_dists, Cfg.PL_ALPHA_V2V)
-            # 小尺度瑞利衰落（每次重新采样）
-            h_rayleigh = self._rayleigh_fading(n_pairs)
-            # 信号功率 = P_tx * h_bar * |h_rayleigh|^2
-            signal_powers = tx_powers * h_bar_sig * h_rayleigh
-
-            # 2. 干扰矩阵 (Interference Matrix)
-            # dist_mat[i, j] = dist(Rx[i], Tx[j])
-            dist_mat = np.linalg.norm(rx_positions[:, None, :] - tx_positions[None, :, :], axis=2)
-
-            # 路径损耗矩阵（干扰只考虑大尺度路径损耗，无衰落）
-            h_bar_interference = self._path_loss(dist_mat, Cfg.PL_ALPHA_V2V)
-
-            # 干扰功率矩阵: P_tx[j] * h_bar[i, j]（只有大尺度路径损耗）
-            int_power_mat = tx_powers[None, :] * h_bar_interference
-
-            # 移除信号本身 (对角线置0)
-            np.fill_diagonal(int_power_mat, 0.0)
-
-            # 总干扰: 按行求和（期望值E[I]）
-            total_interference = np.sum(int_power_mat, axis=1)
-
-            # 3. 计算速率 (V2V 共享带宽，干扰受限) - 使用向量化计算
-            # 向量化计算SINR和速率，避免循环
-            noise_w = self._noise_power(Cfg.BW_V2V)
-            sinr = signal_powers / (noise_w + total_interference)
-            rates_vector = Cfg.BW_V2V * np.log2(1 + sinr)
-            
-            # 将结果写入字典
-            for i in range(n_pairs):
-                sender_id = valid_pairs[i][0].id
-                rates[sender_id] = rates_vector[i]
-
+        if not v2i_links:
+            return rates
+        # 按 RSU 分组计算带宽共享
+        groups = {}
+        for lk in v2i_links:
+            groups.setdefault(lk['rsu_id'], []).append(lk)
+        for rid, grp in groups.items():
+            n_users = len(grp)
+            bw = Cfg.BW_V2I / max(n_users, 1)
+            noise_w = self._noise_power(bw)
+            rsu_p = (rsu_pos_map or {}).get(rid, rsu_pos_default)
+            if rsu_p is None:
+                continue
+            for lk in grp:
+                dist = np.linalg.norm(np.asarray(lk['tx_pos']) - np.asarray(rsu_p))
+                h = self._path_loss(dist, Cfg.PL_BETA_V2I)
+                sinr = lk['power_w'] * h / noise_w
+                rates[lk['sender_id']] = bw * np.log2(1 + sinr)
         return rates
+
+    # ------------------------------------------------------------------
+    # 旧接口保留兼容（通过 curr_target 识别 sender）
+    # ------------------------------------------------------------------
+    def compute_rates(self, vehicles, rsu_pos, rsus=None):
+        """
+        [批量计算] 旧接口 — 通过 vehicle.curr_target 识别活跃传输。
+        新代码应优先使用 compute_v2v_rb_sinr / compute_v2i_rates。
+        """
+        rates = {}
+        rsu_pos_map = {}
+        if rsus is not None:
+            for rsu in rsus:
+                rsu_pos_map[rsu.id] = rsu.position
+
+        # A. V2I
+        v2i_group = [v for v in vehicles if isinstance(v.curr_target, tuple) and v.curr_target[0] == 'RSU']
+        if not v2i_group:
+            v2i_group = [v for v in vehicles if v.curr_target == 'RSU']
+        if v2i_group:
+            rsu_groups = {}
+            for v in v2i_group:
+                rid = v.curr_target[1] if isinstance(v.curr_target, tuple) and len(v.curr_target) > 1 else -1
+                rsu_groups.setdefault(rid, []).append(v)
+            for rid, group in rsu_groups.items():
+                bw = Cfg.BW_V2I / max(len(group), 1)
+                noise_w = self._noise_power(bw)
+                for v in group:
+                    pos = rsu_pos_map.get(rid, rsu_pos)
+                    h = self._path_loss(np.linalg.norm(v.pos - pos), Cfg.PL_BETA_V2I)
+                    rates[v.id] = bw * np.log2(1 + Cfg.dbm2watt(v.tx_power_dbm) * h / noise_w)
+
+        # B. V2V — 委托新接口
+        v2v_links = []
+        veh_map = {v.id: v for v in vehicles}
+        for v in vehicles:
+            if isinstance(v.curr_target, int):
+                rx = veh_map.get(v.curr_target)
+                if rx:
+                    v2v_links.append({
+                        'sender_id': v.id, 'tx_pos': v.pos, 'rx_pos': rx.pos,
+                        'power_w': Cfg.dbm2watt(v.tx_power_dbm),
+                    })
+        v2v_rates = self.compute_v2v_rb_sinr(v2v_links)
+        rates.update(v2v_rates)
+        return rates
+
+    def _assign_rb_deterministic(self, pairs, tx_powers, g_mat, n_pairs):
+        """
+        确定性 RB 分配：
+        1) 按信号增益 w_ij = G(d_ij) 从大到小排序
+        2) 贪心放入使增量干扰代价 ΔC(c) 最小的 RB
+        """
+        # w_ij = 信号路径增益（越大越优先分配）
+        sig_dists = np.array([
+            np.linalg.norm(pairs[i][0].pos - pairs[i][1].pos)
+            for i in range(n_pairs)
+        ])
+        w = self._path_loss(sig_dists, Cfg.PL_BETA_V2V)
+        order = np.argsort(-w)  # 从大到小
+
+        rb_assign = np.full(n_pairs, -1, dtype=int)
+        rb_links = [[] for _ in range(self.num_rb)]  # 每 RB 已分配的 link indices
+
+        for link_i in order:
+            best_rb = 0
+            best_cost = np.inf
+            for c in range(self.num_rb):
+                cost = 0.0
+                # link_i 加入 RB c 的增量干扰代价
+                for m in rb_links[c]:
+                    # link_i 对 m 的接收端的干扰
+                    cost += tx_powers[link_i] * g_mat[m, link_i]
+                    # m 对 link_i 的接收端的干扰
+                    cost += tx_powers[m] * g_mat[link_i, m]
+                if cost < best_cost:
+                    best_cost = cost
+                    best_rb = c
+            rb_assign[link_i] = best_rb
+            rb_links[best_rb].append(link_i)
+
+        return rb_assign
 
     def compute_one_rate(self, vehicle, target_pos, link_type='V2I', curr_time=None, active_tx_vehicles=None, v2i_user_count=None, power_dbm_override=None):
         """
@@ -160,34 +262,37 @@ class ChannelModel:
             sinr = (p_tx * h_bar) / noise_w
             rate = bandwidth * np.log2(1 + sinr)
         else:
-            # V2V: 包含瑞利衰落，全干扰模型
-            bandwidth = Cfg.BW_V2V
+            # V2V: per-RB SINR（单链路预估使用单 RB 带宽 + 背景干扰）
+            bandwidth = self.bw_per_rb
             noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.PL_BETA_V2V)  # 修复：使用BETA（指数）而不是ALPHA（dB）
+            h_bar = self._path_loss(dist, Cfg.PL_BETA_V2V)
             
-            # 计算干扰（只考虑大尺度路径损耗）
-            if active_tx_vehicles is not None and len(active_tx_vehicles) > 0:
+            if active_tx_vehicles is not None:
                 interference = self._compute_interference(
                     vehicle.pos, target_pos, active_tx_vehicles, p_tx
                 )
+                # 预估时假设干扰均匀分摊到 num_rb 个 RB
+                interference = interference / max(self.num_rb, 1)
             else:
                 interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
             
-            # 信号功率包含瑞利衰落（同一时隙可复用以保证口径一致）
-            if self.use_block_fading and curr_time is not None:
-                # 使用离散时隙索引作为cache key，避免浮点误差
-                slot = int(round(curr_time / Cfg.DT))
-                if slot != self._v2v_cache_slot:
-                    self.v2v_fading_cache.clear()
-                    self._v2v_cache_slot = slot
-                target_key = tuple(np.round(target_pos, 3).tolist())
-                cache_key = (vehicle.id, target_key)
-                if cache_key not in self.v2v_fading_cache:
-                    self.v2v_fading_cache[cache_key] = self._rayleigh_fading(1)[0]
-                h_rayleigh = self.v2v_fading_cache[cache_key]
+            if self.use_block_fading:
+                if curr_time is not None:
+                    slot = int(round(curr_time / Cfg.DT))
+                    if slot != self._v2v_cache_slot:
+                        self.v2v_fading_cache.clear()
+                        self._v2v_cache_slot = slot
+                    target_key = tuple(np.round(target_pos, 3).tolist())
+                    cache_key = (vehicle.id, target_key)
+                    if cache_key not in self.v2v_fading_cache:
+                        self.v2v_fading_cache[cache_key] = self._rayleigh_fading(1)[0]
+                    h_rayleigh = self.v2v_fading_cache[cache_key]
+                else:
+                    h_rayleigh = self._rayleigh_fading(1)[0]
+                signal_power = p_tx * h_bar * h_rayleigh
             else:
-                h_rayleigh = self._rayleigh_fading(1)[0]
-            signal_power = p_tx * h_bar * h_rayleigh
+                # 关闭 Rayleigh：只用大尺度路损
+                signal_power = p_tx * h_bar
             
             sinr = signal_power / (noise_w + interference)
             rate = bandwidth * np.log2(1 + sinr)
@@ -238,7 +343,7 @@ class ChannelModel:
         valid_powers = interferer_powers[valid_mask]
         
         # 向量化计算路径损耗和干扰功率
-        h_bar = self._path_loss(valid_distances, Cfg.PL_ALPHA_V2V)  # [M], M为有效干扰源数
+        h_bar = self._path_loss(valid_distances, Cfg.PL_BETA_V2V)  # [M], M为有效干扰源数
         interference_powers = valid_powers * h_bar  # [M]
         
         # 求和得到总干扰
@@ -268,7 +373,7 @@ class ChannelModel:
         # V2V可靠性计算
         dist = np.linalg.norm(vehicle.pos - target_pos)
         p_tx = Cfg.dbm2watt(vehicle.tx_power_dbm)
-        h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
+        h_bar = self._path_loss(dist, Cfg.PL_BETA_V2V)
         
         # 计算干扰（期望值E[I]）
         if active_tx_vehicles is not None and len(active_tx_vehicles) > 0:
@@ -278,9 +383,8 @@ class ChannelModel:
         else:
             interference = Cfg.dbm2watt(Cfg.V2V_INTERFERENCE_DBM)
 
-        # 可靠性公式：P_succ = exp(-γ_th * (N_0 + E[I]) / (P_tx * h_bar))
         gamma_th = getattr(Cfg, 'V2V_GAMMA_TH', 2.0)
-        noise_w = self._noise_power(Cfg.BW_V2V)
+        noise_w = self._noise_power(self.bw_per_rb)
         numerator = gamma_th * (noise_w + interference)
         denominator = p_tx * h_bar
         
@@ -307,36 +411,25 @@ class ChannelModel:
         return active_transmitters
 
     def compute_v2v_rate_with_interference(self, vehicles, tx_veh, rx_veh):
-        """
-        计算指定V2V链路的实际速率（考虑所有活跃干扰）
-
-        Args:
-            vehicles: 环境中的所有车辆
-            tx_veh: 发射车辆
-            rx_veh: 接收车辆
-
-        Returns:
-            实际传输速率(bps)
-        """
+        """计算指定V2V链路速率（per-RB 带宽 + 背景干扰预估）"""
         p_tx = Cfg.dbm2watt(tx_veh.tx_power_dbm)
+        dist = max(np.linalg.norm(tx_veh.pos - rx_veh.pos), 1.0)
 
-        dist = np.linalg.norm(tx_veh.pos - rx_veh.pos)
-        if dist < 1.0:
-            dist = 1.0
-
-        # V2V信号功率：包含大尺度路径损耗和瑞利衰落
-        h_bar = self._path_loss(dist, Cfg.PL_ALPHA_V2V)
-        h_rayleigh = self._rayleigh_fading(1)[0]
-        signal_power = p_tx * h_bar * h_rayleigh
+        h_bar = self._path_loss(dist, Cfg.PL_BETA_V2V)
+        if self.use_block_fading:
+            h_rayleigh = self._rayleigh_fading(1)[0]
+            signal_power = p_tx * h_bar * h_rayleigh
+        else:
+            signal_power = p_tx * h_bar
 
         interference = self._compute_interference(
             rx_veh.pos, tx_veh.pos, vehicles, p_tx
         )
+        interference = interference / max(self.num_rb, 1)
 
-        noise_w = self._noise_power(Cfg.BW_V2V)
+        noise_w = self._noise_power(self.bw_per_rb)
         sinr = signal_power / (noise_w + interference)
-        rate = Cfg.BW_V2V * np.log2(1 + sinr)
-
+        rate = self.bw_per_rb * np.log2(1 + sinr)
         return rate
 
     def _path_loss(self, dists, alpha):

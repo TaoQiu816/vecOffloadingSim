@@ -30,13 +30,15 @@ def process_env_obs(obs_list, device):
     # =========================================================================
     # 0. 准备全局特征 (用于 Critic 和 Actor 的 Others 部分)
     # =========================================================================
-    # obs['self_info'] 已经是 7 维: [vx, vy, wait, cpu_freq, v2i_rate, pos_x, pos_y]
-    # 与 TrainConfig 中的 VEH_INPUT_DIM = 7 一致
+    # obs['self_info'] 预期为 7 维: [vx, vy, wait, cpu_freq, v2i_rate, pos_x, pos_y]
+    # 若有额外维度，按需截断以保持训练入口兼容
     all_veh_feats_np = np.stack([obs['self_info'] for obs in obs_list])
 
     # 验证维度一致性
-    if all_veh_feats_np.shape[1] != 7:
-        raise ValueError(f"Expected self_info to be 7-dimensional, got {all_veh_feats_np.shape[1]}")
+    if all_veh_feats_np.shape[1] < 7:
+        raise ValueError(f"Expected self_info to be at least 7-dimensional, got {all_veh_feats_np.shape[1]}")
+    if all_veh_feats_np.shape[1] > 7:
+        all_veh_feats_np = all_veh_feats_np[:, :7]
 
     all_veh_tensor = torch.FloatTensor(all_veh_feats_np)
 
@@ -60,16 +62,22 @@ def process_env_obs(obs_list, device):
         dag.mask = torch.BoolTensor(obs['task_mask'])
 
         # 2. Target Mask: 使用环境的标准顺序
-        # Canonical Order: [Local, RSU, V2V_0, V2V_1, ...]
-        policy_target_mask = torch.as_tensor(obs['target_mask'], dtype=torch.bool)
+        # [通用化] 长度由Cfg.MAX_TARGETS决定，不假设固定布局
+        policy_target_mask = torch.as_tensor(obs['action_mask'], dtype=torch.bool)
         if policy_target_mask.numel() != Cfg.MAX_TARGETS:
-            raise ValueError(f"target_mask length mismatch: {policy_target_mask.numel()} != {Cfg.MAX_TARGETS}")
+            raise ValueError(f"action_mask length mismatch: {policy_target_mask.numel()} != {Cfg.MAX_TARGETS}")
 
-        # 解析 Env Neighbors 列表，构建邻居字典（用于拓扑边）
+        # [通用化] 从candidate_types获取V2V起始索引，而非硬编码+2
+        candidate_types = obs.get('candidate_types', None)
+        if candidate_types is not None:
+            v2v_start = int(np.argmax(np.asarray(candidate_types) == 3)) if 3 in candidate_types else len(candidate_types)
+        else:
+            v2v_start = 2  # 回退默认
         nbr_dict = {}
         for i, nbr in enumerate(obs['neighbors']):
             nid = int(nbr[0])
-            nbr_dict[nid] = bool(obs['target_mask'][i + 2])
+            mask_idx = v2v_start + i
+            nbr_dict[nid] = bool(obs['action_mask'][mask_idx]) if mask_idx < len(obs['action_mask']) else False
 
         # 构建一个不包含自己的 ID 列表
         other_ids = [i for i in range(num_vehicles) if i != v_id]
@@ -144,8 +152,15 @@ def process_env_obs(obs_list, device):
     g_v2i_src, g_v2i_dst = [], []
 
     for v_id, obs in enumerate(obs_list):
-        # V2I
-        if obs['target_mask'][1]:
+        # [通用化] V2I边：检查所有RSU type的mask
+        ct = obs.get('candidate_types', None)
+        if ct is not None:
+            for _idx in range(len(ct)):
+                if int(ct[_idx]) == 2 and bool(obs['action_mask'][_idx]):
+                    g_v2i_src.append(v_id)
+                    g_v2i_dst.append(0)
+                    break  # 至少一个RSU可达即建边
+        elif obs['action_mask'][1]:
             g_v2i_src.append(v_id)
             g_v2i_dst.append(0)
 

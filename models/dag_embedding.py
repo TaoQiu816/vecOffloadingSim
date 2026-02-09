@@ -48,7 +48,7 @@ class LocationEncoder(nn.Module):
         """
         # [修复] 将所有邻居ID统一映射为角色3（Neighbor）
         # 这样网络只看到"是邻居"，不会过拟合具体ID
-        role_ids = torch.clamp(location_ids, max=3)
+        role_ids = torch.clamp(location_ids, min=0, max=3)
         
         return self.location_embedding(role_ids)
 
@@ -84,7 +84,8 @@ class StatusEncoder(nn.Module):
         Returns:
             [Batch, MAX_NODES, d_model]
         """
-        return self.status_embedding(status_ids)
+        safe_status = torch.clamp(status_ids, min=0, max=3)
+        return self.status_embedding(safe_status)
 
 
 class BidirectionalTopologicalPositionEncoder(nn.Module):
@@ -118,8 +119,13 @@ class BidirectionalTopologicalPositionEncoder(nn.Module):
         Returns:
             [Batch, MAX_NODES, d_model], 双向位置编码（相加）
         """
-        fwd_emb = self.L_fwd_embedding(L_fwd)  # [B, N, d]
-        bwd_emb = self.L_bwd_embedding(L_bwd)  # [B, N, d]
+        max_idx = self.L_fwd_embedding.num_embeddings - 1
+        if max_idx < 0:
+            max_idx = 0
+        L_fwd_safe = torch.clamp(L_fwd, min=0, max=max_idx)
+        L_bwd_safe = torch.clamp(L_bwd, min=0, max=max_idx)
+        fwd_emb = self.L_fwd_embedding(L_fwd_safe)  # [B, N, d]
+        bwd_emb = self.L_bwd_embedding(L_bwd_safe)  # [B, N, d]
         
         # 相加融合
         return fwd_emb + bwd_emb
@@ -226,7 +232,11 @@ class SpatialDistanceEncoder(nn.Module):
             [Batch, num_heads, MAX_NODES, MAX_NODES], 空间偏置
         """
         # 嵌入距离
-        spatial_bias = self.distance_embedding(distance_matrix)  # [B, N, N, H]
+        max_idx = self.distance_embedding.num_embeddings - 1
+        if max_idx < 0:
+            max_idx = 0
+        dist_safe = torch.clamp(distance_matrix, min=0, max=max_idx)
+        spatial_bias = self.distance_embedding(dist_safe)  # [B, N, N, H]
         
         # 转置以匹配注意力维度 [B, H, N, N]
         spatial_bias = spatial_bias.permute(0, 3, 1, 2)

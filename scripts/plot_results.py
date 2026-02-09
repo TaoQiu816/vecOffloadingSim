@@ -497,6 +497,82 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     print(f"✓ Saved: fig_summary_dashboard.png")
 
 
+def plot_constraints_and_health(df, output_dir):
+    """
+    绘制约束与训练健康指标
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+    # 1) 约束命中率
+    ax = axes[0, 0]
+    if 'deadline_miss_rate' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['deadline_miss_rate'], 50) * 100,
+                color=COLORS['danger'], linewidth=2.5, label='Deadline Miss Rate')
+    if 'time_limit_rate' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['time_limit_rate'], 50) * 100,
+                color=COLORS['accent'], linewidth=2, linestyle='--', label='Time Limit Rate')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Rate (%)')
+    ax.set_title('Constraint Hit Rate', fontweight='bold')
+    ax.legend(loc='best', framealpha=0.9)
+
+    # 2) 非法与硬触发
+    ax = axes[0, 1]
+    if 'illegal_action_rate' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['illegal_action_rate'], 50) * 100,
+                color='#ef4444', linewidth=2.5, label='Illegal Action Rate')
+    if 'hard_trigger_rate' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['hard_trigger_rate'], 50) * 100,
+                color='#8b5cf6', linewidth=2, linestyle='--', label='Hard Trigger Rate')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Rate (%)')
+    ax.set_title('Safety Trigger Rate', fontweight='bold')
+    ax.legend(loc='best', framealpha=0.9)
+
+    # 3) 资源压力
+    ax = axes[1, 0]
+    if 'avg_rsu_queue' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['avg_rsu_queue'], 50),
+                color=COLORS['primary'], linewidth=2.5, label='Avg RSU Queue')
+    if 'power_ratio_mean' in df.columns:
+        ax2 = ax.twinx()
+        ax2.plot(df['episode'], rolling_mean(df['power_ratio_mean'], 50),
+                 color=COLORS['secondary'], linewidth=2, linestyle='--', label='Power Ratio Mean')
+        ax2.set_ylabel('Power Ratio', color=COLORS['secondary'])
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc='best', framealpha=0.9)
+    else:
+        ax.legend(loc='best', framealpha=0.9)
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('RSU Queue Length')
+    ax.set_title('Resource Pressure', fontweight='bold')
+
+    # 4) PPO健康
+    ax = axes[1, 1]
+    if 'grad_norm' in df.columns:
+        ax.plot(df['episode'], rolling_mean(df['grad_norm'], 50),
+                color=COLORS['muted'], linewidth=2, label='Grad Norm')
+    if 'active_ratio' in df.columns:
+        ax2 = ax.twinx()
+        ax2.plot(df['episode'], rolling_mean(df['active_ratio'], 50) * 100,
+                 color=COLORS['secondary'], linewidth=2.5, label='Active Ratio')
+        ax2.set_ylabel('Active Ratio (%)', color=COLORS['secondary'])
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc='best', framealpha=0.9)
+    else:
+        ax.legend(loc='best', framealpha=0.9)
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Grad Norm')
+    ax.set_title('PPO Update Health', fontweight='bold')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'fig_constraint_health.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Saved: fig_constraint_health.png")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot training results from CSV")
     parser.add_argument('--log-file', type=str, required=True, help='Path to training_stats.csv')
@@ -539,6 +615,7 @@ def main():
     plot_policy_evolution(df, args.output_dir)
     plot_training_diagnostics(df, args.output_dir)
     plot_physical_metrics(df, args.output_dir)
+    plot_constraints_and_health(df, args.output_dir)
     plot_summary_dashboard(df, df_baseline, args.output_dir)
     
     print(f"\n✓ All plots saved to: {args.output_dir}")

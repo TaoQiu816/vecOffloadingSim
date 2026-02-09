@@ -8,7 +8,9 @@
 #   bash scripts/run_ablation.sh network # 只运行网络消融
 # =============================================================================
 
-cd ~/vecOffloadingSim
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$BASE_DIR"
 EPISODES=1000
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 

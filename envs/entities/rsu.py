@@ -45,7 +45,7 @@ class RSU:
 
         # 计算资源
         self.cpu_freq = cpu_freq if cpu_freq is not None else Cfg.F_RSU
-        self.num_processors = num_processors if num_processors is not None else getattr(Cfg, 'RSU_NUM_PROCESSORS', 4)
+        self.num_processors = num_processors if num_processors is not None else getattr(Cfg, 'RSU_NUM_PROCESSORS', 6)
 
         # 覆盖范围
         self.coverage_range = coverage_range if coverage_range is not None else Cfg.RSU_RANGE

@@ -17,6 +17,11 @@ logs/
 # 模型文件（较大，不同步）
 models/*.pth
 *.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
 runs/**/*.pth
 runs/**/checkpoints/
 .cursor/

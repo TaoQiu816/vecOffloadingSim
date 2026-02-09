@@ -63,27 +63,40 @@ def run_rollouts(bias_rsu, max_episodes, seed=42):
                 # 随机策略：在可用动作中随机选择
                 actions = []
                 for i, v in enumerate(env.vehicles):
-                    # 获取target_mask
+                    # 获取action_mask
                     if i < len(obs) and isinstance(obs[i], dict):
-                        target_mask = obs[i].get('target_mask', np.ones(Cfg.MAX_TARGETS, dtype=bool))
+                        target_mask = obs[i].get('action_mask', np.ones(Cfg.MAX_TARGETS, dtype=bool))
                     else:
                         target_mask = np.ones(Cfg.MAX_TARGETS, dtype=bool)
 
-                    # 统计mask可用性
+                    # [通用化] 按candidate_types统计mask可用性
+                    cand_types = obs[i].get('candidate_types', None) if isinstance(obs[i], dict) else None
                     mask_avail['total'] += 1
-                    mask_avail['local'] += int(target_mask[0]) if len(target_mask) > 0 else 0
-                    mask_avail['rsu'] += int(target_mask[1]) if len(target_mask) > 1 else 0
-                    mask_avail['v2v'] += int(np.any(target_mask[2:])) if len(target_mask) > 2 else 0
+                    if cand_types is not None:
+                        mask_avail['local'] += int(any(int(cand_types[j]) == 1 and bool(target_mask[j]) for j in range(len(cand_types))))
+                        mask_avail['rsu'] += int(any(int(cand_types[j]) == 2 and bool(target_mask[j]) for j in range(len(cand_types))))
+                        mask_avail['v2v'] += int(any(int(cand_types[j]) == 3 and bool(target_mask[j]) for j in range(len(cand_types))))
+                    else:
+                        mask_avail['local'] += int(target_mask[0]) if len(target_mask) > 0 else 0
+                        mask_avail['rsu'] += int(target_mask[1]) if len(target_mask) > 1 else 0
+                        mask_avail['v2v'] += int(np.any(target_mask[2:])) if len(target_mask) > 2 else 0
 
                     # 应用logit bias后采样
                     valid_indices = np.where(target_mask)[0]
                     if len(valid_indices) == 0:
                         valid_indices = [0]  # fallback to local
 
-                    # 创建带bias的概率
+                    # [通用化] 按candidate_types赋logit_bias
                     logits = np.zeros(Cfg.MAX_TARGETS)
-                    logits[0] = TC.LOGIT_BIAS_LOCAL
-                    logits[1] = TC.LOGIT_BIAS_RSU
+                    if cand_types is not None:
+                        for j in range(len(cand_types)):
+                            if int(cand_types[j]) == 1:
+                                logits[j] = TC.LOGIT_BIAS_LOCAL
+                            elif int(cand_types[j]) == 2:
+                                logits[j] = TC.LOGIT_BIAS_RSU
+                    else:
+                        logits[0] = TC.LOGIT_BIAS_LOCAL
+                        logits[1] = TC.LOGIT_BIAS_RSU
                     # V2V targets保持0
 
                     # 只对valid actions计算softmax

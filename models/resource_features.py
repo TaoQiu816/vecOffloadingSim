@@ -20,7 +20,8 @@ class ResourceFeatureBuilder:
     
     输出统一的特征向量（14维）：
     [CPU_Norm, Queue_Norm, Dist_Norm, Rate_Norm, Rel_X, Rel_Y, Vel_X, Vel_Y, 
-     Node_Type, Slack_Norm, Contact_Norm, Est_Exec_Time, Est_Comm_Time, Est_Wait_Time]
+     Node_Type, Slack_Norm, Contact_Norm, Est_Exec_Time, Est_Comm_Time, Comm_Wait_Norm]
+    注: dim[13] 原为Est_Wait_Time（与dim[1]冗余），已替换为通信队列等待时间归一化值
     """
     
     def __init__(self):
@@ -288,7 +289,7 @@ class ResourceIDEncoder(nn.Module):
         """
         # [修复] 将所有邻居ID统一映射为类型3（Neighbor）
         # 这样网络只看到"是邻居"，不会过拟合具体ID
-        type_ids = torch.clamp(resource_ids, max=3)
+        type_ids = torch.clamp(resource_ids, min=0, max=3)
         
         # 嵌入
         id_emb = self.id_embedding(type_ids)  # [B, N_res, d_model]

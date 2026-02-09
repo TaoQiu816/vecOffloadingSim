@@ -110,9 +110,17 @@ else:
 # 8. 实际mask检查
 print("\n[实际Mask状态]")
 for i, o in enumerate(obs[:3]):  # 检查前3辆车
-    mask = o.get("target_mask", [])
-    v2v_avail = int(np.sum(mask[2:])) if len(mask) > 2 else 0
-    print(f"  Vehicle {i}: Local={mask[0]}, RSU={mask[1]}, V2V可用数={v2v_avail}")
+    mask = o.get("action_mask", [])
+    ct = o.get("candidate_types", None)
+    if ct is not None:
+        local_ok = any(int(ct[j]) == 1 and bool(mask[j]) for j in range(len(ct)))
+        rsu_ok = any(int(ct[j]) == 2 and bool(mask[j]) for j in range(len(ct)))
+        v2v_avail = sum(1 for j in range(len(ct)) if int(ct[j]) == 3 and bool(mask[j]))
+    else:
+        local_ok = bool(mask[0]) if len(mask) > 0 else False
+        rsu_ok = bool(mask[1]) if len(mask) > 1 else False
+        v2v_avail = int(np.sum(mask[2:])) if len(mask) > 2 else 0
+    print(f"  Vehicle {i}: Local={local_ok}, RSU={rsu_ok}, V2V可用数={v2v_avail}")
 
 # 9. 深入分析：为什么V2V被过滤？
 print("\n" + "=" * 70)

@@ -36,7 +36,7 @@ def test_environment_reset_step():
     assert len(obs_list) > 0, "obs_list should not be empty"
 
     obs = obs_list[0]
-    required_keys = ['node_x', 'adj', 'status', 'location', 'L_fwd', 'L_bwd',
+    required_keys = ['node_x', 'adj', 'location', 'L_fwd', 'L_bwd',
                      'data_matrix', 'Delta', 'resource_ids', 'resource_raw',
                      'subtask_index', 'action_mask', 'task_mask']
 
@@ -150,7 +150,6 @@ def test_agent_select_action():
         obs = {
             'node_x': np.random.randn(max_nodes, 7).astype(np.float32),
             'adj': np.zeros((max_nodes, max_nodes), dtype=np.float32),
-            'status': np.zeros(max_nodes, dtype=np.int64),
             'location': np.zeros(max_nodes, dtype=np.int64),
             'L_fwd': np.zeros(max_nodes, dtype=np.int64),
             'L_bwd': np.zeros(max_nodes, dtype=np.int64),
@@ -164,7 +163,7 @@ def test_agent_select_action():
         }
         obs['resource_ids'][0] = 1
         obs['resource_ids'][1] = 2
-        obs['status'][0] = 1
+        obs['node_x'][0, 2] = 1.0 / 3.0
         obs_list.append(obs)
 
     # 选择动作
@@ -212,7 +211,6 @@ def test_ppo_update_cycle():
             obs = {
                 'node_x': np.random.randn(max_nodes, 7).astype(np.float32),
                 'adj': np.zeros((max_nodes, max_nodes), dtype=np.float32),
-                'status': np.zeros(max_nodes, dtype=np.int64),
                 'location': np.zeros(max_nodes, dtype=np.int64),
                 'L_fwd': np.zeros(max_nodes, dtype=np.int64),
                 'L_bwd': np.zeros(max_nodes, dtype=np.int64),
@@ -226,7 +224,7 @@ def test_ppo_update_cycle():
             }
             obs['resource_ids'][0] = 1
             obs['resource_ids'][1] = 2
-            obs['status'][0] = 1
+            obs['node_x'][0, 2] = 1.0 / 3.0
             obs_list.append(obs)
 
         result = agent.select_action(obs_list, deterministic=False)
@@ -345,7 +343,6 @@ def test_evaluate_actions_consistency():
         obs = {
             'node_x': np.random.randn(max_nodes, 7).astype(np.float32),
             'adj': np.zeros((max_nodes, max_nodes), dtype=np.float32),
-            'status': np.zeros(max_nodes, dtype=np.int64),
             'location': np.zeros(max_nodes, dtype=np.int64),
             'L_fwd': np.zeros(max_nodes, dtype=np.int64),
             'L_bwd': np.zeros(max_nodes, dtype=np.int64),
@@ -359,7 +356,7 @@ def test_evaluate_actions_consistency():
         }
         obs['resource_ids'][0] = 1
         obs['resource_ids'][1] = 2
-        obs['status'][0] = 1
+        obs['node_x'][0, 2] = 1.0 / 3.0
         obs_list.append(obs)
 
     # 选择动作

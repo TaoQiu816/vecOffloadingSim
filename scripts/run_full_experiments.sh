@@ -14,7 +14,9 @@
 
 set -e
 
-cd ~/vecOffloadingSim
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$BASE_DIR"
 EPISODES=1500
 SEED=42
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

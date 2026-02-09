@@ -210,7 +210,7 @@ def assert_invariants(env: VecOffloadingEnv, recorder: StepRecord, prev_status: 
     # 7. mask[0]=True (Local可用)
     obs_list, _ = env._get_obs(), {}
     for obs in obs_list:
-        assert bool(obs["target_mask"][0]) is True, "Local mask false"
+        assert bool(obs["action_mask"][0]) is True, "Local mask false"
     # 8. 时间单调
     if not hasattr(env, "_last_time_check"):
         env._last_time_check = -1.0  # type: ignore[attr-defined]
@@ -269,7 +269,7 @@ def log_step_rsu_detail(env: VecOffloadingEnv, obs_list, actions):
     v = env.vehicles[0]
     obs = obs_list[0] if obs_list else {}
     sub_idx = obs.get("subtask_index", None)
-    tgt_mask = obs.get("target_mask", None)
+    tgt_mask = obs.get("action_mask", None)
     mask_local = tgt_mask[0] if tgt_mask is not None else None
     mask_rsu = tgt_mask[1] if (tgt_mask is not None and len(tgt_mask) > 1) else None
     act = actions[0] if actions else {}
@@ -300,10 +300,10 @@ def log_step_rsu_detail(env: VecOffloadingEnv, obs_list, actions):
 
 
 def log_obs_brief(tag: str, obs):
-    tgt_mask = obs.get("target_mask") if obs else None
+    tgt_mask = obs.get("action_mask") if obs else None
     task_mask = obs.get("task_mask") if obs else None
     sub_idx = obs.get("subtask_index") if obs else None
-    print(f"[{tag}] subtask_index={sub_idx} target_mask={tgt_mask} task_mask={task_mask}")
+    print(f"[{tag}] subtask_index={sub_idx} action_mask={tgt_mask} task_mask={task_mask}")
 
 
 # --------------------------------------------------------------------------- #
@@ -365,8 +365,8 @@ def scenario_single_rsu() -> Tuple[VecOffloadingEnv, List[List[Dict]]]:
     obs = env._get_obs()
     if obs:
         o0 = obs[0]
-        print(f"[diag/reset_obs] subtask_index={o0.get('subtask_index')} target_mask={o0.get('target_mask')} status={dag.status}")
-        if o0.get("target_mask", [False, False])[1] is False:
+        print(f"[diag/reset_obs] subtask_index={o0.get('subtask_index')} action_mask={o0.get('action_mask')} status={dag.status}")
+        if o0.get("action_mask", [False, False])[1] is False:
             rsu_choice = env._select_best_rsu(env.vehicles[0], dag.total_comp[0], dag.total_data[0])
             print(f"[diag] initial rsu_choice={rsu_choice}")
             # 诊断输出 _last_rsu_choice 当前值
@@ -376,7 +376,7 @@ def scenario_single_rsu() -> Tuple[VecOffloadingEnv, List[List[Dict]]]:
             dist = float(np.linalg.norm(env.vehicles[0].pos - rsu_pos))
             print(f"[diag] rsu_dist={dist:.2f} rsu_range={env.config.RSU_RANGE:.2f}")
         else:
-            print(f"[diag] target_mask RSU already True, _last_rsu_choice={getattr(env, '_last_rsu_choice', {})}")
+            print(f"[diag] action_mask RSU already True, _last_rsu_choice={getattr(env, '_last_rsu_choice', {})}")
     # 手动调用一次 _select_best_rsu 以获取完整诊断
     rsu_choice_diag = env._select_best_rsu(env.vehicles[0], dag.total_comp[0], dag.total_data[0])
     print(f"[diag/manual_select] rsu_choice={rsu_choice_diag} _last_rsu_choice={getattr(env, '_last_rsu_choice', {})}")

@@ -64,8 +64,8 @@ class ConcurrentExternalityAuditor:
         # 记录mask可用性
         for i, v in enumerate(self.env.vehicles):
             # 从obs中提取mask信息
-            if 'target_mask' in obs and i < len(obs['target_mask']):
-                mask = obs['target_mask'][i]
+            if 'action_mask' in obs and i < len(obs['action_mask']):
+                mask = obs['action_mask'][i]
                 # mask[0]=Local, mask[1]=RSU, mask[2:7]=V2V
                 rsu_available = bool(mask[1]) if len(mask) > 1 else False
                 v2v_count = sum(1 for m in mask[2:7] if m) if len(mask) > 2 else 0

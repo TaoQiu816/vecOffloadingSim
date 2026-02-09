@@ -11,6 +11,7 @@ from typing import Dict, Set, Tuple
 from collections import deque
 
 from typing import TYPE_CHECKING, Callable, Optional
+from types import SimpleNamespace
 from envs.services.step_results import CommStepResult
 if TYPE_CHECKING:
     from envs.vec_offloading_env import TransferJob  # type: ignore
@@ -23,6 +24,15 @@ class CommQueueService:
     def __init__(self, channel, config):
         self.channel = channel
         self.config = config
+        self._veh_lookup = None
+        self._rsu_lookup = None
+
+    def set_node_resolvers(self, veh_lookup, rsu_lookup):
+        """
+        Register lookup helpers so fallback rate computation can resolve node positions.
+        """
+        self._veh_lookup = veh_lookup
+        self._rsu_lookup = rsu_lookup
 
     def step(self, txq_v2i: Dict, txq_v2v: Dict, dt: float, time_now: float,
              rate_fn: Optional[Callable[[TransferJob, tuple], float]] = None) -> CommStepResult:
@@ -120,26 +130,45 @@ class CommQueueService:
         if job.kind == "EDGE":
             power_override = self.config.TX_POWER_MAX_DBM
 
-        # channel.compute_one_rate 接口期望 vehicle 对象；此 service 保持签名兼容，仍由外部调用时提供 vehicle 对象
-        # 为最小改动，这里假设 channel.compute_one_rate 能接受 tx_node 里的车辆/RSU
+        src_vehicle = self._resolve_src_vehicle(job.src_node, power_override)
+        dst_pos = self._resolve_dst_pos(job.dst_node)
+        if src_vehicle is None or dst_pos is None:
+            raise ValueError("CommQueueService fallback rate requires node resolvers.")
         return self.channel.compute_one_rate(
-            job.src_node[1] if job.src_node[0] == "VEH" else self._build_rsu_proxy(job.src_node[1]),
-            self._resolve_dst_pos(job.dst_node),
+            src_vehicle,
+            dst_pos,
             queue_type,
             time_now,
             power_dbm_override=power_override,
         )
 
-    def _resolve_dst_pos(self, dst_node: Tuple):
-        # 在 service 中仅用于计算速率的辅助函数
-        # 由调用方确保 dst_node 合法
-        if dst_node[0] == "VEH":
-            # 直接返回车辆对象，由 channel 处理位置获取
-            return dst_node[1]
-        else:
-            # RSU 由 channel 内部处理
-            return dst_node[1]
+    def _resolve_src_vehicle(self, src_node: Tuple, power_dbm: float):
+        if src_node[0] == "VEH":
+            if self._veh_lookup is None:
+                return None
+            return self._veh_lookup(src_node[1])
+        if src_node[0] == "RSU":
+            if self._rsu_lookup is None:
+                return None
+            rsu = self._rsu_lookup(src_node[1])
+            if rsu is None:
+                return None
+            return SimpleNamespace(
+                pos=rsu.position,
+                tx_power_dbm=power_dbm,
+                id=-(int(src_node[1]) + 1),
+            )
+        return None
 
-    def _build_rsu_proxy(self, rsu_id: int):
-        # 占位：若需要为 RSU 发送端构造代理，可在此扩展
-        return rsu_id
+    def _resolve_dst_pos(self, dst_node: Tuple):
+        if dst_node[0] == "VEH":
+            if self._veh_lookup is None:
+                return None
+            veh = self._veh_lookup(dst_node[1])
+            return None if veh is None else veh.pos
+        if dst_node[0] == "RSU":
+            if self._rsu_lookup is None:
+                return None
+            rsu = self._rsu_lookup(dst_node[1])
+            return None if rsu is None else rsu.position
+        return None

@@ -132,6 +132,17 @@ class OffloadingPolicyNetwork(nn.Module):
             d_model=d_model
         )
         
+        # 4.5 rate_prev 轻量投影（上步链路速率 → 资源编码空间）
+        self.rate_prev_proj = nn.Linear(1, d_model)
+        nn.init.zeros_(self.rate_prev_proj.weight)  # 初始化为0，默认不影响已有训练
+        nn.init.zeros_(self.rate_prev_proj.bias)
+
+        # 4.6 serving_rsu_onehot 投影（当前服务RSU → 全局条件，广播到所有资源候选）
+        num_rsu = getattr(Cfg, 'NUM_RSU', 3)
+        self.serving_rsu_proj = nn.Linear(num_rsu, d_model)
+        nn.init.zeros_(self.serving_rsu_proj.weight)  # 零初始化，默认不影响已有训练
+        nn.init.zeros_(self.serving_rsu_proj.bias)
+
         # 5. Actor-Critic网络
         self.actor_critic = ActorCriticNetwork(
             d_model, num_heads, num_layers, d_ff, dropout,
@@ -140,6 +151,24 @@ class OffloadingPolicyNetwork(nn.Module):
             use_no_ready_embed=getattr(TC, "USE_NO_READY_EMBEDDING", True),
         )
     
+    @staticmethod
+    def _apply_logit_bias(target_logits: torch.Tensor,
+                          candidate_types: torch.Tensor) -> torch.Tensor:
+        """
+        [通用化] 根据candidate_types动态赋logit_bias，取代硬编码index 0/1。
+        candidate_types: [B, M]，1=Local, 2=RSU, 3=V2V
+        """
+        if not TC.USE_LOGIT_BIAS:
+            return target_logits
+        logit_bias = torch.zeros_like(target_logits)
+        logit_bias[candidate_types == 1] = TC.LOGIT_BIAS_LOCAL   # Local槽位
+        logit_bias[candidate_types == 2] = TC.LOGIT_BIAS_RSU     # RSU槽位（所有RSU统一）
+        # V2V 探索 bias（线性退火，由 train.py 更新 _logit_bias_v2v_current）
+        v2v_bias = getattr(TC, '_logit_bias_v2v_current', 0.0)
+        if v2v_bias > 1e-6:
+            logit_bias[candidate_types == 3] = v2v_bias
+        return target_logits + logit_bias
+
     def prepare_inputs(self, obs_list: List[Dict], device='cpu') -> Dict[str, torch.Tensor]:
         """
         从环境观测中准备网络输入
@@ -161,7 +190,10 @@ class OffloadingPolicyNetwork(nn.Module):
         subtask_index_list = []
         resource_ids_list = []
         resource_raw_list = []
-        
+        candidate_types_list = []  # [通用化] 候选类型数组
+        rate_prev_list = []        # 上步链路速率
+        serving_rsu_onehot_list = []  # 当前服务RSU的one-hot编码
+
         # DAG拓扑特征（环境已提供）
         status_list = []
         location_list = []
@@ -179,9 +211,28 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index_list.append(obs['subtask_index'])
             resource_ids_list.append(obs['resource_ids'])
             resource_raw_list.append(obs['resource_raw'])
+            # [通用化] 提取candidate_types (1=Local, 2=RSU, 3=V2V)
+            candidate_types_list.append(
+                obs.get('candidate_types', np.zeros(obs['action_mask'].shape[0], dtype=np.int8))
+            )
+            # 上步链路速率 [MAX_TARGETS]
+            rate_prev_list.append(
+                obs.get('rate_prev', np.zeros(obs['action_mask'].shape[0], dtype=np.float32))
+            )
+            # 当前服务RSU [NUM_RSU]
+            num_rsu = getattr(Cfg, 'NUM_RSU', 3)
+            serving_rsu_onehot_list.append(
+                obs.get('serving_rsu_onehot', np.zeros(num_rsu, dtype=np.float32))
+            )
             
             # 从环境提供的字段中获取
-            status_list.append(obs['status'])
+            if 'status' in obs:
+                status_list.append(obs['status'])
+            else:
+                node_x = obs['node_x']
+                status_col = node_x[:, 2] if node_x.shape[1] > 2 else np.zeros(node_x.shape[0])
+                status_arr = np.rint(np.clip(status_col * 3.0, 0.0, 3.0)).astype(np.int64)
+                status_list.append(status_arr)
             location_list.append(obs['location'])
             L_fwd_list.append(obs['L_fwd'])
             L_bwd_list.append(obs['L_bwd'])
@@ -205,7 +256,10 @@ class OffloadingPolicyNetwork(nn.Module):
             'L_bwd': torch.from_numpy(np.stack(L_bwd_list)).long().to(device),
             'data_matrix': torch.from_numpy(np.stack(data_matrix_list)).float().to(device),
             'delta': torch.from_numpy(np.stack(delta_list)).long().to(device),
-            'priority': torch.from_numpy(np.stack(priority_list)).float().to(device)  # [方案A] Rank Bias用
+            'priority': torch.from_numpy(np.stack(priority_list)).float().to(device),  # [方案A] Rank Bias用
+            'candidate_types': torch.from_numpy(np.stack(candidate_types_list)).long().to(device),  # [通用化]
+            'rate_prev': torch.from_numpy(np.stack(rate_prev_list)).float().to(device),  # [B, M]
+            'serving_rsu_onehot': torch.from_numpy(np.stack(serving_rsu_onehot_list)).float().to(device),  # [B, NUM_RSU]
         }
         
         return inputs
@@ -224,7 +278,10 @@ class OffloadingPolicyNetwork(nn.Module):
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
                 task_mask: Optional[torch.Tensor] = None,
-                priority: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                priority: Optional[torch.Tensor] = None,
+                rate_prev: Optional[torch.Tensor] = None,
+                serving_rsu_onehot: Optional[torch.Tensor] = None,
+                candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（Beta分布版本）
 
@@ -246,6 +303,8 @@ class OffloadingPolicyNetwork(nn.Module):
             action_mask: [Batch, N_res], 动作掩码（True=可选）
             task_mask: [Batch, MAX_NODES], 有效节点mask
             priority: [Batch, MAX_NODES], 节点优先级分数（0-1，越大越重要）[方案A新增]
+            rate_prev: [Batch, N_res], 上步链路速率（归一化）[时序信号补齐]
+            serving_rsu_onehot: [Batch, NUM_RSU], 当前服务RSU的one-hot编码 [多RSU感知]
 
         Returns:
             target_logits: [Batch, N_res]
@@ -293,7 +352,19 @@ class OffloadingPolicyNetwork(nn.Module):
             f"resource_raw dim mismatch: got {resource_raw.shape[-1]}, expected {Cfg.RESOURCE_RAW_DIM}"
         )
         resource_encoded = self.resource_encoder(resource_raw, resource_ids)
-        
+
+        # 4.5 将上步链路速率投影并加到资源编码上（时序信号补齐）
+        if rate_prev is not None:
+            # rate_prev: [B, M] → [B, M, 1] → proj → [B, M, d_model]
+            rate_prev_emb = self.rate_prev_proj(rate_prev.unsqueeze(-1))
+            resource_encoded = resource_encoded + rate_prev_emb
+
+        # 4.6 将当前服务RSU信息投影并广播加到所有资源候选上（多RSU感知）
+        if serving_rsu_onehot is not None:
+            # serving_rsu_onehot: [B, NUM_RSU] → proj → [B, d_model] → unsqueeze → [B, 1, d_model]
+            rsu_ctx = self.serving_rsu_proj(serving_rsu_onehot).unsqueeze(1)
+            resource_encoded = resource_encoded + rsu_ctx  # broadcast到 [B, M, d_model]
+
         # 6. 生成资源padding mask（padding或不可选动作）
         resource_padding_mask = (resource_ids == 0)
         if action_mask is not None:
@@ -353,17 +424,14 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
             task_mask=inputs['task_mask'],
-            priority=inputs['priority']  # [方案A] 传递priority
+            priority=inputs['priority'],  # [方案A] 传递priority
+            rate_prev=inputs['rate_prev'],  # 上步链路速率
+            serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
         )
 
         # 3. Target采样（Categorical分布）
-        # [Logit Bias] 解决动作空间不平衡问题：给Local和RSU添加偏置
-        # 索引映射：Index 0=Local, Index 1=RSU, Index 2+=Neighbors
-        if TC.USE_LOGIT_BIAS:
-            logit_bias = torch.zeros_like(target_logits)
-            logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
-            logit_bias[:, 1] = TC.LOGIT_BIAS_RSU    # RSU (Index 1)
-            target_logits = target_logits + logit_bias
+        # [通用化] 根据candidate_types动态赋logit_bias
+        target_logits = self._apply_logit_bias(target_logits, inputs['candidate_types'])
         
         # 应用action_mask，将无效动作的logits设为极小值
         # [P33修复] 使用统一的MASK_VALUE常量
@@ -437,15 +505,13 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
             task_mask=inputs['task_mask'],
-            priority=inputs['priority']  # [方案A] 传递priority，确保与采样时一致
+            priority=inputs['priority'],  # [方案A] 传递priority，确保与采样时一致
+            rate_prev=inputs['rate_prev'],  # 上步链路速率
+            serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
         )
 
-        # P39修复: 应用与采样时一致的Logit Bias
-        if TC.USE_LOGIT_BIAS:
-            logit_bias = torch.zeros_like(target_logits)
-            logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
-            logit_bias[:, 1] = TC.LOGIT_BIAS_RSU    # RSU (Index 1)
-            target_logits = target_logits + logit_bias
+        # [通用化] 根据candidate_types动态赋logit_bias（与采样时一致）
+        target_logits = self._apply_logit_bias(target_logits, inputs['candidate_types'])
 
         # 应用action_mask，将无效动作的logits设为极小值
         # [P33修复] 使用统一的MASK_VALUE常量

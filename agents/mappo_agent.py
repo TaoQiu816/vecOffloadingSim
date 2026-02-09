@@ -130,7 +130,9 @@ class MAPPOAgent:
                 resource_raw=inputs['resource_raw'],
                 subtask_index=inputs['subtask_index'],
                 action_mask=inputs['action_mask'],
-                task_mask=inputs['task_mask']
+                task_mask=inputs['task_mask'],
+                rate_prev=inputs.get('rate_prev'),
+                serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
             )
         
         return values.cpu().squeeze(-1).numpy()
@@ -169,18 +171,14 @@ class MAPPOAgent:
             resource_raw=inputs['resource_raw'],
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
-            task_mask=inputs['task_mask']
+            task_mask=inputs['task_mask'],
+            rate_prev=inputs.get('rate_prev'),
+            serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
         )
         
-        # 计算target的log_prob和entropy
-        # [Logit Bias] 解决动作空间不平衡问题：给Local和RSU添加偏置
-        # 索引映射：Index 0=Local, Index 1=RSU, Index 2+=Neighbors
+        # [通用化] 根据candidate_types动态赋logit_bias
         from configs.train_config import TrainConfig as TC
-        if TC.USE_LOGIT_BIAS:
-            logit_bias = torch.zeros_like(target_logits)
-            logit_bias[:, 0] = TC.LOGIT_BIAS_LOCAL  # Local (Index 0)
-            logit_bias[:, 1] = TC.LOGIT_BIAS_RSU    # RSU (Index 1)
-            target_logits = target_logits + logit_bias
+        target_logits = self.network._apply_logit_bias(target_logits, inputs['candidate_types'])
         
         # 应用action_mask
         # [P33修复] 使用统一的MASK_VALUE常量
@@ -446,5 +444,5 @@ class MAPPOAgent:
     def load(self, path: str):
         """加载模型"""
         checkpoint = torch.load(path, map_location=self.device)
-        self.network.load_state_dict(checkpoint['network_state_dict'])
+        self.network.load_state_dict(checkpoint['network_state_dict'], strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

@@ -42,9 +42,10 @@ class GreedyPolicy:
         for i, obs in enumerate(obs_list):
             vehicle = self.env.vehicles[i]
 
-            # 以candidate_mask为准，保证与候选集一致
-            candidate_mask = obs.get('candidate_mask', obs['action_mask'])
+            # 使用统一动作掩码
+            candidate_mask = obs['action_mask']
             candidate_ids = obs.get('candidate_ids')
+            candidate_types = obs.get('candidate_types')
             valid_targets = np.where(candidate_mask > 0)[0]
             
             if len(valid_targets) == 0:
@@ -55,25 +56,23 @@ class GreedyPolicy:
                 actions.append(act)
                 continue
             
-            # 计算每个合法目标的计算能力
+            # [通用化] 按candidate_types判断实体类型
             target_compute_power = []
             
             for target_idx in valid_targets:
-                if target_idx == 0:
-                    # Local: 本地车辆的CPU频率
+                cand_type = int(candidate_types[target_idx]) if candidate_types is not None and target_idx < len(candidate_types) else 0
+                
+                if cand_type == 1:  # Local
                     compute_power = vehicle.cpu_freq
-                elif target_idx == 1:
-                    # RSU: RSU的CPU频率（通常最高）
+                elif cand_type == 2:  # RSU
                     rsu_id = None
-                    if candidate_ids is not None and len(candidate_ids) > 1:
-                        rsu_id = int(candidate_ids[1])
+                    if candidate_ids is not None and target_idx < len(candidate_ids):
+                        rsu_id = int(candidate_ids[target_idx])
                     if rsu_id is None or not (0 <= rsu_id < len(self.env.rsus)):
                         compute_power = 0.0
                     else:
                         compute_power = self.env.rsus[rsu_id].cpu_freq
-                else:
-                    # Neighbor: 邻居车辆的CPU频率
-                    # target_idx = 2 + neighbor_index
+                elif cand_type == 3:  # V2V
                     neighbor_id = None
                     if candidate_ids is not None and target_idx < len(candidate_ids):
                         neighbor_id = int(candidate_ids[target_idx])
@@ -82,6 +81,8 @@ class GreedyPolicy:
                     else:
                         neighbor_vehicle = self.env._get_vehicle_by_id(neighbor_id)
                         compute_power = neighbor_vehicle.cpu_freq if neighbor_vehicle else 0.0
+                else:
+                    compute_power = 0.0
                 
                 target_compute_power.append(compute_power)
             

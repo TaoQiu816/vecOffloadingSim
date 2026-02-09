@@ -120,10 +120,28 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         preds = np.where(dag.adj[:, i] == 1)[0]
         predecessors[i] = list(preds)
     
+    def _cpu_freq_for_loc(loc):
+        if loc == 'Local':
+            return vehicle.cpu_freq
+        if isinstance(loc, tuple) and loc[0] == 'RSU':
+            rsu_id = loc[1]
+            if 0 <= rsu_id < len(rsus):
+                return rsus[rsu_id].cpu_freq
+            return Cfg.F_RSU
+        if isinstance(loc, int):
+            target_veh = _get_vehicle_by_id(vehicles_list, loc)
+            if target_veh is not None:
+                return target_veh.cpu_freq
+            return vehicle.cpu_freq
+        return vehicle.cpu_freq
+
     # 步骤3：按拓扑顺序计算每个节点的EST和CT
     for node_id in topo_order:
         loc = task_locations[node_id]
         status = int(dag.status[node_id])
+        cpu_freq = _cpu_freq_for_loc(loc)
+        remaining_comp = float(dag.rem_comp[node_id])
+        execution_time = remaining_comp / max(cpu_freq, 1e-6)
         
         # 特殊情况：节点已完成
         # 已完成节点的CT使用当前时间（实际完成时间）
@@ -139,22 +157,39 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         # 已经在执行的节点：处理器已被占用，用当前时间作为最早启动时间，避免重复叠加等待
         if status == 2:
             processor_fat = current_time
-        else:
-            processor_fat = 0.0
+            queue_wait = 0.0
             if loc == 'Local':
-                # 本地执行：使用车辆本地处理器的FAT
-                processor_fat = vehicle.fat_processor
+                # 本地执行：使用队列估计等待时间替代FAT
+                queue_wait = vehicle.get_estimated_delay()
             elif isinstance(loc, tuple) and loc[0] == 'RSU':
-                # RSU执行：使用RSU中最小FAT的处理器（负载均衡后的选择）
+                # RSU执行：使用RSU队列估计等待时间
                 rsu_id = loc[1]
                 if 0 <= rsu_id < len(rsus):
                     rsu = rsus[rsu_id]
-                    processor_fat = rsu.get_min_processor_fat()
+                    queue_wait = rsu.get_estimated_wait_time()
             elif isinstance(loc, int):
-                # 其他车辆执行：使用目标车辆处理器的FAT
+                # 其他车辆执行：使用目标车辆队列估计等待时间
                 target_veh = _get_vehicle_by_id(vehicles_list, loc)
                 if target_veh is not None:
-                    processor_fat = target_veh.fat_processor
+                    queue_wait = target_veh.get_estimated_delay()
+            if queue_wait > 0:
+                processor_fat = current_time + max(0.0, queue_wait - execution_time)
+        else:
+            processor_fat = current_time
+            if loc == 'Local':
+                # 本地执行：使用队列估计等待时间替代FAT
+                processor_fat = current_time + vehicle.get_estimated_delay()
+            elif isinstance(loc, tuple) and loc[0] == 'RSU':
+                # RSU执行：使用RSU队列估计等待时间
+                rsu_id = loc[1]
+                if 0 <= rsu_id < len(rsus):
+                    rsu = rsus[rsu_id]
+                    processor_fat = current_time + rsu.get_estimated_wait_time()
+            elif isinstance(loc, int):
+                # 其他车辆执行：使用目标车辆队列估计等待时间
+                target_veh = _get_vehicle_by_id(vehicles_list, loc)
+                if target_veh is not None:
+                    processor_fat = current_time + target_veh.get_estimated_delay()
         
         # ============================================================
         # 步骤3.2：计算上传完成时间（如果任务在远程执行）
@@ -307,28 +342,8 @@ def calculate_est_ct(vehicle, dag, task_locations, channel_model, rsus, vehicles
         EST[node_id] = max(processor_fat, upload_completion_time, max_pred_completion)
         
         # ============================================================
-        # 步骤3.5：计算执行时间
+        # 步骤3.5：执行时间（基于剩余计算量）
         # ============================================================
-        # 根据执行位置获取CPU频率
-        if loc == 'Local':
-            cpu_freq = vehicle.cpu_freq
-        elif isinstance(loc, tuple) and loc[0] == 'RSU':
-            rsu_id = loc[1]
-            if 0 <= rsu_id < len(rsus):
-                cpu_freq = rsus[rsu_id].cpu_freq
-            else:
-                cpu_freq = Cfg.F_RSU  # 默认RSU频率
-        elif isinstance(loc, int):
-            target_veh = _get_vehicle_by_id(vehicles_list, loc)
-            if target_veh is not None:
-                cpu_freq = target_veh.cpu_freq
-            else:
-                cpu_freq = vehicle.cpu_freq  # 错误情况，使用车辆频率
-        else:
-            cpu_freq = vehicle.cpu_freq  # 默认
-
-        # 执行时间 = 剩余计算量 / CPU频率
-        execution_time = float(dag.rem_comp[node_id]) / max(cpu_freq, 1e-6)
         
         # ============================================================
         # 步骤3.6：计算CT（Completion Time）
