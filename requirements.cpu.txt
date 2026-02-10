@@ -15,7 +15,8 @@ numexpr==2.8.1
 # NumPy 2.x can break older binary wheels (notably some torch builds).
 numpy==1.26.4
 pandas==2.3.3
-pillow==9.3.2
+# Some mirrors don't carry Pillow 9.3.2; use a widely available wheel version.
+pillow==9.5.0
 protobuf==6.33.2
 psutil==7.1.3
 pytest==8.3.4
