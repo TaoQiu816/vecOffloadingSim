@@ -12,7 +12,8 @@ gymnasium==1.2.3
 matplotlib==3.10.7
 networkx==3.4.2
 numexpr==2.8.1
-numpy==2.2.5
+# NumPy 2.x can break older binary wheels (notably some torch builds).
+numpy==1.26.4
 pandas==2.3.3
 pillow==9.3.2
 protobuf==6.33.2
@@ -25,4 +26,3 @@ tqdm==4.67.1
 typing_extensions==4.15.0
 xxhash==3.6.0
 yarl==1.22.0
-
