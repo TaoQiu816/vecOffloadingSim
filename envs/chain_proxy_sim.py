@@ -66,10 +66,13 @@ class ChainProxySim:
         p_fail = float(np.clip(p_fail, 0.0, 1.0))
 
         self._step_count += 1
+        # A simple, interpretable proxy for "chain oracle reliability".
+        # We keep it exogenous (no consensus/mempool modeling) to match the paper constraint.
+        rho = float(np.clip(1.0 - p_fail, 0.0, 1.0))
         return {
             "p50_confirm": p50,
             "p95_confirm": p95,
             "p_fail": p_fail,
             "mempool_len": 0.0,
-            "rho": 0.0,
+            "rho": rho,
         }

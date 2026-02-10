@@ -193,7 +193,7 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.002    # 熵正则化系数 - Entropy coefficient for exploration [调优: 0.002→0.0015]
+    ENTROPY_COEF = 0.001    # 熵正则化系数 - Entropy coefficient for exploration
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优

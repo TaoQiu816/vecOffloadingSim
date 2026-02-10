@@ -255,6 +255,14 @@ class SystemConfig:
     TRUST_DELAY_STEPS = 3           # 证据延迟步数 tau_rep_steps
     TRUST_RESET_PER_EPISODE = True  # 每 episode 重采样隐藏可靠性
 
+    # [Chain x Trust] 将信誉证据延迟与链确认时延耦合（不引入共识/打包/费用，只用proxy时延）
+    # 当 CHAIN_ENABLED=True 且此开关打开时：
+    #   delay_steps = clamp(round(p95_confirm / DT) + base, min, max)
+    CHAIN_TRUST_DELAY_COUPLED = False
+    CHAIN_TRUST_DELAY_BASE_STEPS = 0
+    CHAIN_TRUST_DELAY_MIN_STEPS = 0
+    CHAIN_TRUST_DELAY_MAX_STEPS = 50
+
     # -------------------------------------------------------------------------
     # 2.6 域随机化 (Domain Randomization)
     # -------------------------------------------------------------------------

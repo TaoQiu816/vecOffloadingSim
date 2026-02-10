@@ -47,6 +47,7 @@ COLORS = {
     'Local-Only': '#95a5a6',   # Baseline: Local
     'Greedy': '#f39c12',       # Baseline: Greedy
     'EFT': '#16a34a',          # Baseline: EFT
+    'CP-EFT': '#0ea5e9',       # Baseline: CP-EFT
     'Static': '#7c3aed',       # Baseline: Static
 }
 
@@ -498,6 +499,96 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     print(f"✓ Saved: fig_summary_dashboard.png")
 
 
+def plot_latency_with_baseline(df, df_baseline, output_dir):
+    """
+    绘制时延相关指标对比（MAPPO曲线 + Baseline水平线/曲线）
+    使用 mean_cft_est / episode_time_seconds / task_duration_mean 等（若存在）。
+    """
+    # Pick a primary latency metric for the top plot.
+    latency_cols = [
+        ("mean_cft_est", "Mean CFT Estimate (s)"),
+        ("episode_time_seconds", "Episode Time (s)"),
+        ("task_duration_mean", "Task Duration Mean (s)"),
+    ]
+    primary = next(((c, title) for c, title in latency_cols if c in df.columns), None)
+    if primary is None:
+        return
+    col, title = primary
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    # 1) Primary latency
+    ax = axes[0, 0]
+    ax.plot(df["episode"], rolling_mean(df[col], 50), color=COLORS["primary"], linewidth=2.5, label="MAPPO")
+    if df_baseline is not None and col in df_baseline.columns:
+        for policy in sorted(df_baseline["policy"].unique()):
+            pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
+            if pdata.empty:
+                continue
+            ax.plot(pdata["episode"], rolling_mean(pdata[col], 50), color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+    ax.set_title(title, fontweight="bold")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Seconds")
+    ax.legend(loc="best", framealpha=0.9)
+
+    # 2) Deadline miss rate
+    ax = axes[0, 1]
+    if "deadline_miss_rate" in df.columns:
+        ax.plot(df["episode"], rolling_mean(df["deadline_miss_rate"], 50) * 100, color=COLORS["danger"], linewidth=2.5, label="MAPPO")
+        if df_baseline is not None and "deadline_miss_rate" in df_baseline.columns:
+            for policy in sorted(df_baseline["policy"].unique()):
+                pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
+                if pdata.empty:
+                    continue
+                ax.plot(pdata["episode"], rolling_mean(pdata["deadline_miss_rate"], 50) * 100, color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        ax.set_title("Deadline Miss Rate (%)", fontweight="bold")
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("%")
+        ax.legend(loc="best", framealpha=0.9)
+
+    # 3) Time limit rate
+    ax = axes[1, 0]
+    if "time_limit_rate" in df.columns:
+        ax.plot(df["episode"], rolling_mean(df["time_limit_rate"], 50) * 100, color=COLORS["accent"], linewidth=2.5, label="MAPPO")
+        if df_baseline is not None and "time_limit_rate" in df_baseline.columns:
+            for policy in sorted(df_baseline["policy"].unique()):
+                pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
+                if pdata.empty:
+                    continue
+                ax.plot(pdata["episode"], rolling_mean(pdata["time_limit_rate"], 50) * 100, color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        ax.set_title("Time Limit Rate (%)", fontweight="bold")
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("%")
+        ax.legend(loc="best", framealpha=0.9)
+
+    # 4) Power ratio (action) mean
+    ax = axes[1, 1]
+    power_col = None
+    for c in ("power_ratio_mean", "avg_power"):
+        if c in df.columns:
+            power_col = c
+            break
+    if power_col is not None:
+        ax.plot(df["episode"], rolling_mean(df[power_col], 50), color=COLORS["muted"], linewidth=2.5, label="MAPPO")
+        if df_baseline is not None:
+            base_power_col = "power_ratio_mean" if "power_ratio_mean" in df_baseline.columns else "avg_power"
+            if base_power_col in df_baseline.columns:
+                for policy in sorted(df_baseline["policy"].unique()):
+                    pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
+                    if pdata.empty:
+                        continue
+                    ax.plot(pdata["episode"], rolling_mean(pdata[base_power_col], 50), color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        ax.set_title("Power Ratio (mean)", fontweight="bold")
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("a_power in [0,1]")
+        ax.legend(loc="best", framealpha=0.9)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "fig_latency_with_baselines.png"), dpi=300, bbox_inches="tight")
+    plt.close()
+    print("✓ Saved: fig_latency_with_baselines.png")
+
+
 def plot_constraints_and_health(df, output_dir):
     """
     绘制约束与训练健康指标
@@ -638,6 +729,7 @@ def main():
     plot_training_diagnostics(df, args.output_dir)
     plot_physical_metrics(df, args.output_dir)
     plot_constraints_and_health(df, args.output_dir)
+    plot_latency_with_baseline(df, df_baseline, args.output_dir)
     plot_summary_dashboard(df, df_baseline, args.output_dir)
     
     print(f"\n✓ All plots saved to: {args.output_dir}")

@@ -208,7 +208,7 @@ def main():
         except Exception:
             pass
 
-    baseline_policies = ["Random", "Local-Only", "Greedy", "EFT", "Static"]
+    baseline_policies = ["Random", "Local-Only", "Greedy", "EFT", "CP-EFT", "Static"]
     if args.policies:
         want = [p.strip() for p in args.policies.split(",") if p.strip()]
         unknown = [p for p in want if p not in baseline_policies]
@@ -219,7 +219,16 @@ def main():
         "episode", "policy", "reward_mean", "reward_total",
         "vehicle_sr", "task_sr", "subtask_sr", "v2v_subtask_sr",
         "ratio_local", "ratio_rsu", "ratio_v2v",
-        "avg_power", "avg_queue_len", "avg_rsu_queue",
+        "avg_power", "power_ratio_mean", "power_ratio_p95",
+        "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
+        "task_duration_mean", "task_duration_p95",
+        "deadline_miss_rate", "time_limit_rate",
+        "I_total_mean", "I_total_p95",
+        "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
+        "rho_selected_p50", "rho_selected_p95", "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
+        "chain_tx_total", "chain_p95_mean", "chain_pfail_mean", "chain_risk_cost_total",
+        "trust_attempts", "trust_failures", "trust_failure_rate", "trust_retry_count",
+        "avg_queue_len", "avg_rsu_queue",
     ]
     baseline_stats_csv = os.path.abspath(args.output_csv) if args.output_csv else os.path.join(logs_dir, "baseline_stats.csv")
     os.makedirs(os.path.dirname(baseline_stats_csv), exist_ok=True)
@@ -269,6 +278,32 @@ def main():
                         "ratio_rsu": metrics["decision_frac_rsu"],
                         "ratio_v2v": metrics["decision_frac_v2v"],
                         "avg_power": metrics["avg_power"],
+                        "power_ratio_mean": metrics.get("power_ratio_mean"),
+                        "power_ratio_p95": metrics.get("power_ratio_p95"),
+                        "episode_time_seconds": metrics.get("episode_time_seconds"),
+                        "mean_cft_est": metrics.get("mean_cft_est"),
+                        "mean_cft_completed": metrics.get("mean_cft_completed"),
+                        "task_duration_mean": metrics.get("task_duration_mean"),
+                        "task_duration_p95": metrics.get("task_duration_p95"),
+                        "deadline_miss_rate": metrics.get("deadline_miss_rate"),
+                        "time_limit_rate": metrics.get("time_limit_rate"),
+                        "I_total_mean": metrics.get("I_total_mean"),
+                        "I_total_p95": metrics.get("I_total_p95"),
+                        "rho_selected_mean": metrics.get("rho_selected_mean"),
+                        "rho_selected_p10": metrics.get("rho_selected_p10"),
+                        "risk_penalty_mean": metrics.get("risk_penalty_mean"),
+                        "rho_selected_p50": metrics.get("rho_selected_p50"),
+                        "rho_selected_p95": metrics.get("rho_selected_p95"),
+                        "rho_selected_lt_0p6_rate": metrics.get("rho_selected_lt_0p6_rate"),
+                        "rho_selected_lt_0p7_rate": metrics.get("rho_selected_lt_0p7_rate"),
+                        "chain_tx_total": metrics.get("chain_tx_total"),
+                        "chain_p95_mean": metrics.get("chain_p95_mean"),
+                        "chain_pfail_mean": metrics.get("chain_pfail_mean"),
+                        "chain_risk_cost_total": metrics.get("chain_risk_cost_total"),
+                        "trust_attempts": metrics.get("trust_attempts"),
+                        "trust_failures": metrics.get("trust_failures"),
+                        "trust_failure_rate": metrics.get("trust_failure_rate"),
+                        "trust_retry_count": metrics.get("trust_retry_count"),
                         "avg_queue_len": metrics["avg_queue_len"],
                         "avg_rsu_queue": metrics.get("avg_rsu_queue", 0.0),
                     }
@@ -276,7 +311,10 @@ def main():
                     rows_written += 1
                     f.flush()
                     dt = time.time() - t_policy0
-                    print(f"[Baselines]   done reward={row['reward_mean']:.4f} task_sr={row['task_sr']:.4f} subtask_sr={row['subtask_sr']:.4f} ({dt:.1f}s)")
+                    print(
+                        f"[Baselines]   done reward={row['reward_mean']:.4f} "
+                        f"task_sr={row['task_sr']:.4f} subtask_sr={row['subtask_sr']:.4f} ({dt:.1f}s)"
+                    )
     except KeyboardInterrupt:
         elapsed = time.time() - t0
         print(f"\n[Baselines] interrupted after {elapsed:.1f}s, rows_written={rows_written}. Partial results kept.")

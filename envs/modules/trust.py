@@ -84,9 +84,22 @@ class TrustManager:
             self.total_failures += 1
         return bool(success)
 
-    def submit_evidence(self, current_step, node_key, success):
-        """提交延迟证据"""
-        delay = getattr(Cfg, 'TRUST_DELAY_STEPS', 3)
+    def submit_evidence(self, current_step, node_key, success, delay_steps=None):
+        """提交延迟证据
+
+        delay_steps:
+            Optional override for the evidence delay (in env steps). This is useful
+            when coupling trust update latency to a chain proxy's confirmation delay.
+        """
+        if delay_steps is None:
+            delay = getattr(Cfg, 'TRUST_DELAY_STEPS', 3)
+        else:
+            try:
+                delay = int(delay_steps)
+            except Exception:
+                delay = getattr(Cfg, 'TRUST_DELAY_STEPS', 3)
+        if delay < 0:
+            delay = 0
         self.pending_evidence.append((current_step + delay, node_key, success))
 
     def process_pending(self, current_step):

@@ -6,7 +6,6 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 import sys
 from pathlib import Path
@@ -14,7 +13,12 @@ from pathlib import Path
 # 设置matplotlib支持中文
 plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
-sns.set_style("whitegrid")
+try:
+    import seaborn as sns  # optional
+    sns.set_style("whitegrid")
+except Exception:
+    sns = None
+    plt.style.use("ggplot")
 
 def smooth(data, window=20):
     """滑动平均"""

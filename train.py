@@ -55,6 +55,7 @@ from agents.mappo_agent import MAPPOAgent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy
+from baselines.cp_first_eft_policy import CPFirstEFTPolicy
 from utils.train_helpers import (
     ensure_dir as _ensure_dir,
     read_last_jsonl as _read_last_jsonl,
@@ -116,6 +117,16 @@ def apply_env_overrides():
         "RSU_QUEUE_CYCLES_LIMIT": "RSU_QUEUE_CYCLES_LIMIT",
         "VEHICLE_QUEUE_CYCLES_LIMIT": "VEHICLE_QUEUE_CYCLES_LIMIT",
         "VEHICLE_SPAWN_X_MAX": "VEHICLE_SPAWN_X_MAX",
+        # Chain proxy parameters
+        "CHAIN_RISK_WEIGHT_DEPOSIT": "CHAIN_RISK_WEIGHT_DEPOSIT",
+        "CHAIN_RISK_WEIGHT_FAIL": "CHAIN_RISK_WEIGHT_FAIL",
+        "CHAIN_P50_LOW": "CHAIN_P50_LOW",
+        "CHAIN_P95_LOW": "CHAIN_P95_LOW",
+        "CHAIN_PFAIL_LOW": "CHAIN_PFAIL_LOW",
+        "CHAIN_P50_HIGH": "CHAIN_P50_HIGH",
+        "CHAIN_P95_HIGH": "CHAIN_P95_HIGH",
+        "CHAIN_PFAIL_HIGH": "CHAIN_PFAIL_HIGH",
+        "CHAIN_NOISE_STD": "CHAIN_NOISE_STD",
     }
     overrides_int = {
         "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",
@@ -124,6 +135,19 @@ def apply_env_overrides():
         "V2V_TOP_K": "V2V_TOP_K",
         "MIN_NODES": "MIN_NODES",
         "MAX_NODES": "MAX_NODES",
+        # Chain proxy parameters
+        "CHAIN_SWITCH_PERIOD_STEPS": "CHAIN_SWITCH_PERIOD_STEPS",
+        "CHAIN_TRUST_DELAY_BASE_STEPS": "CHAIN_TRUST_DELAY_BASE_STEPS",
+        "CHAIN_TRUST_DELAY_MIN_STEPS": "CHAIN_TRUST_DELAY_MIN_STEPS",
+        "CHAIN_TRUST_DELAY_MAX_STEPS": "CHAIN_TRUST_DELAY_MAX_STEPS",
+    }
+    overrides_str = {
+        "CHAIN_MODE": "CHAIN_MODE",
+    }
+    overrides_bool = {
+        "CHAIN_ENABLED": "CHAIN_ENABLED",
+        "CHAIN_TRUST_DELAY_COUPLED": "CHAIN_TRUST_DELAY_COUPLED",
+        "TRUST_ENABLED": "TRUST_ENABLED",
     }
     for env_key, cfg_attr in overrides_float.items():
         val = _env_float(env_key)
@@ -133,6 +157,14 @@ def apply_env_overrides():
         val = _env_int(env_key)
         if val is not None:
             setattr(Cfg, cfg_attr, val)
+    for env_key, cfg_attr in overrides_str.items():
+        val = _env_str(env_key)
+        if val:
+            setattr(Cfg, cfg_attr, val)
+    for env_key, cfg_attr in overrides_bool.items():
+        val = _env_bool(env_key)
+        if val is not None:
+            setattr(Cfg, cfg_attr, bool(val))
 
     # Train / PPO knobs
     tc_float = {
@@ -293,6 +325,9 @@ def _fmt_float(val, precision=3, fallback="-"):
     f = _safe_float(val)
     if f is None:
         return fallback
+    # Avoid printing tiny non-zero values as 0.000, which hides signal (e.g. energy_norm ~ 1e-6).
+    if f != 0.0 and abs(f) < (10.0 ** (-precision)):
+        return f"{f:.2e}"
     return f"{f:.{precision}f}"
 
 
@@ -555,6 +590,8 @@ def evaluate_single_baseline_episode(env, policy_name):
         policy = GreedyPolicy(env)
     elif policy_name == 'EFT':
         policy = EFTPPolicy(env)
+    elif policy_name == 'CP-EFT':
+        policy = CPFirstEFTPolicy(env)
     elif policy_name == 'Static':
         policy = StaticPolicy()
     else:
@@ -569,6 +606,7 @@ def evaluate_single_baseline_episode(env, policy_name):
     # 统计容器（与训练循环一致）
     stats = {
         "power_sum": 0.0,
+        "power_values": [],
         "local_cnt": 0,
         "rsu_cnt": 0,
         "neighbor_cnt": 0,
@@ -611,7 +649,11 @@ def evaluate_single_baseline_episode(env, policy_name):
                 else:
                     stats["neighbor_cnt"] += 1
             
-            stats['power_sum'] += act.get('power', 0.0)
+            p = float(act.get("power", 0.0))
+            stats['power_sum'] += p
+            if target != 0:
+                # Only count tx power for remote decisions.
+                stats["power_values"].append(p)
             stats['queue_len_sum'] += env.vehicles[i].task_queue_len if i < len(env.vehicles) else 0
         
         # RSU队列长度（任务数），与训练侧口径一致：使用env.rsu_cpu_q
@@ -665,8 +707,32 @@ def evaluate_single_baseline_episode(env, policy_name):
     frac_rsu = (stats['rsu_cnt'] / dec_den) if total_decisions > 0 else 0.0
     frac_v2v = (stats['neighbor_cnt'] / dec_den) if total_decisions > 0 else 0.0
     avg_power = stats['power_sum'] / dec_den if total_decisions > 0 else 0.0
+    power_ratio_mean = float(np.mean(stats["power_values"])) if stats["power_values"] else 0.0
+    power_ratio_p95 = float(np.percentile(stats["power_values"], 95)) if stats["power_values"] else 0.0
     avg_veh_queue = stats['queue_len_sum'] / dec_den if total_decisions > 0 else 0.0
     avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0.0
+
+    epm = last_info.get("episode_metrics", {}) if last_info else {}
+    episode_time_seconds = epm.get("episode_time_seconds")
+    time_limit_rate = epm.get("time_limit_rate")
+    deadline_miss_rate = epm.get("deadline_miss_rate")
+    mean_cft_est = epm.get("mean_cft_est")
+    mean_cft_completed = epm.get("mean_cft_completed")
+    task_duration_mean = epm.get("task_duration_mean")
+    task_duration_p95 = epm.get("task_duration_p95")
+    I_total_mean = epm.get("I_total_mean")
+    I_total_p95 = epm.get("I_total_p95")
+    rho_selected_mean = epm.get("rho_selected_mean")
+    rho_selected_p10 = epm.get("rho_selected_p10")
+    risk_penalty_mean = epm.get("risk_penalty_mean")
+    chain_tx_total = epm.get("chain_tx_total")
+    chain_p95_mean = epm.get("chain_p95_mean")
+    chain_pfail_mean = epm.get("chain_pfail_mean")
+    chain_risk_cost_total = epm.get("chain_risk_cost_total")
+    trust_attempts = epm.get("trust_attempts")
+    trust_failures = epm.get("trust_failures")
+    trust_failure_rate = epm.get("trust_failure_rate")
+    trust_retry_count = epm.get("trust_retry_count")
     
     return {
         'total_reward': ep_reward,
@@ -680,8 +746,30 @@ def evaluate_single_baseline_episode(env, policy_name):
         'decision_frac_rsu': frac_rsu,
         'decision_frac_v2v': frac_v2v,
         'avg_power': avg_power,
+        'power_ratio_mean': power_ratio_mean,
+        'power_ratio_p95': power_ratio_p95,
         'avg_queue_len': avg_veh_queue,
         'avg_rsu_queue': avg_rsu_queue,
+        'episode_time_seconds': float(episode_time_seconds) if episode_time_seconds is not None else None,
+        'time_limit_rate': float(time_limit_rate) if time_limit_rate is not None else None,
+        'deadline_miss_rate': float(deadline_miss_rate) if deadline_miss_rate is not None else None,
+        'mean_cft_est': float(mean_cft_est) if mean_cft_est is not None else None,
+        'mean_cft_completed': float(mean_cft_completed) if mean_cft_completed is not None else None,
+        'task_duration_mean': float(task_duration_mean) if task_duration_mean is not None else None,
+        'task_duration_p95': float(task_duration_p95) if task_duration_p95 is not None else None,
+        'I_total_mean': float(I_total_mean) if I_total_mean is not None else None,
+        'I_total_p95': float(I_total_p95) if I_total_p95 is not None else None,
+        'rho_selected_mean': float(rho_selected_mean) if rho_selected_mean is not None else None,
+        'rho_selected_p10': float(rho_selected_p10) if rho_selected_p10 is not None else None,
+        'risk_penalty_mean': float(risk_penalty_mean) if risk_penalty_mean is not None else None,
+        'chain_tx_total': int(chain_tx_total) if chain_tx_total is not None else None,
+        'chain_p95_mean': float(chain_p95_mean) if chain_p95_mean is not None else None,
+        'chain_pfail_mean': float(chain_pfail_mean) if chain_pfail_mean is not None else None,
+        'chain_risk_cost_total': float(chain_risk_cost_total) if chain_risk_cost_total is not None else None,
+        'trust_attempts': int(trust_attempts) if trust_attempts is not None else None,
+        'trust_failures': int(trust_failures) if trust_failures is not None else None,
+        'trust_failure_rate': float(trust_failure_rate) if trust_failure_rate is not None else None,
+        'trust_retry_count': int(trust_retry_count) if trust_retry_count is not None else None,
         'episode_vehicle_count': episode_vehicle_count,
         'episode_task_count': episode_vehicle_count,  # 每辆车一个任务
         'v2v_gain_mean': collab_gain_mean if collab_gain_mean is not None else 0.0,
@@ -1021,9 +1109,10 @@ def main():
     best_reward = -float('inf')
     best_success_rate = 0.0  # 用于保存最佳模型
     recent_success_rates = deque(maxlen=50)  # 最近50轮的成功率
+    best_success_episode = 0
     
     # Baseline策略列表
-    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
+    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'CP-EFT', 'Static']
     
     # 存储baseline的episode级指标（用于绘图）
     baseline_history = {policy: [] for policy in baseline_policies}
@@ -1089,6 +1178,41 @@ def main():
         "deadline_gamma",
         "deadline_seconds",
         "critical_path_cycles",
+        # UNIFIED component/audit (dominance check)
+        "r_time",
+        "r_interf",
+        "r_risk",
+        "r_illegal",
+        "r_pbrs",
+        "r_term",
+        "r_step",
+        "r_total",
+        "abs_ratio_r_time",
+        "abs_ratio_r_energy",
+        "abs_ratio_r_interf",
+        "abs_ratio_r_risk",
+        "abs_ratio_r_illegal",
+        "abs_ratio_r_pbrs",
+        "abs_ratio_r_term",
+        # Interference / trust oracle
+        "I_total_mean",
+        "I_total_p95",
+        "rho_selected_mean",
+        "rho_selected_p10",
+        "rho_selected_p50",
+        "rho_selected_p95",
+        "rho_selected_lt_0p6_rate",
+        "rho_selected_lt_0p7_rate",
+        "risk_penalty_mean",
+        # Chain / Trust
+        "chain_tx_total",
+        "chain_p95_mean",
+        "chain_pfail_mean",
+        "chain_risk_cost_total",
+        "trust_attempts",
+        "trust_failures",
+        "trust_failure_rate",
+        "trust_retry_count",
         "episode_vehicle_count",
         "episode_task_count",
         "total_subtasks",
@@ -1276,6 +1400,7 @@ def main():
         # 统计容器
         stats = {
             "power_sum": 0.0,
+            "power_values": [],
             "local_cnt": 0,
             "rsu_cnt": 0,
             "neighbor_cnt": 0,
@@ -1366,7 +1491,11 @@ def main():
                 if i >= num_vehs:
                     break
                 tgt = act['target']
-                stats['power_sum'] += act['power']
+                p = float(act.get("power", 0.0))
+                stats['power_sum'] += p
+                if int(tgt) != 0:
+                    # Only count tx power for remote decisions; local action has no transmitter.
+                    stats["power_values"].append(p)
                 stats['queue_len_sum'] += env.vehicles[i].task_queue_len
 
                 if tgt == 0:
@@ -1451,6 +1580,8 @@ def main():
         avg_assigned_cpu = stats['assigned_cpu_sum'] / total_decisions
         avg_step_reward = ep_reward / total_steps
         avg_power = stats['power_sum'] / total_decisions
+        power_ratio_mean = float(np.mean(stats["power_values"])) if stats["power_values"] else 0.0
+        power_ratio_p95 = float(np.percentile(stats["power_values"], 95)) if stats["power_values"] else 0.0
         avg_veh_queue = stats['queue_len_sum'] / total_decisions
         avg_rsu_queue = stats['rsu_queue_sum'] / total_steps
         rsu_queue_p95 = float(np.percentile(rsu_queue_series, 95)) if rsu_queue_series else 0.0
@@ -1577,8 +1708,11 @@ def main():
         mean_cft_completed = env_stats.get("mean_cft_completed") if env_stats else None
         vehicle_cft_count = env_stats.get("vehicle_cft_count") if env_stats else 0
         cft_est_valid = env_stats.get("cft_est_valid") if env_stats else False
-        power_ratio_mean = env_metrics.get("power_ratio.mean")
-        power_ratio_p95 = env_metrics.get("power_ratio.p95")
+        # Prefer action-derived power stats (more reliable across reward schemes / env log settings).
+        if power_ratio_mean is None:
+            power_ratio_mean = env_metrics.get("power_ratio.mean")
+        if power_ratio_p95 is None:
+            power_ratio_p95 = env_metrics.get("power_ratio.p95")
         deadline_gamma = env_stats.get("deadline_gamma_mean") if env_stats else None
         deadline_seconds = env_stats.get("deadline_seconds_mean") if env_stats else None
         t_L = env_metrics.get("t_L.mean")
@@ -1603,6 +1737,42 @@ def main():
         e_tx_mean = env_metrics.get("e_tx.mean")
         r_energy_mean = env_metrics.get("r_energy.mean")
         r_power_mean = env_metrics.get("r_power.mean")
+        # UNIFIED component logging (means from env reward_stats)
+        r_time_mean = env_metrics.get("r_time.mean")
+        r_interf_mean = env_metrics.get("r_interf.mean")
+        r_risk_mean = env_metrics.get("r_risk.mean")
+        r_illegal_mean = env_metrics.get("r_illegal.mean")
+        r_pbrs_mean = env_metrics.get("r_pbrs.mean")
+        r_term_mean = env_metrics.get("r_term.mean")
+        r_step_mean = env_metrics.get("r_step.mean")
+        r_total_mean = env_metrics.get("reward.mean")
+        # Abs means for dominance ratios
+        r_time_abs_mean = env_metrics.get("r_time_abs.mean")
+        r_energy_abs_mean = env_metrics.get("r_energy_abs.mean")
+        r_interf_abs_mean = env_metrics.get("r_interf_abs.mean")
+        r_risk_abs_mean = env_metrics.get("r_risk_abs.mean")
+        r_illegal_abs_mean = env_metrics.get("r_illegal_abs.mean")
+        r_pbrs_abs_mean = env_metrics.get("r_pbrs_abs.mean")
+        r_term_abs_mean = env_metrics.get("r_term_abs.mean")
+
+        # Interference / trust oracle (episode aggregates)
+        I_total_mean = env_stats.get("I_total_mean") if env_stats else None
+        I_total_p95 = env_stats.get("I_total_p95") if env_stats else None
+        rho_selected_mean = env_stats.get("rho_selected_mean") if env_stats else None
+        rho_selected_p10 = env_stats.get("rho_selected_p10") if env_stats else None
+        rho_selected_p50 = env_stats.get("rho_selected_p50") if env_stats else None
+        rho_selected_p95 = env_stats.get("rho_selected_p95") if env_stats else None
+        rho_selected_lt_0p6_rate = env_stats.get("rho_selected_lt_0p6_rate") if env_stats else None
+        rho_selected_lt_0p7_rate = env_stats.get("rho_selected_lt_0p7_rate") if env_stats else None
+        risk_penalty_mean = env_stats.get("risk_penalty_mean") if env_stats else None
+        chain_tx_total = env_stats.get("chain_tx_total") if env_stats else None
+        chain_p95_mean = env_stats.get("chain_p95_mean") if env_stats else None
+        chain_pfail_mean = env_stats.get("chain_pfail_mean") if env_stats else None
+        chain_risk_cost_total = env_stats.get("chain_risk_cost_total") if env_stats else None
+        trust_attempts = env_stats.get("trust_attempts") if env_stats else None
+        trust_failures = env_stats.get("trust_failures") if env_stats else None
+        trust_failure_rate = env_stats.get("trust_failure_rate") if env_stats else None
+        trust_retry_count = env_stats.get("trust_retry_count") if env_stats else None
         # mean_cft_rem: 优先使用env_stats，其次用env_metrics，最后fallback到deadline剩余时间
         mean_cft_rem = env_stats.get("mean_cft_rem") if env_stats else None
         if mean_cft_rem is None:
@@ -1612,6 +1782,29 @@ def main():
         # mean_cft: 优先使用env_stats；若仅有剩余时间，则还原绝对CFT
         if mean_cft is None and mean_cft_rem is not None and episode_time_seconds is not None:
             mean_cft = mean_cft_rem + episode_time_seconds
+
+        # Component dominance ratios (abs contribution shares)
+        abs_parts = {
+            "r_time": r_time_abs_mean,
+            "r_energy": r_energy_abs_mean,
+            "r_interf": r_interf_abs_mean,
+            "r_risk": r_risk_abs_mean,
+            "r_illegal": r_illegal_abs_mean,
+            "r_pbrs": r_pbrs_abs_mean,
+            "r_term": r_term_abs_mean,
+        }
+        abs_sum = 0.0
+        for v in abs_parts.values():
+            if v is not None and np.isfinite(v):
+                abs_sum += float(v)
+        if abs_sum <= 1e-12:
+            abs_sum = 0.0
+
+        def _abs_ratio(key: str) -> float:
+            v = abs_parts.get(key)
+            if abs_sum <= 0.0 or v is None or not np.isfinite(v):
+                return 0.0
+            return float(v) / abs_sum
         critical_path_cycles = env_stats.get("critical_path_cycles_mean") if env_stats else None
         avail_L = env_stats.get("avail_L") if env_stats else None
         avail_R = env_stats.get("avail_R") if env_stats else None
@@ -1775,7 +1968,7 @@ def main():
                 flush=True,
             )
             print(
-                f"  [SIM ] avg_power={_fmt_float(avg_power, 4)}W rsu_q={_fmt_float(avg_rsu_queue, 3)} "
+                f"  [SIM ] avg_power(a)={_fmt_float(avg_power, 4)} rsu_q={_fmt_float(avg_rsu_queue, 3)} "
                 f"tx={int(tx_created)} no_tx={int(same_node_no_tx)} deadlock={int(deadlock_count)} "
                 f"svc={_fmt_float(service_rate_active / 1e9, 3)}GHz idle={_fmt_pct(idle_fraction)}",
                 flush=True,
@@ -1803,6 +1996,40 @@ def main():
             "deadline_gamma": deadline_gamma,
             "deadline_seconds": deadline_seconds,
             "critical_path_cycles": critical_path_cycles,
+            # UNIFIED component/audit (dominance check)
+            "r_time": float(r_time_mean) if r_time_mean is not None and np.isfinite(r_time_mean) else 0.0,
+            "r_interf": float(r_interf_mean) if r_interf_mean is not None and np.isfinite(r_interf_mean) else 0.0,
+            "r_risk": float(r_risk_mean) if r_risk_mean is not None and np.isfinite(r_risk_mean) else 0.0,
+            "r_illegal": float(r_illegal_mean) if r_illegal_mean is not None and np.isfinite(r_illegal_mean) else 0.0,
+            "r_pbrs": float(r_pbrs_mean) if r_pbrs_mean is not None and np.isfinite(r_pbrs_mean) else 0.0,
+            "r_term": float(r_term_mean) if r_term_mean is not None and np.isfinite(r_term_mean) else 0.0,
+            "r_step": float(r_step_mean) if r_step_mean is not None and np.isfinite(r_step_mean) else 0.0,
+            "r_total": float(r_total_mean) if r_total_mean is not None and np.isfinite(r_total_mean) else reward_mean,
+            "abs_ratio_r_time": _abs_ratio("r_time"),
+            "abs_ratio_r_energy": _abs_ratio("r_energy"),
+            "abs_ratio_r_interf": _abs_ratio("r_interf"),
+            "abs_ratio_r_risk": _abs_ratio("r_risk"),
+            "abs_ratio_r_illegal": _abs_ratio("r_illegal"),
+            "abs_ratio_r_pbrs": _abs_ratio("r_pbrs"),
+            "abs_ratio_r_term": _abs_ratio("r_term"),
+            # Interference / trust oracle (episode aggregates)
+            "I_total_mean": float(I_total_mean) if I_total_mean is not None and np.isfinite(I_total_mean) else 0.0,
+            "I_total_p95": float(I_total_p95) if I_total_p95 is not None and np.isfinite(I_total_p95) else 0.0,
+            "rho_selected_mean": float(rho_selected_mean) if rho_selected_mean is not None and np.isfinite(rho_selected_mean) else 0.0,
+            "rho_selected_p10": float(rho_selected_p10) if rho_selected_p10 is not None and np.isfinite(rho_selected_p10) else 0.0,
+            "rho_selected_p50": float(rho_selected_p50) if rho_selected_p50 is not None and np.isfinite(rho_selected_p50) else 0.0,
+            "rho_selected_p95": float(rho_selected_p95) if rho_selected_p95 is not None and np.isfinite(rho_selected_p95) else 0.0,
+            "rho_selected_lt_0p6_rate": float(rho_selected_lt_0p6_rate) if rho_selected_lt_0p6_rate is not None and np.isfinite(rho_selected_lt_0p6_rate) else 0.0,
+            "rho_selected_lt_0p7_rate": float(rho_selected_lt_0p7_rate) if rho_selected_lt_0p7_rate is not None and np.isfinite(rho_selected_lt_0p7_rate) else 0.0,
+            "risk_penalty_mean": float(risk_penalty_mean) if risk_penalty_mean is not None and np.isfinite(risk_penalty_mean) else 0.0,
+            "chain_tx_total": int(chain_tx_total) if chain_tx_total is not None else 0,
+            "chain_p95_mean": float(chain_p95_mean) if chain_p95_mean is not None and np.isfinite(chain_p95_mean) else 0.0,
+            "chain_pfail_mean": float(chain_pfail_mean) if chain_pfail_mean is not None and np.isfinite(chain_pfail_mean) else 0.0,
+            "chain_risk_cost_total": float(chain_risk_cost_total) if chain_risk_cost_total is not None and np.isfinite(chain_risk_cost_total) else 0.0,
+            "trust_attempts": int(trust_attempts) if trust_attempts is not None else 0,
+            "trust_failures": int(trust_failures) if trust_failures is not None else 0,
+            "trust_failure_rate": float(trust_failure_rate) if trust_failure_rate is not None and np.isfinite(trust_failure_rate) else 0.0,
+            "trust_retry_count": int(trust_retry_count) if trust_retry_count is not None else 0,
             "episode_vehicle_count": episode_vehicle_count,
             "episode_task_count": episode_task_count,
             "total_subtasks": total_subtasks_metric,
@@ -2262,6 +2489,7 @@ def main():
         if avg_recent_sr > best_success_rate:
             best_success_rate = avg_recent_sr
             agent.save(os.path.join(recorder.model_dir, "best_model.pth"))
+            best_success_episode = int(episode)
             if episode == 1 or episode % TC.LOG_INTERVAL == 0:
                 print(f"  → Best model saved: Success Rate = {best_success_rate:.3f} (50-ep avg)")
 
@@ -2275,6 +2503,11 @@ def main():
         f"best_reward={best_reward:.4f} best_success_rate(50ep)={best_success_rate:.4f}",
         flush=True,
     )
+    # Always save a final checkpoint, regardless of SAVE_INTERVAL.
+    try:
+        agent.save(os.path.join(recorder.model_dir, "final_model.pth"))
+    except Exception as e:
+        print(f"[Train] Warning: failed to save final_model.pth: {e}", flush=True)
     print(f"[Train] key outputs: {metrics_csv_path}, {training_stats_csv}, {os.path.join(recorder.model_dir, 'best_model.pth')}", flush=True)
 
     # =========================================================================

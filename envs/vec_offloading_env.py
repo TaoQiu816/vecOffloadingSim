@@ -133,6 +133,10 @@ class VecOffloadingEnv(gym.Env):
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
         self._episode_task_durations = []  # [新增] 追踪真实任务完成时间（物理指标）
+        # [研究指标] UNIFIED 分项与区块链信誉 oracle（不启用 ChainProxySim 也可用）
+        self._episode_rho_selected_values = []
+        self._episode_risk_penalty_values = []
+        self._episode_I_total_values = []
         self._last_obs_stamp = None
         # [P2性能统计] 运行期累积器
         self._p2_active_time = 0.0
@@ -230,6 +234,7 @@ class VecOffloadingEnv(gym.Env):
         self._chain_tx_total = 0
         self._chain_risk_cost_total = 0.0
         self._chain_p95_sum = 0.0
+        self._chain_pfail_sum = 0.0
         self._chain_steps = 0
         
         # =====================================================================
@@ -1817,6 +1822,9 @@ class VecOffloadingEnv(gym.Env):
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
         self._episode_task_durations = []
+        self._episode_rho_selected_values = []
+        self._episode_risk_penalty_values = []
+        self._episode_I_total_values = []
         self._pbrs_debug_records = []
         self._last_phi_debug = {}
         self._episode_illegal_count = 0
@@ -1869,6 +1877,7 @@ class VecOffloadingEnv(gym.Env):
         self._chain_tx_total = 0
         self._chain_risk_cost_total = 0.0
         self._chain_p95_sum = 0.0
+        self._chain_pfail_sum = 0.0
         self._chain_steps = 0
         # Handover 事件记录
         self._ho_events = []
@@ -2526,7 +2535,23 @@ class VecOffloadingEnv(gym.Env):
                             node_key = None
                         if node_key is not None:
                             success = self._trust_mgr.sample_outcome(node_key)
-                            self._trust_mgr.submit_evidence(self.steps, node_key, success)
+                            delay_override = None
+                            if getattr(self.config, "CHAIN_ENABLED", False) and getattr(self.config, "CHAIN_TRUST_DELAY_COUPLED", False):
+                                try:
+                                    p95 = float(self.chain_state_dict.get("p95_confirm", 0.0))
+                                except Exception:
+                                    p95 = 0.0
+                                base = int(getattr(self.config, "CHAIN_TRUST_DELAY_BASE_STEPS", 0))
+                                dmin = int(getattr(self.config, "CHAIN_TRUST_DELAY_MIN_STEPS", 0))
+                                dmax = int(getattr(self.config, "CHAIN_TRUST_DELAY_MAX_STEPS", 50))
+                                dt = float(getattr(self.config, "DT", 0.1))
+                                est = int(round(p95 / max(dt, 1e-9))) + base
+                                if est < dmin:
+                                    est = dmin
+                                if est > dmax:
+                                    est = dmax
+                                delay_override = est
+                            self._trust_mgr.submit_evidence(self.steps, node_key, success, delay_steps=delay_override)
                             if not success:
                                 # 失败：子任务回到 READY 重试（不返还耗时/能耗）
                                 dag.status[job.subtask_id] = 1  # READY
@@ -2876,6 +2901,7 @@ class VecOffloadingEnv(gym.Env):
             self.chain_state_vec[i] = float(chain_vals[i])
         self._chain_tx_total += int(tx_arrivals_step)
         self._chain_p95_sum += float(self.chain_state_dict.get("p95_confirm", 0.0))
+        self._chain_pfail_sum += float(self.chain_state_dict.get("p_fail", 0.0))
         self._chain_steps += 1
         
         # =====================================================================
@@ -3083,6 +3109,21 @@ class VecOffloadingEnv(gym.Env):
                     if node_key is not None:
                         rho_target, _ = self._trust_mgr.get_reputation(node_key)
 
+                # [Chain] 结算风险层：只做指标统计（不改UNIFIED reward结构）
+                # 口径：每次产生交易(tx_flag=1)时，累计 deposit * (alpha_D*p95 + alpha_F*p_fail)
+                if getattr(self.config, "CHAIN_ENABLED", False):
+                    alpha_d = float(getattr(self.config, "CHAIN_RISK_WEIGHT_DEPOSIT", 0.0))
+                    alpha_f = float(getattr(self.config, "CHAIN_RISK_WEIGHT_FAIL", 0.0))
+                    tx_flag = int(tx_flags.get(v.id, 0))
+                    if tx_flag and (alpha_d > 0.0 or alpha_f > 0.0):
+                        proxy_size = float(ctx.get("cycles", 0.0))
+                        deposit = float(self.config.CHAIN_DEPOSIT_BASE) + float(self.config.CHAIN_DEPOSIT_SCALE) * proxy_size
+                        p95 = float(self.chain_state_dict.get("p95_confirm", 0.0))
+                        p_fail = float(self.chain_state_dict.get("p_fail", 0.0))
+                        lock_cost = alpha_d * deposit * p95
+                        fail_cost = alpha_f * deposit * p_fail
+                        risk_cost_sum += (lock_cost + fail_cost)
+
                 r_step, step_info = compute_unified_step_reward(
                     dt=self.config.DT, Td=Td,
                     E_tx=energy_step, I_caused=i_caused,
@@ -3129,10 +3170,28 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("r_step", r_step)
                     self._reward_stats.add_metric("r_term", r_term)
                     self._reward_stats.add_metric("r_pbrs", r_pbrs)
-                    self._reward_stats.add_metric("r_energy", step_info.get("r_energy", 0.0))
+                    # UNIFIED step components (mean + abs for dominance checks)
+                    for k in ("r_time", "r_energy", "r_interf", "r_risk", "r_illegal"):
+                        val = float(step_info.get(k, 0.0))
+                        self._reward_stats.add_metric(k, val)
+                        self._reward_stats.add_metric(f"{k}_abs", abs(val))
+                    self._reward_stats.add_metric("r_term_abs", abs(float(r_term)))
+                    self._reward_stats.add_metric("r_pbrs_abs", abs(float(r_pbrs)))
+                    self._reward_stats.add_metric("r_step_abs", abs(float(r_step)))
                     self._reward_stats.add_metric("energy_norm", step_info.get("energy_norm", 0.0))
-                    self._reward_stats.add_metric("r_risk", step_info.get("r_risk", 0.0))
+                    # Interference externality (per decision-step)
+                    self._reward_stats.add_metric("I_total", float(i_caused))
+                    self._reward_stats.add_metric("I_total_abs", abs(float(i_caused)))
+                    # Reputation oracle stats (only meaningful for remote decisions)
+                    if is_remote:
+                        self._reward_stats.add_metric("rho_selected", float(rho_target))
+                        risk_penalty = -float(step_info.get("r_risk", 0.0))
+                        self._reward_stats.add_metric("risk_penalty", float(max(risk_penalty, 0.0)))
                 self._episode_energy_norm_values.append(step_info.get("energy_norm", 0.0))
+                self._episode_I_total_values.append(float(i_caused))
+                if is_remote:
+                    self._episode_rho_selected_values.append(float(rho_target))
+                    self._episode_risk_penalty_values.append(float(max(-float(step_info.get("r_risk", 0.0)), 0.0)))
             self._unified_nonfinite_count += int(step_unified_nonfinite_count)
             self._unified_consistency_mismatch_count += int(step_unified_consistency_mismatch_count)
             self._unified_illegal_trigger_count += int(step_unified_illegal_trigger_count)
@@ -6821,8 +6880,16 @@ class VecOffloadingEnv(gym.Env):
         chain_steps = int(getattr(self, "_chain_steps", 0))
         if chain_steps > 0:
             episode_metrics['chain_p95_mean'] = float(getattr(self, "_chain_p95_sum", 0.0)) / chain_steps
+            episode_metrics['chain_pfail_mean'] = float(getattr(self, "_chain_pfail_sum", 0.0)) / chain_steps
         else:
             episode_metrics['chain_p95_mean'] = 0.0
+            episode_metrics['chain_pfail_mean'] = 0.0
+        if hasattr(self, "_trust_mgr"):
+            trust_stats = self._trust_mgr.get_stats()
+            episode_metrics["trust_attempts"] = int(trust_stats.get("trust_attempts", 0))
+            episode_metrics["trust_failures"] = int(trust_stats.get("trust_failures", 0))
+            episode_metrics["trust_failure_rate"] = float(trust_stats.get("trust_failure_rate", 0.0))
+            episode_metrics["trust_retry_count"] = int(trust_stats.get("trust_retry_count", 0))
         if getattr(self.config, "EDGE_RATE_RECOMPUTE_AUDIT", False):
             counts = getattr(self, "_edge_rate_recompute_counts", [])
             deltas = getattr(self, "_edge_rate_delta_records", [])
@@ -6880,6 +6947,55 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics['task_duration_mean'] = 0.0
             episode_metrics['task_duration_p95'] = 0.0
             episode_metrics['completed_tasks_count'] = 0
+
+        # Deadline / CP meta (helps reward scale reasoning)
+        try:
+            ddl_list = [float(v.task_dag.deadline) for v in self.vehicles if getattr(v, "task_dag", None) is not None]
+            ddl_list = [x for x in ddl_list if np.isfinite(x) and x > 0]
+            episode_metrics["deadline_seconds_mean"] = float(np.mean(ddl_list)) if ddl_list else 0.0
+        except Exception:
+            episode_metrics["deadline_seconds_mean"] = 0.0
+        try:
+            gamma_list = [float(getattr(v.task_dag, "deadline_gamma", 0.0) or 0.0) for v in self.vehicles if getattr(v, "task_dag", None) is not None]
+            gamma_list = [x for x in gamma_list if np.isfinite(x) and x > 0]
+            episode_metrics["deadline_gamma_mean"] = float(np.mean(gamma_list)) if gamma_list else 0.0
+        except Exception:
+            episode_metrics["deadline_gamma_mean"] = 0.0
+        try:
+            cp_list = [float(getattr(v.task_dag, "critical_path_cycles", 0.0) or 0.0) for v in self.vehicles if getattr(v, "task_dag", None) is not None]
+            cp_list = [x for x in cp_list if np.isfinite(x) and x > 0]
+            episode_metrics["critical_path_cycles_mean"] = float(np.mean(cp_list)) if cp_list else 0.0
+        except Exception:
+            episode_metrics["critical_path_cycles_mean"] = 0.0
+
+        # Interference / trust oracle (episode aggregates)
+        if self._episode_I_total_values:
+            arr = np.array(self._episode_I_total_values, dtype=np.float32)
+            episode_metrics["I_total_mean"] = float(np.mean(arr))
+            episode_metrics["I_total_p95"] = float(np.percentile(arr, 95))
+        else:
+            episode_metrics["I_total_mean"] = 0.0
+            episode_metrics["I_total_p95"] = 0.0
+        if self._episode_rho_selected_values:
+            arr = np.array(self._episode_rho_selected_values, dtype=np.float32)
+            episode_metrics["rho_selected_mean"] = float(np.mean(arr))
+            episode_metrics["rho_selected_p10"] = float(np.percentile(arr, 10))
+            episode_metrics["rho_selected_p50"] = float(np.percentile(arr, 50))
+            episode_metrics["rho_selected_p95"] = float(np.percentile(arr, 95))
+            episode_metrics["rho_selected_lt_0p6_rate"] = float(np.mean(arr < 0.6))
+            episode_metrics["rho_selected_lt_0p7_rate"] = float(np.mean(arr < 0.7))
+        else:
+            episode_metrics["rho_selected_mean"] = 0.0
+            episode_metrics["rho_selected_p10"] = 0.0
+            episode_metrics["rho_selected_p50"] = 0.0
+            episode_metrics["rho_selected_p95"] = 0.0
+            episode_metrics["rho_selected_lt_0p6_rate"] = 0.0
+            episode_metrics["rho_selected_lt_0p7_rate"] = 0.0
+        if self._episode_risk_penalty_values:
+            arr = np.array(self._episode_risk_penalty_values, dtype=np.float32)
+            episode_metrics["risk_penalty_mean"] = float(np.mean(arr))
+        else:
+            episode_metrics["risk_penalty_mean"] = 0.0
 
         if terminated or truncated:
             mean_cft_val = self._compute_mean_cft_pi0(snapshot_time=self.time)
