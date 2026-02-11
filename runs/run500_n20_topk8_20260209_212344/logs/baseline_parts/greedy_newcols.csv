@@ -1,0 +1,2 @@
+episode,policy,reward_mean,reward_total,vehicle_sr,task_sr,subtask_sr,v2v_subtask_sr,ratio_local,ratio_rsu,ratio_v2v,avg_power,power_ratio_mean,power_ratio_p95,episode_time_seconds,mean_cft_est,mean_cft_completed,task_duration_mean,task_duration_p95,deadline_miss_rate,time_limit_rate,avg_queue_len,avg_rsu_queue
+1,Greedy,-1.5038515153223795,-75.19257576611898,0.1,0.1,0.4428904428904429,0.0,0.0,1.0,0.0,1.0,1.0,1.0,4.999999999999998,8.496273183822632,4.250000000000001,4.250000000000001,4.385000000000001,0.0,0.0,0.0,33.5

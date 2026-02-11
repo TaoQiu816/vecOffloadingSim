@@ -12,7 +12,8 @@ env/
 
 # 训练输出
 # runs/  # 训练结果需要同步（包括图表）
-logs/
+# 仅忽略仓库根目录的 logs/，runs/**/logs/ 需要同步用于对比（baseline/metrics等）
+/logs/
 
 # 模型文件（较大，不同步）
 models/*.pth
