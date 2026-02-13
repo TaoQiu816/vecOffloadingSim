@@ -32,6 +32,7 @@ MAPPO Training Script for VEC Task Offloading
 import time
 import json
 import csv
+import hashlib
 from collections import deque
 import numpy as np
 import torch
@@ -54,7 +55,7 @@ from models.offloading_policy import OffloadingPolicyNetwork
 from agents.mappo_agent import MAPPOAgent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
-from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy
+from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy, LBGreedyPolicy
 from baselines.cp_first_eft_policy import CPFirstEFTPolicy
 from utils.train_helpers import (
     ensure_dir as _ensure_dir,
@@ -67,6 +68,102 @@ from utils.train_helpers import (
     bool_env as _bool_env,
     json_default as _json_default,
 )
+
+
+BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "EFT", "CP-EFT", "LB-Greedy", "Static"]
+
+TRAINING_STATS_FIELDS = [
+    "episode", "steps", "wall_time", "sim_time",
+    "reward_mean", "reward_total", "reward_p95", "reward_abs_mean",
+    "vehicle_sr", "task_sr", "subtask_sr",
+    "task_duration_mean", "task_duration_p95", "completed_tasks",
+    "mean_cft_est", "episode_time_seconds",
+    "energy_mean", "energy_p95", "t_tx_mean", "dT_eff_mean",
+    "deadline_misses", "deadline_miss_rate",
+    "ratio_local", "ratio_rsu", "ratio_v2v",
+    "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
+    "avg_power", "avg_rsu_queue", "rsu_queue_p95", "power_ratio_mean", "power_ratio_p95",
+    "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
+    "trust_failure_rate", "rho_selected_p10", "uncertainty_selected_p90",
+    "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
+    "time_limit_rate", "illegal_action_rate", "no_task_rate", "unified_illegal_trigger_rate", "hard_trigger_rate",
+    "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
+    "grad_norm", "active_ratio", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
+    "bias_rsu", "bias_local",
+]
+
+REQUIRED_COMPARE_COLUMNS = [
+    "illegal_action_rate",
+    "no_task_rate",
+    "unified_illegal_trigger_rate",
+    "decision_frac_local",
+    "decision_frac_rsu",
+    "decision_frac_v2v",
+    "mean_cft_est",
+    "episode_time_seconds",
+    "deadline_miss_rate",
+    "time_limit_rate",
+    "power_ratio_mean",
+    "power_ratio_p95",
+    "avg_power",
+    "I_total_p50",
+    "I_total_p95",
+    "I_caused_mean",
+    "I_caused_p95",
+    "trust_failure_rate",
+    "rho_selected_p10",
+    "uncertainty_selected_p90",
+]
+
+BASELINE_STATS_FIELDS = [
+    "episode", "policy", "reward_mean", "reward_total",
+    "vehicle_sr", "task_sr", "subtask_sr", "v2v_subtask_sr",
+    "ratio_local", "ratio_rsu", "ratio_v2v",
+    "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
+    "avg_power", "power_ratio_mean", "power_ratio_p95",
+    "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
+    "task_duration_mean", "task_duration_p95",
+    "deadline_miss_rate", "time_limit_rate",
+    "illegal_action_rate", "no_task_rate", "unified_illegal_trigger_rate",
+    "I_total_mean", "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
+    "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
+    "rho_selected_p50", "rho_selected_p95", "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
+    "uncertainty_selected_mean", "uncertainty_selected_p90",
+    "chain_tx_total", "chain_p95_mean", "chain_pfail_mean", "chain_risk_cost_total",
+    "trust_attempts", "trust_failures", "trust_failure_rate", "trust_retry_count",
+    "avg_queue_len", "avg_rsu_queue",
+]
+
+
+def get_required_compare_columns() -> List[str]:
+    return list(REQUIRED_COMPARE_COLUMNS)
+
+
+def get_training_stats_fields() -> List[str]:
+    return list(TRAINING_STATS_FIELDS)
+
+
+def get_baseline_stats_fields() -> List[str]:
+    return list(BASELINE_STATS_FIELDS)
+
+
+def _get_git_commit() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return (proc.stdout or "").strip()
+    except Exception:
+        return "unknown"
+
+
+def _stable_config_hash(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=_json_default)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _parse_args():
@@ -102,6 +199,10 @@ def apply_env_overrides():
     overrides_float = {
         "VEHICLE_ARRIVAL_RATE": "VEHICLE_ARRIVAL_RATE",
         "BW_V2V": "BW_V2V",
+        "MIN_DATA": "MIN_DATA",
+        "MAX_DATA": "MAX_DATA",
+        "MIN_EDGE_DATA": "MIN_EDGE_DATA",
+        "MAX_EDGE_DATA": "MAX_EDGE_DATA",
         "MIN_CPU": "MIN_VEHICLE_CPU_FREQ",
         "MAX_CPU": "MAX_VEHICLE_CPU_FREQ",
         "TIME_QUEUE_PENALTY_WEIGHT": "TIME_QUEUE_PENALTY_WEIGHT",
@@ -132,6 +233,7 @@ def apply_env_overrides():
         "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",
         "NUM_VEHICLES": "NUM_VEHICLES",
         "NUM_RSU": "NUM_RSU",
+        "V2V_NUM_RB": "V2V_NUM_RB",
         "V2V_TOP_K": "V2V_TOP_K",
         "MIN_NODES": "MIN_NODES",
         "MAX_NODES": "MAX_NODES",
@@ -240,10 +342,114 @@ def apply_env_overrides():
     if randomk_k is not None:
         Cfg.RANDOMK_K = randomk_k
 
-    # Recalculate derived values after overrides
+    # Recalculate derived values after overrides.
+    # Keep V2V bandwidth split self-consistent whenever V2V_NUM_RB / BW_V2V is overridden.
+    if int(getattr(Cfg, "V2V_NUM_RB", 0)) <= 0:
+        raise ValueError(f"V2V_NUM_RB must be positive, got {getattr(Cfg, 'V2V_NUM_RB', None)}")
+    Cfg.V2V_BW_PER_RB = float(Cfg.BW_V2V) / float(Cfg.V2V_NUM_RB)
+    bw_rb_lhs = float(Cfg.V2V_BW_PER_RB) * float(Cfg.V2V_NUM_RB)
+    bw_rb_rhs = float(Cfg.BW_V2V)
+    if abs(bw_rb_lhs - bw_rb_rhs) > 1e-6:
+        raise RuntimeError(
+            "Inconsistent V2V bandwidth split: "
+            f"V2V_BW_PER_RB*V2V_NUM_RB={bw_rb_lhs:.12f}, BW_V2V={bw_rb_rhs:.12f}"
+        )
+
     Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "TOPK")).upper() == "ALL")
     Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
     Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
+
+
+def _compute_unified_nominal_scale_check() -> Dict[str, float]:
+    """Compute nominal unified-reward component scales without stepping the env."""
+    # Fixed nominal values requested for static magnitude checks.
+    w_cycles = 1.0e9
+    f_hz = 3.0e9
+    kappa = 1.0e-27
+    d_bits = 1.0e6
+    p_watt = 0.1
+    snr_linear = 10.0 ** (20.0 / 10.0)
+    dt = 0.1
+    Td = 10.0
+    rho = 0.7
+
+    v2v_num_rb = max(float(getattr(Cfg, "V2V_NUM_RB", 1)), 1.0)
+    b_rb = float(getattr(Cfg, "BW_V2V", 0.0)) / v2v_num_rb
+    rate_rb = b_rb * np.log2(1.0 + snr_linear)
+    t_tx = d_bits / max(rate_rb, 1e-12)
+
+    e_loc = kappa * w_cycles * (f_hz ** 2)
+    e_tx = p_watt * t_tx
+
+    w_time = float(getattr(Cfg, "W_TIME", 0.0))
+    w_energy = float(getattr(Cfg, "W_ENERGY", 0.0))
+    p_energy = float(getattr(Cfg, "P_ENERGY", 1.0))
+    w_interf = float(getattr(Cfg, "W_INTERF", 0.0))
+    p_interf = float(getattr(Cfg, "P_INTERF", 1.0))
+    w_risk = float(getattr(Cfg, "W_RISK", 0.0))
+    p_risk = float(getattr(Cfg, "P_RISK", 1.0))
+    e_ref = max(float(getattr(Cfg, "E_REF_UNIFIED", 1.0)), 1e-12)
+
+    r_time = -w_time * (dt / max(Td, 1e-12))
+    r_energy = -w_energy * ((max(e_tx, 0.0) / e_ref) ** p_energy)
+    # Nominal check requirement: assume I_caused = I_ref => normalized interference = 1.
+    r_interf = -w_interf * (1.0 ** p_interf)
+    r_risk = -w_risk * ((1.0 - rho) ** p_risk)
+
+    return {
+        "w_cycles": w_cycles,
+        "f_hz": f_hz,
+        "kappa": kappa,
+        "d_bits": d_bits,
+        "p_watt": p_watt,
+        "B_RB": b_rb,
+        "SNR_linear": snr_linear,
+        "dt": dt,
+        "Td": Td,
+        "rho": rho,
+        "t_tx": float(t_tx),
+        "E_loc": float(e_loc),
+        "E_tx": float(e_tx),
+        "r_time_step": float(r_time),
+        "r_energy_step": float(r_energy),
+        "r_interf_step": float(r_interf),
+        "r_risk_step": float(r_risk),
+    }
+
+
+def _print_unified_nominal_scale_check():
+    vals = _compute_unified_nominal_scale_check()
+    print(
+        "[ScaleCheck] UNIFIED nominal: "
+        f"E_loc={vals['E_loc']:.6g}J E_tx={vals['E_tx']:.6g}J "
+        f"r_time={vals['r_time_step']:.6g} r_energy={vals['r_energy_step']:.6g} "
+        f"r_interf={vals['r_interf_step']:.6g} r_risk={vals['r_risk_step']:.6g} "
+        f"(B_RB={vals['B_RB']:.6g}Hz, SNR=20dB, dt=0.1, Td=10, rho=0.7)",
+        flush=True,
+    )
+
+    abs_parts = {
+        "r_time_step": abs(vals["r_time_step"]),
+        "r_energy_step": abs(vals["r_energy_step"]),
+        "r_interf_step": abs(vals["r_interf_step"]),
+        "r_risk_step": abs(vals["r_risk_step"]),
+    }
+    warned = False
+    for name, mag in abs_parts.items():
+        others = [v for k, v in abs_parts.items() if k != name and v > 1e-12]
+        if not others:
+            continue
+        if mag > 10.0 * max(others):
+            warned = True
+            print(
+                f"[ScaleCheck][Warn] {name} nominal abs magnitude ({mag:.6g}) exceeds others by >10x.",
+                flush=True,
+            )
+    if warned:
+        print(
+            "[ScaleCheck][Suggest] Consider rebalancing reward scales; default suggestion: set E_REF_UNIFIED=2.0 (J).",
+            flush=True,
+        )
 
 
 def _collect_obs_stats(obs_list):
@@ -383,6 +589,7 @@ def _print_startup_summary(
         f"({_fmt_float(p_min_dbm, 1)},{_fmt_float(p_max_dbm, 1)} dBm) DT={Cfg.DT:.3f}s",
         flush=True,
     )
+    _print_unified_nominal_scale_check()
     print(
         f"[Compute] f_local=[{Cfg.MIN_VEHICLE_CPU_FREQ/1e9:.2f},{Cfg.MAX_VEHICLE_CPU_FREQ/1e9:.2f}]GHz "
         f"f_rsu={Cfg.F_RSU/1e9:.2f}GHz",
@@ -580,10 +787,15 @@ def evaluate_baselines(env, num_episodes=10):
     return baseline_results
 
 
-def evaluate_single_baseline_episode(env, policy_name):
+def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     """评估单个baseline策略的一个episode，返回完整的指标（与训练指标一致）"""
+    if episode_seed is None:
+        base_seed = int(getattr(Cfg, "SEED", 0))
+        episode_seed = base_seed + int(getattr(env, "episode_count", 0))
+    episode_seed = int(episode_seed)
+
     if policy_name == 'Random':
-        policy = RandomPolicy(seed=int(time.time()))
+        policy = RandomPolicy(seed=episode_seed)
     elif policy_name == 'Local-Only':
         policy = LocalOnlyPolicy()
     elif policy_name == 'Greedy':
@@ -592,12 +804,14 @@ def evaluate_single_baseline_episode(env, policy_name):
         policy = EFTPPolicy(env)
     elif policy_name == 'CP-EFT':
         policy = CPFirstEFTPolicy(env)
+    elif policy_name == 'LB-Greedy':
+        policy = LBGreedyPolicy(env)
     elif policy_name == 'Static':
         policy = StaticPolicy()
     else:
         raise ValueError(f"Unknown policy: {policy_name}")
     
-    obs_list, _ = env.reset()
+    obs_list, _ = env.reset(seed=episode_seed)
     if hasattr(policy, "reset"):
         policy.reset()
     ep_reward = 0
@@ -721,9 +935,14 @@ def evaluate_single_baseline_episode(env, policy_name):
     task_duration_mean = epm.get("task_duration_mean")
     task_duration_p95 = epm.get("task_duration_p95")
     I_total_mean = epm.get("I_total_mean")
+    I_total_p50 = epm.get("I_total_p50")
     I_total_p95 = epm.get("I_total_p95")
+    I_caused_mean = epm.get("I_caused_mean")
+    I_caused_p95 = epm.get("I_caused_p95")
     rho_selected_mean = epm.get("rho_selected_mean")
     rho_selected_p10 = epm.get("rho_selected_p10")
+    uncertainty_selected_mean = epm.get("uncertainty_selected_mean")
+    uncertainty_selected_p90 = epm.get("uncertainty_selected_p90")
     risk_penalty_mean = epm.get("risk_penalty_mean")
     chain_tx_total = epm.get("chain_tx_total")
     chain_p95_mean = epm.get("chain_p95_mean")
@@ -733,6 +952,9 @@ def evaluate_single_baseline_episode(env, policy_name):
     trust_failures = epm.get("trust_failures")
     trust_failure_rate = epm.get("trust_failure_rate")
     trust_retry_count = epm.get("trust_retry_count")
+    illegal_action_rate = epm.get("illegal_action_rate")
+    no_task_rate = epm.get("no_task_rate")
+    unified_illegal_trigger_rate = epm.get("unified_illegal_trigger_rate")
     
     return {
         'total_reward': ep_reward,
@@ -758,9 +980,14 @@ def evaluate_single_baseline_episode(env, policy_name):
         'task_duration_mean': float(task_duration_mean) if task_duration_mean is not None else None,
         'task_duration_p95': float(task_duration_p95) if task_duration_p95 is not None else None,
         'I_total_mean': float(I_total_mean) if I_total_mean is not None else None,
+        'I_total_p50': float(I_total_p50) if I_total_p50 is not None else None,
         'I_total_p95': float(I_total_p95) if I_total_p95 is not None else None,
+        'I_caused_mean': float(I_caused_mean) if I_caused_mean is not None else None,
+        'I_caused_p95': float(I_caused_p95) if I_caused_p95 is not None else None,
         'rho_selected_mean': float(rho_selected_mean) if rho_selected_mean is not None else None,
         'rho_selected_p10': float(rho_selected_p10) if rho_selected_p10 is not None else None,
+        'uncertainty_selected_mean': float(uncertainty_selected_mean) if uncertainty_selected_mean is not None else None,
+        'uncertainty_selected_p90': float(uncertainty_selected_p90) if uncertainty_selected_p90 is not None else None,
         'risk_penalty_mean': float(risk_penalty_mean) if risk_penalty_mean is not None else None,
         'chain_tx_total': int(chain_tx_total) if chain_tx_total is not None else None,
         'chain_p95_mean': float(chain_p95_mean) if chain_p95_mean is not None else None,
@@ -770,6 +997,9 @@ def evaluate_single_baseline_episode(env, policy_name):
         'trust_failures': int(trust_failures) if trust_failures is not None else None,
         'trust_failure_rate': float(trust_failure_rate) if trust_failure_rate is not None else None,
         'trust_retry_count': int(trust_retry_count) if trust_retry_count is not None else None,
+        'illegal_action_rate': float(illegal_action_rate) if illegal_action_rate is not None else None,
+        'no_task_rate': float(no_task_rate) if no_task_rate is not None else None,
+        'unified_illegal_trigger_rate': float(unified_illegal_trigger_rate) if unified_illegal_trigger_rate is not None else None,
         'episode_vehicle_count': episode_vehicle_count,
         'episode_task_count': episode_vehicle_count,  # 每辆车一个任务
         'v2v_gain_mean': collab_gain_mean if collab_gain_mean is not None else 0.0,
@@ -1002,15 +1232,30 @@ def main():
         "RUN_DIR": run_dir,
         "REWARD_JSONL_PATH": reward_jsonl_path,
         "DEVICE_NAME": device,
+        "GIT_COMMIT": _get_git_commit(),
     }
     snapshot = {
         "system_config": config_dict,
         "train_config": train_config_dict,
         "env": env_snapshot,
     }
+    snapshot["config_hash"] = _stable_config_hash({
+        "system_config": snapshot["system_config"],
+        "train_config": snapshot["train_config"],
+    })
     config_snapshot_path = os.path.join(logs_dir, "config_snapshot.json")
     with open(config_snapshot_path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=True, indent=2, default=_json_default)
+    run_meta = {
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "git_commit": env_snapshot["GIT_COMMIT"],
+        "config_hash": snapshot["config_hash"],
+    }
+    run_meta_path = os.path.join(run_dir, "run_meta.json")
+    with open(run_meta_path, "w", encoding="utf-8") as f:
+        json.dump(run_meta, f, ensure_ascii=True, indent=2, default=_json_default)
 
     reward_scheme = Cfg.REWARD_SCHEME
     if reward_scheme == "PBRS_KP_V2":
@@ -1074,12 +1319,15 @@ def main():
             "LR_CRITIC": getattr(TC, "LR_CRITIC", None),
         },
         "run": env_snapshot,
+        "git_commit": env_snapshot["GIT_COMMIT"],
+        "config_hash": snapshot["config_hash"],
     }
     config_dump_path = os.path.join(run_dir, "config_dump.json")
     with open(config_dump_path, "w", encoding="utf-8") as f:
         json.dump(config_dump, f, ensure_ascii=True, indent=2, default=_json_default)
     print(f"[ConfigDump] saved: {config_dump_path}", flush=True)
     print(f"[ConfigSnapshot] saved: {config_snapshot_path}", flush=True)
+    print(f"[RunMeta] saved: {run_meta_path}", flush=True)
     _print_startup_summary(
         run_id=run_id,
         run_dir=run_dir,
@@ -1112,7 +1360,7 @@ def main():
     best_success_episode = 0
     
     # Baseline策略列表
-    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'CP-EFT', 'Static']
+    baseline_policies = list(BASELINE_POLICIES)
     
     # 存储baseline的episode级指标（用于绘图）
     baseline_history = {policy: [] for policy in baseline_policies}
@@ -1122,31 +1370,7 @@ def main():
     # =========================================================================
     training_stats_csv = os.path.join(logs_dir, "training_stats.csv")
     training_stats_header_written = os.path.exists(training_stats_csv) and os.path.getsize(training_stats_csv) > 0
-    training_stats_fields = [
-        # 基本信息
-        "episode", "steps", "wall_time", "sim_time",
-        # 奖励指标（与控制台打印一致）
-        "reward_mean", "reward_total", "reward_p95", "reward_abs_mean",
-        # 成功率指标（0-1范围，绘图时转换为百分比）
-        "vehicle_sr", "task_sr", "subtask_sr",
-        # 物理性能指标
-        "task_duration_mean", "task_duration_p95", "completed_tasks",
-        "energy_mean", "energy_p95", "t_tx_mean", "dT_eff_mean",
-        "deadline_misses", "deadline_miss_rate",
-        # 卸载决策分布（0-1范围，绘图时转换为百分比）
-        "ratio_local", "ratio_rsu", "ratio_v2v",
-        # 系统负载与资源
-        "avg_power", "avg_rsu_queue", "rsu_queue_p95", "power_ratio_mean",
-        # 服务指标
-        "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
-        # 约束与安全
-        "time_limit_rate", "illegal_action_rate", "hard_trigger_rate",
-        # 训练诊断指标
-        "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
-        "grad_norm", "active_ratio", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
-        # Bias状态
-        "bias_rsu", "bias_local",
-    ]
+    training_stats_fields = list(TRAINING_STATS_FIELDS)
     
     metrics_csv_path = os.path.join(logs_dir, "metrics.csv")
     metrics_jsonl_path = os.path.join(logs_dir, "metrics.jsonl")
@@ -1196,9 +1420,14 @@ def main():
         "abs_ratio_r_term",
         # Interference / trust oracle
         "I_total_mean",
+        "I_total_p50",
         "I_total_p95",
+        "I_caused_mean",
+        "I_caused_p95",
         "rho_selected_mean",
         "rho_selected_p10",
+        "uncertainty_selected_mean",
+        "uncertainty_selected_p90",
         "rho_selected_p50",
         "rho_selected_p95",
         "rho_selected_lt_0p6_rate",
@@ -1249,6 +1478,10 @@ def main():
         "subtask_success_rate",
         "deadline_miss_rate",
         "illegal_action_rate",
+        "top_illegal_reason",
+        "top_illegal_reason_count",
+        "no_task_rate",
+        "unified_illegal_trigger_rate",
         "hard_trigger_rate",
         # decisions
         "decision_local_frac",
@@ -1670,6 +1903,10 @@ def main():
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
         deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
         illegal_action_rate = env_stats.get("illegal_action_rate") if env_stats else None
+        top_illegal_reason = env_stats.get("top_illegal_reason") if env_stats else ""
+        top_illegal_reason_count = env_stats.get("top_illegal_reason_count") if env_stats else 0
+        no_task_rate = env_stats.get("no_task_rate") if env_stats else None
+        unified_illegal_trigger_rate = env_stats.get("unified_illegal_trigger_rate") if env_stats else None
         hard_trigger_rate = env_stats.get("hard_trigger_rate") if env_stats else None
         time_limit_rate = env_stats.get("time_limit_rate") if env_stats else (1.0 if (truncated and not terminated) else 0.0)
         mean_cft = env_stats.get("mean_cft") if env_stats else None
@@ -1757,9 +1994,14 @@ def main():
 
         # Interference / trust oracle (episode aggregates)
         I_total_mean = env_stats.get("I_total_mean") if env_stats else None
+        I_total_p50 = env_stats.get("I_total_p50") if env_stats else None
         I_total_p95 = env_stats.get("I_total_p95") if env_stats else None
+        I_caused_mean = env_stats.get("I_caused_mean") if env_stats else None
+        I_caused_p95 = env_stats.get("I_caused_p95") if env_stats else None
         rho_selected_mean = env_stats.get("rho_selected_mean") if env_stats else None
         rho_selected_p10 = env_stats.get("rho_selected_p10") if env_stats else None
+        uncertainty_selected_mean = env_stats.get("uncertainty_selected_mean") if env_stats else None
+        uncertainty_selected_p90 = env_stats.get("uncertainty_selected_p90") if env_stats else None
         rho_selected_p50 = env_stats.get("rho_selected_p50") if env_stats else None
         rho_selected_p95 = env_stats.get("rho_selected_p95") if env_stats else None
         rho_selected_lt_0p6_rate = env_stats.get("rho_selected_lt_0p6_rate") if env_stats else None
@@ -2014,9 +2256,14 @@ def main():
             "abs_ratio_r_term": _abs_ratio("r_term"),
             # Interference / trust oracle (episode aggregates)
             "I_total_mean": float(I_total_mean) if I_total_mean is not None and np.isfinite(I_total_mean) else 0.0,
+            "I_total_p50": float(I_total_p50) if I_total_p50 is not None and np.isfinite(I_total_p50) else 0.0,
             "I_total_p95": float(I_total_p95) if I_total_p95 is not None and np.isfinite(I_total_p95) else 0.0,
+            "I_caused_mean": float(I_caused_mean) if I_caused_mean is not None and np.isfinite(I_caused_mean) else 0.0,
+            "I_caused_p95": float(I_caused_p95) if I_caused_p95 is not None and np.isfinite(I_caused_p95) else 0.0,
             "rho_selected_mean": float(rho_selected_mean) if rho_selected_mean is not None and np.isfinite(rho_selected_mean) else 0.0,
             "rho_selected_p10": float(rho_selected_p10) if rho_selected_p10 is not None and np.isfinite(rho_selected_p10) else 0.0,
+            "uncertainty_selected_mean": float(uncertainty_selected_mean) if uncertainty_selected_mean is not None and np.isfinite(uncertainty_selected_mean) else 0.0,
+            "uncertainty_selected_p90": float(uncertainty_selected_p90) if uncertainty_selected_p90 is not None and np.isfinite(uncertainty_selected_p90) else 0.0,
             "rho_selected_p50": float(rho_selected_p50) if rho_selected_p50 is not None and np.isfinite(rho_selected_p50) else 0.0,
             "rho_selected_p95": float(rho_selected_p95) if rho_selected_p95 is not None and np.isfinite(rho_selected_p95) else 0.0,
             "rho_selected_lt_0p6_rate": float(rho_selected_lt_0p6_rate) if rho_selected_lt_0p6_rate is not None and np.isfinite(rho_selected_lt_0p6_rate) else 0.0,
@@ -2066,6 +2313,10 @@ def main():
             "subtask_success_rate": subtask_success,
             "deadline_miss_rate": deadline_miss_rate,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "top_illegal_reason": str(top_illegal_reason or ""),
+            "top_illegal_reason_count": int(top_illegal_reason_count or 0),
+            "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
+            "unified_illegal_trigger_rate": unified_illegal_trigger_rate if unified_illegal_trigger_rate is not None else 0.0,
             "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # decisions
             "decision_local_frac": frac_local,
@@ -2200,6 +2451,8 @@ def main():
             "task_duration_mean": task_duration_mean if task_duration_mean is not None else 0.0,
             "task_duration_p95": task_duration_p95 if task_duration_p95 is not None else 0.0,
             "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,
+            "mean_cft_est": mean_cft_est if mean_cft_est is not None else 0.0,
+            "episode_time_seconds": episode_time_seconds if episode_time_seconds is not None else 0.0,
             "energy_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
             "energy_p95": energy_norm_p95 if energy_norm_p95 is not None else 0.0,
             "t_tx_mean": t_tx_mean if t_tx_mean is not None else 0.0,
@@ -2210,11 +2463,22 @@ def main():
             "ratio_local": frac_local,  # Local
             "ratio_rsu": frac_rsu,      # RSU
             "ratio_v2v": frac_v2v,      # V2V
+            "decision_frac_local": frac_local,
+            "decision_frac_rsu": frac_rsu,
+            "decision_frac_v2v": frac_v2v,
             # 系统负载与资源
             "avg_power": avg_power if avg_power is not None else 0.0,
             "avg_rsu_queue": avg_rsu_queue if avg_rsu_queue is not None else 0.0,
             "rsu_queue_p95": rsu_queue_p95 if rsu_queue_p95 is not None else 0.0,
             "power_ratio_mean": power_ratio_mean if power_ratio_mean is not None else 0.0,
+            "power_ratio_p95": power_ratio_p95 if power_ratio_p95 is not None else 0.0,
+            "I_total_p50": I_total_p50 if I_total_p50 is not None else 0.0,
+            "I_total_p95": I_total_p95 if I_total_p95 is not None else 0.0,
+            "I_caused_mean": I_caused_mean if I_caused_mean is not None else 0.0,
+            "I_caused_p95": I_caused_p95 if I_caused_p95 is not None else 0.0,
+            "trust_failure_rate": trust_failure_rate if trust_failure_rate is not None else 0.0,
+            "rho_selected_p10": rho_selected_p10 if rho_selected_p10 is not None else 0.0,
+            "uncertainty_selected_p90": uncertainty_selected_p90 if uncertainty_selected_p90 is not None else 0.0,
             # 服务指标
             "tx_created": tx_created,             # TX
             "same_node_no_tx": same_node_no_tx,   # NoTX
@@ -2223,6 +2487,8 @@ def main():
             # 约束与安全
             "time_limit_rate": time_limit_rate if time_limit_rate is not None else 0.0,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
+            "unified_illegal_trigger_rate": unified_illegal_trigger_rate if unified_illegal_trigger_rate is not None else 0.0,
             "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # 训练诊断指标
             "actor_loss": update_stats.get("policy_loss"),
@@ -2390,16 +2656,15 @@ def main():
         if (not disable_baseline_eval) and (episode % TC.EVAL_INTERVAL == 0 or episode == 1):
             # baseline统计CSV路径
             baseline_stats_csv = os.path.join(logs_dir, "baseline_stats.csv")
-            baseline_stats_fields = [
-                "episode", "policy", "reward_mean", "reward_total",
-                "vehicle_sr", "task_sr", "subtask_sr", "v2v_subtask_sr",
-                "ratio_local", "ratio_rsu", "ratio_v2v",
-                "avg_power", "avg_queue_len", "avg_rsu_queue",
-            ]
+            baseline_stats_fields = list(BASELINE_STATS_FIELDS)
             baseline_header_written = os.path.exists(baseline_stats_csv) and os.path.getsize(baseline_stats_csv) > 0
 
             for policy_name in baseline_policies:
-                baseline_metrics = evaluate_single_baseline_episode(env, policy_name)
+                baseline_metrics = evaluate_single_baseline_episode(
+                    env,
+                    policy_name,
+                    episode_seed=int(getattr(Cfg, "SEED", 0)) + int(episode),
+                )
                 baseline_metrics['episode'] = episode
                 baseline_metrics['policy'] = policy_name
 
@@ -2430,7 +2695,44 @@ def main():
                     "ratio_local": baseline_metrics['decision_frac_local'],
                     "ratio_rsu": baseline_metrics['decision_frac_rsu'],
                     "ratio_v2v": baseline_metrics['decision_frac_v2v'],
+                    "decision_frac_local": baseline_metrics['decision_frac_local'],
+                    "decision_frac_rsu": baseline_metrics['decision_frac_rsu'],
+                    "decision_frac_v2v": baseline_metrics['decision_frac_v2v'],
                     "avg_power": baseline_metrics['avg_power'],
+                    "power_ratio_mean": baseline_metrics.get('power_ratio_mean'),
+                    "power_ratio_p95": baseline_metrics.get('power_ratio_p95'),
+                    "episode_time_seconds": baseline_metrics.get('episode_time_seconds'),
+                    "mean_cft_est": baseline_metrics.get('mean_cft_est'),
+                    "mean_cft_completed": baseline_metrics.get('mean_cft_completed'),
+                    "task_duration_mean": baseline_metrics.get('task_duration_mean'),
+                    "task_duration_p95": baseline_metrics.get('task_duration_p95'),
+                    "deadline_miss_rate": baseline_metrics.get('deadline_miss_rate'),
+                    "time_limit_rate": baseline_metrics.get('time_limit_rate'),
+                    "illegal_action_rate": baseline_metrics.get('illegal_action_rate'),
+                    "no_task_rate": baseline_metrics.get('no_task_rate'),
+                    "unified_illegal_trigger_rate": baseline_metrics.get('unified_illegal_trigger_rate'),
+                    "I_total_mean": baseline_metrics.get('I_total_mean'),
+                    "I_total_p50": baseline_metrics.get('I_total_p50'),
+                    "I_total_p95": baseline_metrics.get('I_total_p95'),
+                    "I_caused_mean": baseline_metrics.get('I_caused_mean'),
+                    "I_caused_p95": baseline_metrics.get('I_caused_p95'),
+                    "rho_selected_mean": baseline_metrics.get('rho_selected_mean'),
+                    "rho_selected_p10": baseline_metrics.get('rho_selected_p10'),
+                    "uncertainty_selected_mean": baseline_metrics.get('uncertainty_selected_mean'),
+                    "uncertainty_selected_p90": baseline_metrics.get('uncertainty_selected_p90'),
+                    "risk_penalty_mean": baseline_metrics.get('risk_penalty_mean'),
+                    "rho_selected_p50": baseline_metrics.get('rho_selected_p50'),
+                    "rho_selected_p95": baseline_metrics.get('rho_selected_p95'),
+                    "rho_selected_lt_0p6_rate": baseline_metrics.get('rho_selected_lt_0p6_rate'),
+                    "rho_selected_lt_0p7_rate": baseline_metrics.get('rho_selected_lt_0p7_rate'),
+                    "chain_tx_total": baseline_metrics.get('chain_tx_total'),
+                    "chain_p95_mean": baseline_metrics.get('chain_p95_mean'),
+                    "chain_pfail_mean": baseline_metrics.get('chain_pfail_mean'),
+                    "chain_risk_cost_total": baseline_metrics.get('chain_risk_cost_total'),
+                    "trust_attempts": baseline_metrics.get('trust_attempts'),
+                    "trust_failures": baseline_metrics.get('trust_failures'),
+                    "trust_failure_rate": baseline_metrics.get('trust_failure_rate'),
+                    "trust_retry_count": baseline_metrics.get('trust_retry_count'),
                     "avg_queue_len": baseline_metrics['avg_queue_len'],
                     "avg_rsu_queue": baseline_metrics.get('avg_rsu_queue', 0.0),
                 }

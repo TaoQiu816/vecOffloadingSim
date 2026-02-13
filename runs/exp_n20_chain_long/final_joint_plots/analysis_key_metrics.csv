@@ -1,0 +1,13 @@
+metric,ours_tail100,best_baseline_max,best_baseline_min,best_baseline_name_max,best_baseline_name_min
+reward_mean,-1.472662707567215,-1.7092286378065957,-4.205813365943811,Greedy,Random
+task_success_rate,0.9089999999999999,0.7036666666666666,0.001,Local-Only,Random
+subtask_success_rate,0.9836529353479514,0.9244088410167518,0.12708897955224446,Local-Only,Random
+time_limit_rate,0.0,1.0,0.0,Random,Greedy
+deadline_miss_rate,0.09100000000000001,0.9990000000000001,0.29633333333333334,Random,Local-Only
+mean_cft_est,10.346269805526717,25.19478214263916,15.366683017476388,Random,Greedy
+task_duration_p95,9.749649999999981,12.56569999999997,0.12379999999999973,Greedy,Random
+power_ratio_mean,0.16979937183907384,1.0,0.0,Greedy,Local-Only
+I_total_p95,0.0,2.3232532126056538e-10,0.0,Random,Greedy
+rho_selected_p10,0.6165044814646243,0.6161143636703491,0.0,Static,Local-Only
+chain_p95_mean,0.04999999999999986,0.0,0.0,CP-EFT,CP-EFT
+trust_failure_rate,0.21286419895992886,0.22039334775180985,0.0,Greedy,Local-Only

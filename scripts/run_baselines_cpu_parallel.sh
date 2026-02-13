@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 PARTS_DIR="${RUN_DIR}/logs/baseline_parts"
 mkdir -p "${PARTS_DIR}"
 
-POLICIES=("Random" "Local-Only" "Greedy" "EFT" "CP-EFT" "Static")
+POLICIES=("Random" "Local-Only" "Greedy" "EFT" "CP-EFT" "LB-Greedy" "Static")
 
 if [[ -z "${NUM_EP}" ]]; then
   # Default: match RL training episode count for fair, same-length comparison curves.

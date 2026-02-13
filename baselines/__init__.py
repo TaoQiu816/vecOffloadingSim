@@ -13,5 +13,6 @@ from .local_only_policy import LocalOnlyPolicy
 from .greedy_policy import GreedyPolicy
 from .static_policy import StaticPolicy
 from .eft_policy import EFTPolicy, EFTPPolicy  # EFTPPolicy 为旧名兼容
+from .lb_greedy_policy import LBGreedyPolicy
 
-__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPolicy', 'EFTPPolicy']
+__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPolicy', 'EFTPPolicy', 'LBGreedyPolicy']

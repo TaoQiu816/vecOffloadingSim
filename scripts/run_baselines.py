@@ -25,7 +25,12 @@ sys.path.append(REPO_ROOT)
 from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
-from train import evaluate_single_baseline_episode, apply_env_overrides
+from train import (
+    evaluate_single_baseline_episode,
+    apply_env_overrides,
+    BASELINE_POLICIES,
+    BASELINE_STATS_FIELDS,
+)
 
 
 def _find_latest_run(base_dir="runs"):
@@ -208,28 +213,14 @@ def main():
         except Exception:
             pass
 
-    baseline_policies = ["Random", "Local-Only", "Greedy", "EFT", "CP-EFT", "Static"]
+    baseline_policies = list(BASELINE_POLICIES)
     if args.policies:
         want = [p.strip() for p in args.policies.split(",") if p.strip()]
         unknown = [p for p in want if p not in baseline_policies]
         if unknown:
             raise ValueError(f"Unknown policies: {unknown}. Supported: {baseline_policies}")
         baseline_policies = want
-    baseline_stats_fields = [
-        "episode", "policy", "reward_mean", "reward_total",
-        "vehicle_sr", "task_sr", "subtask_sr", "v2v_subtask_sr",
-        "ratio_local", "ratio_rsu", "ratio_v2v",
-        "avg_power", "power_ratio_mean", "power_ratio_p95",
-        "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
-        "task_duration_mean", "task_duration_p95",
-        "deadline_miss_rate", "time_limit_rate",
-        "I_total_mean", "I_total_p95",
-        "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
-        "rho_selected_p50", "rho_selected_p95", "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
-        "chain_tx_total", "chain_p95_mean", "chain_pfail_mean", "chain_risk_cost_total",
-        "trust_attempts", "trust_failures", "trust_failure_rate", "trust_retry_count",
-        "avg_queue_len", "avg_rsu_queue",
-    ]
+    baseline_stats_fields = list(BASELINE_STATS_FIELDS)
     baseline_stats_csv = os.path.abspath(args.output_csv) if args.output_csv else os.path.join(logs_dir, "baseline_stats.csv")
     os.makedirs(os.path.dirname(baseline_stats_csv), exist_ok=True)
     canonical_baseline_csv = os.path.abspath(os.path.join(logs_dir, "baseline_stats.csv"))
@@ -263,7 +254,11 @@ def main():
                 for policy_idx, policy_name in enumerate(baseline_policies, start=1):
                     t_policy0 = time.time()
                     print(f"[Baselines] ep={episode} ({ep_offset+1}/{total_episodes}) policy={policy_name} ({policy_idx}/{len(baseline_policies)}) ...")
-                    metrics = evaluate_single_baseline_episode(env, policy_name)
+                    metrics = evaluate_single_baseline_episode(
+                        env,
+                        policy_name,
+                        episode_seed=int(getattr(Cfg, "SEED", 0)) + int(episode),
+                    )
                     summary[policy_name].append(metrics)
                     row = {
                         "episode": episode,
@@ -277,6 +272,9 @@ def main():
                         "ratio_local": metrics["decision_frac_local"],
                         "ratio_rsu": metrics["decision_frac_rsu"],
                         "ratio_v2v": metrics["decision_frac_v2v"],
+                        "decision_frac_local": metrics["decision_frac_local"],
+                        "decision_frac_rsu": metrics["decision_frac_rsu"],
+                        "decision_frac_v2v": metrics["decision_frac_v2v"],
                         "avg_power": metrics["avg_power"],
                         "power_ratio_mean": metrics.get("power_ratio_mean"),
                         "power_ratio_p95": metrics.get("power_ratio_p95"),
@@ -287,10 +285,18 @@ def main():
                         "task_duration_p95": metrics.get("task_duration_p95"),
                         "deadline_miss_rate": metrics.get("deadline_miss_rate"),
                         "time_limit_rate": metrics.get("time_limit_rate"),
+                        "illegal_action_rate": metrics.get("illegal_action_rate"),
+                        "no_task_rate": metrics.get("no_task_rate"),
+                        "unified_illegal_trigger_rate": metrics.get("unified_illegal_trigger_rate"),
                         "I_total_mean": metrics.get("I_total_mean"),
+                        "I_total_p50": metrics.get("I_total_p50"),
                         "I_total_p95": metrics.get("I_total_p95"),
+                        "I_caused_mean": metrics.get("I_caused_mean"),
+                        "I_caused_p95": metrics.get("I_caused_p95"),
                         "rho_selected_mean": metrics.get("rho_selected_mean"),
                         "rho_selected_p10": metrics.get("rho_selected_p10"),
+                        "uncertainty_selected_mean": metrics.get("uncertainty_selected_mean"),
+                        "uncertainty_selected_p90": metrics.get("uncertainty_selected_p90"),
                         "risk_penalty_mean": metrics.get("risk_penalty_mean"),
                         "rho_selected_p50": metrics.get("rho_selected_p50"),
                         "rho_selected_p95": metrics.get("rho_selected_p95"),

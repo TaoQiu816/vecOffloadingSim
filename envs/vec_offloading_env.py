@@ -60,6 +60,26 @@ class VecOffloadingEnv(gym.Env):
     - 拥堵惩罚: V2V/V2I信道拥塞时产生惩罚
     """
 
+    # Decision outcome semantics (paper-level metric contract)
+    NO_TASK_REASONS = {
+        "task_done",
+        "no_task_dag_done",
+        "no_task_dag_failed",
+        "no_task_blocked",
+        "no_task_assigned",
+        "inflight_limit",
+    }
+    ILLEGAL_ACTION_REASONS = {
+        "idx_out_of_range",
+        "masked_target",
+        "rsu_unavailable",
+        "rsu_out_of_coverage",
+        "no_candidate_cache",
+        "id_mapping_fail",
+        "power_invalid",
+        "action_format_invalid",
+    }
+
     def __init__(self, config=None):
         """初始化环境
         
@@ -135,6 +155,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_task_durations = []  # [新增] 追踪真实任务完成时间（物理指标）
         # [研究指标] UNIFIED 分项与区块链信誉 oracle（不启用 ChainProxySim 也可用）
         self._episode_rho_selected_values = []
+        self._episode_uncertainty_selected_values = []
         self._episode_risk_penalty_values = []
         self._episode_I_total_values = []
         self._last_obs_stamp = None
@@ -177,7 +198,9 @@ class VecOffloadingEnv(gym.Env):
         self._last_phi_debug = {}
         self._episode_illegal_count = 0
         self._episode_no_task_count = 0
+        self._episode_hard_trigger_count = 0
         self._episode_illegal_reasons = {}
+        self._episode_no_task_reasons = {}
         self._unified_nonfinite_count = 0
         self._unified_consistency_mismatch_count = 0
         self._unified_illegal_trigger_count = 0
@@ -783,6 +806,23 @@ class VecOffloadingEnv(gym.Env):
         else:
             return 0.0
 
+    def _classify_decision_state(self, illegal_reason, subtask_idx):
+        if illegal_reason in self.NO_TASK_REASONS:
+            return "no_task_available"
+        if illegal_reason in self.ILLEGAL_ACTION_REASONS:
+            return "illegal_action"
+        if subtask_idx is None:
+            return "no_task_available"
+        return "valid_action"
+
+    def _annotate_plan_decision_state(self, plan):
+        state = self._classify_decision_state(plan.get("illegal_reason"), plan.get("subtask_idx"))
+        plan["decision_state"] = state
+        plan["is_no_task_available"] = (state == "no_task_available")
+        plan["is_illegal_action"] = (state == "illegal_action")
+        plan["is_valid_action"] = (state == "valid_action")
+        return plan
+
     def _plan_actions_snapshot(self, actions):
         plans = []
         max_schedule = max(1, int(getattr(self.config, "MAX_SCHEDULE_PER_STEP", 1)))
@@ -814,6 +854,7 @@ class VecOffloadingEnv(gym.Env):
                     "planned_kind": "none",
                     "target_idx": None,
                     "illegal_reason": "task_done",
+                    "power_invalid": False,
                     "power_ratio": None,
                     "power_dbm": None,
                 }
@@ -833,6 +874,7 @@ class VecOffloadingEnv(gym.Env):
                 "planned_kind": "none",
                 "target_idx": None,
                 "illegal_reason": None,
+                "power_invalid": False,
                 "power_ratio": None,
                 "power_dbm": None,
             }
@@ -848,14 +890,28 @@ class VecOffloadingEnv(gym.Env):
             # [改动C] 动作接口统一为 dict: {"target": int, "power": float in [0,1]}
             # 移除离散 power_level 分支，Agent 使用 Beta 分布输出连续功率 rho∈[0,1]
             if isinstance(act, dict):
-                target_idx = int(act.get("target", 0))
-                p_norm = float(np.clip(act.get("power", 1.0), 0.0, 1.0))
+                try:
+                    target_idx = int(act.get("target", 0))
+                except Exception:
+                    target_idx = 0
+                    plan["illegal_reason"] = "action_format_invalid"
+                raw_power = act.get("power", 1.0)
             else:
                 # 兼容数组格式：[target_idx, power_ratio]，power 直接为连续值
                 act_array = np.asarray(act).flatten()
-                target_idx = int(act_array[0]) if len(act_array) > 0 else 0
-                # [改动C] power 直接作为连续值 rho∈[0,1]，不再离散化
-                p_norm = float(np.clip(act_array[1], 0.0, 1.0)) if len(act_array) > 1 else 1.0
+                try:
+                    target_idx = int(act_array[0]) if len(act_array) > 0 else 0
+                except Exception:
+                    target_idx = 0
+                    plan["illegal_reason"] = "action_format_invalid"
+                raw_power = act_array[1] if len(act_array) > 1 else 1.0
+
+            try:
+                raw_power_f = float(raw_power)
+            except Exception:
+                raw_power_f = float("nan")
+            plan["power_invalid"] = (not np.isfinite(raw_power_f)) or (raw_power_f < 0.0) or (raw_power_f > 1.0)
+            p_norm = float(np.clip(np.nan_to_num(raw_power_f, nan=1.0, posinf=1.0, neginf=0.0), 0.0, 1.0))
             
             plan["target_idx"] = target_idx
 
@@ -930,6 +986,8 @@ class VecOffloadingEnv(gym.Env):
 
             desired_target = 'Local'
             desired_kind = "local"
+            if plan.get("power_invalid", False) and plan.get("illegal_reason") is None:
+                plan["illegal_reason"] = "power_invalid"
             
             # 计算RSU和V2V的action索引边界
             enable_rsu_selection = getattr(self.config, 'ENABLE_RSU_SELECTION', False)
@@ -938,7 +996,10 @@ class VecOffloadingEnv(gym.Env):
             rsu_end_idx = (1 + num_rsu) if enable_rsu_selection else 2  # RSU选项结束索引(不含)
             v2v_start_idx = rsu_end_idx  # V2V选项起始索引
 
-            if target_idx >= self.config.MAX_TARGETS:
+            if plan.get("illegal_reason") is not None:
+                desired_target = 'Local'
+                desired_kind = "local"
+            elif target_idx >= self.config.MAX_TARGETS:
                 plan["illegal_reason"] = "idx_out_of_range"
             elif target_idx == 0:
                 desired_target = 'Local'
@@ -1124,6 +1185,9 @@ class VecOffloadingEnv(gym.Env):
                 else:
                     sim_load += plan["task_comp"]
                     sim_len += 1
+
+        for plan in plans:
+            self._annotate_plan_decision_state(plan)
 
         return plans
 
@@ -1823,13 +1887,20 @@ class VecOffloadingEnv(gym.Env):
         self._episode_t_tx_values = []
         self._episode_task_durations = []
         self._episode_rho_selected_values = []
+        self._episode_uncertainty_selected_values = []
         self._episode_risk_penalty_values = []
         self._episode_I_total_values = []
         self._pbrs_debug_records = []
         self._last_phi_debug = {}
         self._episode_illegal_count = 0
         self._episode_no_task_count = 0
+        self._episode_hard_trigger_count = 0
         self._episode_illegal_reasons = {}
+        self._episode_no_task_reasons = {}
+        # Reset UNIFIED per-episode counters; these metrics should not accumulate across episodes.
+        self._unified_nonfinite_count = 0
+        self._unified_consistency_mismatch_count = 0
+        self._unified_illegal_trigger_count = 0
         self._episode_candidate_stats = {"reachable": [], "dropped": []}
         self._last_candidate_step_stats = {}
         self._episode_not_in_candidate_fallback_cnt = 0
@@ -1969,6 +2040,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_illegal_count = 0
         self._episode_no_task_count = 0
         self._episode_illegal_reasons = {}
+        self._episode_no_task_reasons = {}
 
         return self._get_obs(), {}
 
@@ -2021,7 +2093,7 @@ class VecOffloadingEnv(gym.Env):
                 assign_success = v.task_dag.assign_task(subtask_idx, actual_target)
                 if not assign_success:
                     if is_primary:
-                        v.illegal_action = True
+                        v.illegal_action = False
                         v.illegal_reason = "assign_failed"
                     continue
 
@@ -2089,7 +2161,7 @@ class VecOffloadingEnv(gym.Env):
                     else:
                         # 异常情况，fallback到Local
                         if is_primary:
-                            v.illegal_action = True
+                            v.illegal_action = False
                             v.illegal_reason = "invalid_target"
                         continue
 
@@ -2666,27 +2738,31 @@ class VecOffloadingEnv(gym.Env):
         
         # 解析动作并生成计划
         plans = self._plan_actions_snapshot(actions)
-        no_task_reasons = {
-            "no_task_dag_done",
-            "no_task_dag_failed",
-            "no_task_blocked",
-            "no_task_assigned",
-            "task_done",
-        }
         num_agents = len(self.vehicles)
         active_agent_mask = [0] * num_agents
         decision_step_mask = [False] * num_agents
         no_task_step_mask = [False] * num_agents
+        step_no_task_count = 0
+        step_illegal_action_count = 0
         for plan in plans:
             idx = plan.get("index")
             if idx is None or idx < 0 or idx >= num_agents:
                 continue
             is_decision = plan.get("subtask_idx") is not None
-            illegal_reason = plan.get("illegal_reason")
-            is_no_task = bool(illegal_reason in no_task_reasons)
             decision_step_mask[idx] = bool(is_decision)
             active_agent_mask[idx] = 1 if is_decision else 0
-            no_task_step_mask[idx] = bool(is_no_task)
+            no_task_step_mask[idx] = bool(plan.get("is_no_task_available", False))
+            reason = plan.get("illegal_reason")
+            if plan.get("is_no_task_available", False):
+                step_no_task_count += 1
+                if reason:
+                    self._episode_no_task_reasons[reason] = self._episode_no_task_reasons.get(reason, 0) + 1
+            elif plan.get("is_illegal_action", False):
+                step_illegal_action_count += 1
+                if reason:
+                    self._episode_illegal_reasons[reason] = self._episode_illegal_reasons.get(reason, 0) + 1
+        self._episode_no_task_count += int(step_no_task_count)
+        self._episode_illegal_count += int(step_illegal_action_count)
         commit_plans = [p for p in plans if p["subtask_idx"] is not None]
         not_in_candidate_reasons = {
             "masked_target",
@@ -2748,12 +2824,8 @@ class VecOffloadingEnv(gym.Env):
                 v.tx_power_dbm = plan["power_dbm"]
                 step_power_ratio[v.id] = plan["power_ratio"] if plan["power_ratio"] is not None else step_power_ratio.get(v.id, 0.0)
             
-            if plan["illegal_reason"] is not None:
-                v.illegal_action = True
-                v.illegal_reason = plan["illegal_reason"]
-            else:
-                v.illegal_action = False
-                v.illegal_reason = None
+            v.illegal_action = bool(plan.get("is_illegal_action", False))
+            v.illegal_reason = plan["illegal_reason"] if v.illegal_action else None
 
             # 统计决策分布（使用planned_kind而不是planned_target）
             kind = plan.get("planned_kind", "local")
@@ -2841,7 +2913,9 @@ class VecOffloadingEnv(gym.Env):
                 "t_local": t_local,
                 "t_actual": t_actual,
                 "t_tx": t_tx,
-                "illegal": (plan and plan.get("illegal_reason") is not None) or getattr(v, "illegal_action", False),
+                "illegal_action": bool((plan and plan.get("is_illegal_action", False)) or getattr(v, "illegal_action", False)),
+                "no_task_available": bool(plan.get("is_no_task_available", False)) if plan else False,
+                "illegal": bool((plan and plan.get("is_illegal_action", False)) or getattr(v, "illegal_action", False)),
                 "illegal_reason": plan.get("illegal_reason") if plan else None,  # [Stage 1] 传播原因
                 "power_ratio": power_ratio,
             }
@@ -3089,7 +3163,7 @@ class VecOffloadingEnv(gym.Env):
                 Td = dag.deadline if dag.deadline > 0 else (self.config.MAX_STEPS * self.config.DT)
 
                 # 每步分量
-                illegal = bool(ctx.get("illegal", False))
+                illegal = bool(ctx.get("illegal_action", ctx.get("illegal", False)))
                 if illegal:
                     step_unified_illegal_trigger_count += 1
                 energy_step = step_energy_cost.get(v.id, 0.0)
@@ -3100,6 +3174,7 @@ class VecOffloadingEnv(gym.Env):
                 target = ctx.get("target", "Local")
                 is_remote = not (target is None or target == "Local")
                 rho_target = 1.0
+                uncertainty_target = 0.0
                 if is_remote and getattr(self.config, "TRUST_ENABLED", False) and hasattr(self, "_trust_mgr"):
                     node_key = None
                     if isinstance(target, tuple) and len(target) > 1 and target[0] == "RSU":
@@ -3107,7 +3182,7 @@ class VecOffloadingEnv(gym.Env):
                     elif isinstance(target, int) and not isinstance(target, bool):
                         node_key = ("VEH", int(target))
                     if node_key is not None:
-                        rho_target, _ = self._trust_mgr.get_reputation(node_key)
+                        rho_target, uncertainty_target = self._trust_mgr.get_reputation(node_key)
 
                 # [Chain] 结算风险层：只做指标统计（不改UNIFIED reward结构）
                 # 口径：每次产生交易(tx_flag=1)时，累计 deposit * (alpha_D*p95 + alpha_F*p_fail)
@@ -3185,16 +3260,19 @@ class VecOffloadingEnv(gym.Env):
                     # Reputation oracle stats (only meaningful for remote decisions)
                     if is_remote:
                         self._reward_stats.add_metric("rho_selected", float(rho_target))
+                        self._reward_stats.add_metric("uncertainty_selected", float(max(uncertainty_target, 0.0)))
                         risk_penalty = -float(step_info.get("r_risk", 0.0))
                         self._reward_stats.add_metric("risk_penalty", float(max(risk_penalty, 0.0)))
                 self._episode_energy_norm_values.append(step_info.get("energy_norm", 0.0))
                 self._episode_I_total_values.append(float(i_caused))
                 if is_remote:
                     self._episode_rho_selected_values.append(float(rho_target))
+                    self._episode_uncertainty_selected_values.append(float(max(uncertainty_target, 0.0)))
                     self._episode_risk_penalty_values.append(float(max(-float(step_info.get("r_risk", 0.0)), 0.0)))
             self._unified_nonfinite_count += int(step_unified_nonfinite_count)
             self._unified_consistency_mismatch_count += int(step_unified_consistency_mismatch_count)
             self._unified_illegal_trigger_count += int(step_unified_illegal_trigger_count)
+            self._episode_hard_trigger_count += int(step_unified_illegal_trigger_count)
             if hasattr(self, "_reward_stats"):
                 if step_unified_nonfinite_count > 0:
                     self._reward_stats.add_counter("unified_nonfinite", int(step_unified_nonfinite_count))
@@ -3286,6 +3364,7 @@ class VecOffloadingEnv(gym.Env):
                         self.config.REWARD_MIN, self.config.REWARD_MAX, hard_triggered=hard_triggered, illegal_action=False
                     )
                     if hard_triggered:
+                        self._episode_hard_trigger_count += 1
                         energy_norm_real = 0.0
                         r_energy = 0.0
                     reward_parts["energy_norm"] = energy_norm_real
@@ -3526,24 +3605,7 @@ class VecOffloadingEnv(gym.Env):
                         "e_tx": float(e_tx),  # 使用局部计算的e_tx
                     })
 
-                # PBRS诊断与非法统计
-                if ctx.get("illegal"):
-                    illegal_reason = ctx.get("illegal_reason")
-                    no_task_reasons = {
-                        "no_task_dag_done",
-                        "no_task_dag_failed",
-                        "no_task_blocked",
-                        "no_task_assigned",
-                        "task_done",
-                    }
-                    if illegal_reason in no_task_reasons:
-                        self._episode_no_task_count += 1
-                    else:
-                        self._episode_illegal_count += 1
-                    if illegal_reason:
-                        self._episode_illegal_reasons[illegal_reason] = (
-                            self._episode_illegal_reasons.get(illegal_reason, 0) + 1
-                        )
+                # PBRS诊断（非法/无任务统计已在plan阶段统一计数，避免口径重复）
 
                 if getattr(self.config, "DEBUG_PBRS_AUDIT", False):
                     phi_prev = ctx.get("phi_prev", 0.0)
@@ -3556,15 +3618,7 @@ class VecOffloadingEnv(gym.Env):
                     if isinstance(tgt, tuple) and tgt[0] == "RSU":
                         rsu_used = int(tgt[1])
                     f_debug = self._last_phi_debug.get(v.id, {})
-                    illegal_reason = ctx.get("illegal_reason")
-                    no_task_reasons = {
-                        "no_task_dag_done",
-                        "no_task_dag_failed",
-                        "no_task_blocked",
-                        "no_task_assigned",
-                        "task_done",
-                    }
-                    is_no_task_step = bool(ctx.get("illegal") and illegal_reason in no_task_reasons)
+                    is_no_task_step = bool(ctx.get("no_task_available", False))
                     is_decision_step = ctx.get("subtask") is not None
                     active_agent_mask = bool(is_decision_step)
                     self._pbrs_debug_records.append({
@@ -6787,11 +6841,40 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['audit_deadline_misses'] = deadline_miss_count
         
         # 决策分布
+        total_decisions = 0
         if hasattr(self, '_decision_counts'):
-            total_decisions = sum(self._decision_counts.values()) if self._decision_counts else 1
-            episode_metrics['decision_frac_local'] = self._decision_counts.get('local', 0) / total_decisions
-            episode_metrics['decision_frac_rsu'] = self._decision_counts.get('rsu', 0) / total_decisions
-            episode_metrics['decision_frac_v2v'] = self._decision_counts.get('v2v', 0) / total_decisions
+            total_decisions = int(sum(self._decision_counts.values())) if self._decision_counts else 0
+            den = max(total_decisions, 1)
+            episode_metrics['decision_frac_local'] = self._decision_counts.get('local', 0) / den
+            episode_metrics['decision_frac_rsu'] = self._decision_counts.get('rsu', 0) / den
+            episode_metrics['decision_frac_v2v'] = self._decision_counts.get('v2v', 0) / den
+        else:
+            den = 1
+
+        # Constraint/event rates: keep metric semantics explicit.
+        illegal_count_legacy = int(getattr(self, "_episode_illegal_count", 0))
+        no_task_count = int(getattr(self, "_episode_no_task_count", 0))
+        unified_illegal_count = int(getattr(self, "_unified_illegal_trigger_count", 0))
+        illegal_count_effective = illegal_count_legacy
+        hard_trigger_count = int(getattr(self, "_episode_hard_trigger_count", 0))
+        if hard_trigger_count <= 0 and getattr(self.config, "REWARD_SCHEME", "LEGACY_CFT") == "UNIFIED":
+            hard_trigger_count = unified_illegal_count
+        # Use agent-step opportunities as denominator to match unified trigger counting semantics.
+        rate_den = max(int(episode_vehicle_count) * max(int(self._episode_steps), 1), 1)
+
+        episode_metrics['illegal_count_effective'] = illegal_count_effective
+        episode_metrics['hard_trigger_count'] = hard_trigger_count
+        episode_metrics['illegal_action_rate'] = illegal_count_effective / rate_den
+        episode_metrics['hard_trigger_rate'] = hard_trigger_count / rate_den
+        episode_metrics['no_task_rate'] = no_task_count / rate_den
+        episode_metrics['unified_illegal_trigger_rate'] = unified_illegal_count / rate_den
+        if self._episode_illegal_reasons:
+            top_reason, top_count = max(self._episode_illegal_reasons.items(), key=lambda kv: kv[1])
+            episode_metrics["top_illegal_reason"] = str(top_reason)
+            episode_metrics["top_illegal_reason_count"] = int(top_count)
+        else:
+            episode_metrics["top_illegal_reason"] = ""
+            episode_metrics["top_illegal_reason_count"] = 0
         if getattr(self, "_v2v_gain_count", 0) > 0:
             episode_metrics['v2v_gain_mean'] = self._v2v_gain_sum / self._v2v_gain_count
             episode_metrics['v2v_gain_pos_rate'] = self._v2v_gain_pos_count / self._v2v_gain_count
@@ -6972,10 +7055,16 @@ class VecOffloadingEnv(gym.Env):
         if self._episode_I_total_values:
             arr = np.array(self._episode_I_total_values, dtype=np.float32)
             episode_metrics["I_total_mean"] = float(np.mean(arr))
+            episode_metrics["I_total_p50"] = float(np.percentile(arr, 50))
             episode_metrics["I_total_p95"] = float(np.percentile(arr, 95))
+            episode_metrics["I_caused_mean"] = float(np.mean(arr))
+            episode_metrics["I_caused_p95"] = float(np.percentile(arr, 95))
         else:
             episode_metrics["I_total_mean"] = 0.0
+            episode_metrics["I_total_p50"] = 0.0
             episode_metrics["I_total_p95"] = 0.0
+            episode_metrics["I_caused_mean"] = 0.0
+            episode_metrics["I_caused_p95"] = 0.0
         if self._episode_rho_selected_values:
             arr = np.array(self._episode_rho_selected_values, dtype=np.float32)
             episode_metrics["rho_selected_mean"] = float(np.mean(arr))
@@ -6991,6 +7080,13 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics["rho_selected_p95"] = 0.0
             episode_metrics["rho_selected_lt_0p6_rate"] = 0.0
             episode_metrics["rho_selected_lt_0p7_rate"] = 0.0
+        if self._episode_uncertainty_selected_values:
+            arr = np.array(self._episode_uncertainty_selected_values, dtype=np.float32)
+            episode_metrics["uncertainty_selected_mean"] = float(np.mean(arr))
+            episode_metrics["uncertainty_selected_p90"] = float(np.percentile(arr, 90))
+        else:
+            episode_metrics["uncertainty_selected_mean"] = 0.0
+            episode_metrics["uncertainty_selected_p90"] = 0.0
         if self._episode_risk_penalty_values:
             arr = np.array(self._episode_risk_penalty_values, dtype=np.float32)
             episode_metrics["risk_penalty_mean"] = float(np.mean(arr))
@@ -7039,6 +7135,7 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['illegal_count'] = int(getattr(self, "_episode_illegal_count", 0))
         episode_metrics['no_task_count'] = int(getattr(self, "_episode_no_task_count", 0))
         episode_metrics['illegal_reasons'] = dict(getattr(self, "_episode_illegal_reasons", {}))
+        episode_metrics['no_task_reasons'] = dict(getattr(self, "_episode_no_task_reasons", {}))
         episode_metrics['unified_nonfinite_count'] = int(getattr(self, "_unified_nonfinite_count", 0))
         episode_metrics['unified_consistency_mismatch_count'] = int(getattr(self, "_unified_consistency_mismatch_count", 0))
         episode_metrics['unified_illegal_trigger_count'] = int(getattr(self, "_unified_illegal_trigger_count", 0))
