@@ -1,7 +1,0 @@
-{
-  "run_id": "stageB_interf_ep200_seed42_patch_v2_mps",
-  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/stageB_interf_ep200_seed42_patch_v2_mps",
-  "created_at": "2026-02-14 22:23:40",
-  "git_commit": "f06d95a90cbd72039e85d334b3461cb3a94dc0a7",
-  "config_hash": "fad8382e2d6df7294d855e471e27289d4b36611ffa88738539f9056924677387"
-}

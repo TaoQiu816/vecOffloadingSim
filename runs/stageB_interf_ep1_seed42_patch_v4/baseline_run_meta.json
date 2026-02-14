@@ -1,9 +1,0 @@
-{
-  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/stageB_interf_ep1_seed42_patch_v4",
-  "created_at": "2026-02-14 23:58:15",
-  "git_commit": "f06d95a90cbd72039e85d334b3461cb3a94dc0a7",
-  "config_hash": "82ce85d4e5603f1d392304b8591cba771a23b4f5373398ffaa2f9f8401a31b40",
-  "seed": 42,
-  "max_steps": 200,
-  "num_episodes": 10
-}

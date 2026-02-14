@@ -1,7 +1,0 @@
-{
-  "run_id": "patch_stageB_short_biascheck_seed42",
-  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/patch_stageB_short_biascheck_seed42",
-  "created_at": "2026-02-14 12:53:16",
-  "git_commit": "f06d95a90cbd72039e85d334b3461cb3a94dc0a7",
-  "config_hash": "9bf9a78f698366e489d038c82bf98e8e23099d514ea19f5ea3c803c68c4d2415"
-}
