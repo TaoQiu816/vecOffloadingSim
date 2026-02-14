@@ -17,6 +17,7 @@ import os
 import sys
 import shutil
 import time
+import subprocess
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -31,6 +32,20 @@ from train import (
     BASELINE_POLICIES,
     BASELINE_STATS_FIELDS,
 )
+
+
+def _get_git_commit() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return (proc.stdout or "").strip()
+    except Exception:
+        return "unknown"
 
 
 def _find_latest_run(base_dir="runs"):
@@ -179,6 +194,13 @@ def main():
     apply_env_overrides()
     snapshot_path = os.path.join(logs_dir, "config_snapshot.json")
     loaded = _apply_config_snapshot(snapshot_path)
+    snapshot_hash = None
+    if os.path.exists(snapshot_path):
+        try:
+            with open(snapshot_path, "r", encoding="utf-8") as f:
+                snapshot_hash = json.load(f).get("config_hash")
+        except Exception:
+            snapshot_hash = None
     if not loaded:
         # Fallback for older runs: load run_dir/config.json or run_dir/config_dump.json
         _apply_run_config_dump(run_dir)
@@ -191,6 +213,18 @@ def main():
     _ensure_reward_jsonl(logs_dir)
 
     env = VecOffloadingEnv()
+
+    baseline_meta = {
+        "run_dir": run_dir,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "git_commit": _get_git_commit(),
+        "config_hash": snapshot_hash,
+        "seed": int(getattr(Cfg, "SEED", 0)),
+        "max_steps": int(getattr(TC, "MAX_STEPS", 0)),
+        "num_episodes": int(args.num_episodes),
+    }
+    with open(os.path.join(run_dir, "baseline_run_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(baseline_meta, f, ensure_ascii=True, indent=2)
 
     # If this run uses the older layout (run_dir/metrics/*.csv), mirror them into logs/
     # so downstream plot scripts can find a consistent path.
@@ -287,6 +321,8 @@ def main():
                         "time_limit_rate": metrics.get("time_limit_rate"),
                         "illegal_action_rate": metrics.get("illegal_action_rate"),
                         "no_task_rate": metrics.get("no_task_rate"),
+                        "on_task_rate": metrics.get("on_task_rate"),
+                        "has_task_available_rate": metrics.get("has_task_available_rate"),
                         "unified_illegal_trigger_rate": metrics.get("unified_illegal_trigger_rate"),
                         "I_total_mean": metrics.get("I_total_mean"),
                         "I_total_p50": metrics.get("I_total_p50"),

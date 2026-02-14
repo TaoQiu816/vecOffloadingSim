@@ -113,6 +113,20 @@ class EFTPolicy:
             )
         return float(max(rate, 1e-6))
 
+    @staticmethod
+    def _tx_time_seconds(task_data_bits: float, rate_bps: float) -> float:
+        """
+        Compute transmission time with env-consistent units.
+
+        Note:
+        - task_data is already represented in bits throughout the env.
+        - rate is in bit/s.
+        - Therefore t_tx = bits / (bit/s); no extra *8 conversion here.
+        """
+        if task_data_bits <= 0:
+            return 0.0
+        return float(task_data_bits / max(rate_bps, 1e-6))
+
     def _eft_local(self, vehicle, task_comp: float, obs: Dict) -> float:
         comp_lb = self._obs_comp_lb(obs, 0)
         if comp_lb is not None:
@@ -130,7 +144,7 @@ class EFTPolicy:
         p_dbm = Cfg.watt2dbm(p_w)
 
         rate = self._estimate_rate(obs, idx, 2, vehicle, rsu.position, "V2I", p_dbm)
-        t_tx = (task_data * 8.0) / rate if task_data > 0 else 0.0
+        t_tx = self._tx_time_seconds(task_data, rate)
         comm_wait = self.env._compute_comm_wait(vehicle.id).get("total_v2i", 0.0)
 
         comp_lb = self._obs_comp_lb(obs, idx)
@@ -151,7 +165,7 @@ class EFTPolicy:
         p_dbm = Cfg.watt2dbm(p_w)
 
         rate = self._estimate_rate(obs, idx, 3, vehicle, target_veh.pos, "V2V", p_dbm)
-        t_tx = (task_data * 8.0) / rate if task_data > 0 else 0.0
+        t_tx = self._tx_time_seconds(task_data, rate)
         comm_wait = self.env._compute_comm_wait(vehicle.id).get("total_v2v", 0.0)
 
         comp_lb = self._obs_comp_lb(obs, idx)

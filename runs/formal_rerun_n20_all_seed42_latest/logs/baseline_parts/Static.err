@@ -1,3 +1,0 @@
-
-libgomp: Invalid value for environment variable OMP_NUM_THREADS
-Error.  nthreads must be a positive integer

@@ -1,0 +1,3 @@
+ n       min        p5       p50       p95       max                                                          source
+10 -9.032631 -9.009226 -4.342555 -1.968482 -1.408968 metrics_csv:runs/patch_stageB_biascheck_10ep80/logs/metrics.csv
+[PASS] r_interf min >= -10000 across evaluated sources.

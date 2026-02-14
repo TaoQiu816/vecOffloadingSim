@@ -6867,6 +6867,9 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['illegal_action_rate'] = illegal_count_effective / rate_den
         episode_metrics['hard_trigger_rate'] = hard_trigger_count / rate_den
         episode_metrics['no_task_rate'] = no_task_count / rate_den
+        episode_metrics['on_task_rate'] = max(0.0, 1.0 - episode_metrics['no_task_rate'])
+        # Alias for downstream stats scripts that explicitly look for "has_task_available".
+        episode_metrics['has_task_available_rate'] = episode_metrics['on_task_rate']
         episode_metrics['unified_illegal_trigger_rate'] = unified_illegal_count / rate_den
         if self._episode_illegal_reasons:
             top_reason, top_count = max(self._episode_illegal_reasons.items(), key=lambda kv: kv[1])

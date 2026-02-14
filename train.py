@@ -86,7 +86,8 @@ TRAINING_STATS_FIELDS = [
     "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
     "trust_failure_rate", "rho_selected_p10", "uncertainty_selected_p90",
     "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
-    "time_limit_rate", "illegal_action_rate", "no_task_rate", "unified_illegal_trigger_rate", "hard_trigger_rate",
+    "time_limit_rate", "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate",
+    "unified_illegal_trigger_rate", "hard_trigger_rate",
     "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
     "grad_norm", "active_ratio", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
     "bias_rsu", "bias_local",
@@ -95,6 +96,8 @@ TRAINING_STATS_FIELDS = [
 REQUIRED_COMPARE_COLUMNS = [
     "illegal_action_rate",
     "no_task_rate",
+    "on_task_rate",
+    "has_task_available_rate",
     "unified_illegal_trigger_rate",
     "decision_frac_local",
     "decision_frac_rsu",
@@ -124,7 +127,7 @@ BASELINE_STATS_FIELDS = [
     "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
     "task_duration_mean", "task_duration_p95",
     "deadline_miss_rate", "time_limit_rate",
-    "illegal_action_rate", "no_task_rate", "unified_illegal_trigger_rate",
+    "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate", "unified_illegal_trigger_rate",
     "I_total_mean", "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
     "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
     "rho_selected_p50", "rho_selected_p95", "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
@@ -273,6 +276,8 @@ def apply_env_overrides():
         "GAMMA": "GAMMA",
         "CLIP_PARAM": "CLIP_PARAM",
         "ENTROPY_COEF": "ENTROPY_COEF",
+        "ENTROPY_COEF_START": "ENTROPY_COEF_START",
+        "ENTROPY_COEF_END": "ENTROPY_COEF_END",
         "LR_ACTOR": "LR_ACTOR",
         "LR_CRITIC": "LR_CRITIC",
         "LOGIT_BIAS_LOCAL": "LOGIT_BIAS_LOCAL",
@@ -284,6 +289,7 @@ def apply_env_overrides():
         "MINI_BATCH_SIZE": "MINI_BATCH_SIZE",
         "MIN_ACTIVE_SAMPLES": "MIN_ACTIVE_SAMPLES",
         "LR_DECAY_STEPS": "LR_DECAY_STEPS",
+        "ENTROPY_ANNEAL_STEPS": "ENTROPY_ANNEAL_STEPS",
         "SAVE_INTERVAL": "SAVE_INTERVAL",
     }
     for env_key, attr in tc_float.items():
@@ -954,6 +960,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     trust_retry_count = epm.get("trust_retry_count")
     illegal_action_rate = epm.get("illegal_action_rate")
     no_task_rate = epm.get("no_task_rate")
+    on_task_rate = epm.get("on_task_rate")
+    has_task_available_rate = epm.get("has_task_available_rate")
     unified_illegal_trigger_rate = epm.get("unified_illegal_trigger_rate")
     
     return {
@@ -999,6 +1007,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'trust_retry_count': int(trust_retry_count) if trust_retry_count is not None else None,
         'illegal_action_rate': float(illegal_action_rate) if illegal_action_rate is not None else None,
         'no_task_rate': float(no_task_rate) if no_task_rate is not None else None,
+        'on_task_rate': float(on_task_rate) if on_task_rate is not None else None,
+        'has_task_available_rate': float(has_task_available_rate) if has_task_available_rate is not None else None,
         'unified_illegal_trigger_rate': float(unified_illegal_trigger_rate) if unified_illegal_trigger_rate is not None else None,
         'episode_vehicle_count': episode_vehicle_count,
         'episode_task_count': episode_vehicle_count,  # 每辆车一个任务
@@ -1481,6 +1491,8 @@ def main():
         "top_illegal_reason",
         "top_illegal_reason_count",
         "no_task_rate",
+        "on_task_rate",
+        "has_task_available_rate",
         "unified_illegal_trigger_rate",
         "hard_trigger_rate",
         # decisions
@@ -1906,6 +1918,8 @@ def main():
         top_illegal_reason = env_stats.get("top_illegal_reason") if env_stats else ""
         top_illegal_reason_count = env_stats.get("top_illegal_reason_count") if env_stats else 0
         no_task_rate = env_stats.get("no_task_rate") if env_stats else None
+        on_task_rate = env_stats.get("on_task_rate") if env_stats else None
+        has_task_available_rate = env_stats.get("has_task_available_rate") if env_stats else None
         unified_illegal_trigger_rate = env_stats.get("unified_illegal_trigger_rate") if env_stats else None
         hard_trigger_rate = env_stats.get("hard_trigger_rate") if env_stats else None
         time_limit_rate = env_stats.get("time_limit_rate") if env_stats else (1.0 if (truncated and not terminated) else 0.0)
@@ -2118,6 +2132,16 @@ def main():
             time_limit_penalty_value = penalty
 
         # PPO更新（在末步惩罚后计算，以确保惩罚参与梯度更新）
+        # 熵系数按全局步数线性退火：前期探索更强，后期收敛更稳。
+        ent_start = float(getattr(TC, "ENTROPY_COEF_START", TC.ENTROPY_COEF))
+        ent_end = float(getattr(TC, "ENTROPY_COEF_END", ent_start))
+        ent_anneal_steps = int(max(getattr(TC, "ENTROPY_ANNEAL_STEPS", 0), 0))
+        if ent_anneal_steps > 0:
+            ent_frac = float(np.clip(_global_train_steps / max(ent_anneal_steps, 1), 0.0, 1.0))
+            TC.ENTROPY_COEF = ent_start + (ent_end - ent_start) * ent_frac
+        else:
+            TC.ENTROPY_COEF = ent_end
+
         last_value = agent.get_value(obs_list)
         buffer.compute_returns_and_advantages(last_value)
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
@@ -2139,8 +2163,10 @@ def main():
         # [P18修复] 网络从TC直接读取bias值，无需额外同步
         # =====================================================================
         if TC.USE_LOGIT_BIAS and (episode % TC.BIAS_DECAY_EVERY_EP == 0 and episode > 0):
-            TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
-            TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
+            if TC.LOGIT_BIAS_RSU > TC.BIAS_MIN_RSU:
+                TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
+            if TC.LOGIT_BIAS_LOCAL > TC.BIAS_MIN_LOCAL:
+                TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
 
         # V2V 探索 bias 线性退火（step-based）
         _global_train_steps += total_steps
@@ -2316,6 +2342,8 @@ def main():
             "top_illegal_reason": str(top_illegal_reason or ""),
             "top_illegal_reason_count": int(top_illegal_reason_count or 0),
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
+            "on_task_rate": on_task_rate if on_task_rate is not None else 0.0,
+            "has_task_available_rate": has_task_available_rate if has_task_available_rate is not None else 0.0,
             "unified_illegal_trigger_rate": unified_illegal_trigger_rate if unified_illegal_trigger_rate is not None else 0.0,
             "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # decisions
@@ -2488,6 +2516,8 @@ def main():
             "time_limit_rate": time_limit_rate if time_limit_rate is not None else 0.0,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
+            "on_task_rate": on_task_rate if on_task_rate is not None else 0.0,
+            "has_task_available_rate": has_task_available_rate if has_task_available_rate is not None else 0.0,
             "unified_illegal_trigger_rate": unified_illegal_trigger_rate if unified_illegal_trigger_rate is not None else 0.0,
             "hard_trigger_rate": hard_trigger_rate if hard_trigger_rate is not None else 0.0,
             # 训练诊断指标
@@ -2710,6 +2740,8 @@ def main():
                     "time_limit_rate": baseline_metrics.get('time_limit_rate'),
                     "illegal_action_rate": baseline_metrics.get('illegal_action_rate'),
                     "no_task_rate": baseline_metrics.get('no_task_rate'),
+                    "on_task_rate": baseline_metrics.get('on_task_rate'),
+                    "has_task_available_rate": baseline_metrics.get('has_task_available_rate'),
                     "unified_illegal_trigger_rate": baseline_metrics.get('unified_illegal_trigger_rate'),
                     "I_total_mean": baseline_metrics.get('I_total_mean'),
                     "I_total_p50": baseline_metrics.get('I_total_p50'),

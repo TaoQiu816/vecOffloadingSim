@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy import stats as scipy_stats
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,21 @@ def _metric_available(df_rl: pd.DataFrame, df_b: pd.DataFrame, m: MetricSpec) ->
     return m.rl_col in df_rl.columns and m.b_col in df_b.columns
 
 
+def _tail_matched_pair(
+    rl_values: np.ndarray,
+    b_values: np.ndarray,
+    max_len: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    rr = np.asarray(rl_values, dtype=float)
+    bb = np.asarray(b_values, dtype=float)
+    rr = rr[np.isfinite(rr)]
+    bb = bb[np.isfinite(bb)]
+    k = int(min(max_len, rr.size, bb.size))
+    if k <= 0:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    return rr[-k:], bb[-k:]
+
+
 def _bootstrap_ci_mean(arr: np.ndarray, rng: np.random.Generator, n_boot: int = 1500) -> Tuple[float, float]:
     arr = np.asarray(arr, dtype=float)
     if arr.size == 0:
@@ -120,6 +136,42 @@ def _bootstrap_ci_mean(arr: np.ndarray, rng: np.random.Generator, n_boot: int = 
     samples = arr[idx].mean(axis=1)
     lo, hi = np.percentile(samples, [2.5, 97.5])
     return float(lo), float(hi)
+
+
+def _bootstrap_ci_diff(
+    a: np.ndarray,
+    b: np.ndarray,
+    rng: np.random.Generator,
+    direction: str,
+    n_boot: int = 1500,
+) -> Tuple[float, float]:
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if a.size == 0 or b.size == 0:
+        return float("nan"), float("nan")
+    ia = rng.integers(0, a.size, size=(n_boot, a.size))
+    ib = rng.integers(0, b.size, size=(n_boot, b.size))
+    aa = a[ia].mean(axis=1)
+    bb = b[ib].mean(axis=1)
+    if direction == "higher":
+        diffs = aa - bb
+    else:
+        diffs = bb - aa
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def _welch_ttest(a: np.ndarray, b: np.ndarray, direction: str) -> Tuple[float, float]:
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if direction == "lower":
+        # oriented positive means RL is better for lower-is-better metrics.
+        a = -a
+        b = -b
+    if a.size < 2 or b.size < 2:
+        return float("nan"), float("nan")
+    out = scipy_stats.ttest_ind(a, b, equal_var=False, nan_policy="omit")
+    return float(out.statistic), float(out.pvalue)
 
 
 def _log_binom_pmf_half(n: int, k: int) -> float:
@@ -160,22 +212,41 @@ def _window_defs(max_episode: int) -> List[Tuple[str, int, int]]:
 
 def compute_window_summary(
     df_rl: pd.DataFrame,
-    df_b: pd.DataFrame,
+    df_b_raw: pd.DataFrame,
     metrics: List[MetricSpec],
     windows: List[Tuple[str, int, int]],
     seed: int = 42,
 ) -> pd.DataFrame:
+    """
+    统计口径说明:
+    - Baseline 仅使用原始样本（raw），不使用 forward-fill 后数据做统计。
+    - 每个窗口采用 matched tail:
+        K = min(window_len, len(RL_window), len(Baseline_raw_policy))
+      对比 RL_window 的末 K 与 Baseline_raw 的末 K。
+    """
     rng = np.random.default_rng(seed)
     rows: List[Dict[str, object]] = []
-    policies = sorted(df_b["policy"].unique())
+    policies = sorted(df_b_raw["policy"].unique())
 
     for m in metrics:
-        if not _metric_available(df_rl, df_b, m):
+        if not _metric_available(df_rl, df_b_raw, m):
             continue
         for w_name, s, e in windows:
             r = df_rl[(df_rl["episode"] >= s) & (df_rl["episode"] <= e)]
-            rv = (r[m.rl_col].to_numpy(dtype=float) * m.scale)
-            lo, hi = _bootstrap_ci_mean(rv, rng)
+            rv_all = r[m.rl_col].to_numpy(dtype=float)
+            if rv_all.size == 0:
+                continue
+            base_lens = []
+            for p in policies:
+                b_all = df_b_raw[df_b_raw["policy"] == p][m.b_col].to_numpy(dtype=float)
+                b_all = b_all[np.isfinite(b_all)]
+                if b_all.size > 0:
+                    base_lens.append(int(b_all.size))
+            if not base_lens:
+                continue
+            k_common = int(min(rv_all.size, min(base_lens)))
+            rv_common = rv_all[-k_common:] * m.scale
+            lo, hi = _bootstrap_ci_mean(rv_common, rng)
             rows.append(
                 {
                     "window": w_name,
@@ -184,19 +255,24 @@ def compute_window_summary(
                     "metric_id": m.metric_id,
                     "metric_cn": m.title_cn,
                     "direction": m.direction,
-                    "mean": float(np.mean(rv)),
-                    "std": float(np.std(rv, ddof=1)) if rv.size > 1 else 0.0,
-                    "p10": float(np.percentile(rv, 10)),
-                    "p50": float(np.percentile(rv, 50)),
-                    "p90": float(np.percentile(rv, 90)),
+                    "mean": float(np.mean(rv_common)),
+                    "std": float(np.std(rv_common, ddof=1)) if rv_common.size > 1 else 0.0,
+                    "p10": float(np.percentile(rv_common, 10)),
+                    "p50": float(np.percentile(rv_common, 50)),
+                    "p90": float(np.percentile(rv_common, 90)),
                     "ci95_low": lo,
                     "ci95_high": hi,
-                    "n": int(rv.size),
+                    "n": int(rv_common.size),
+                    "matched_k": int(rv_common.size),
+                    "stat_basis": "matched_tail_raw_baseline",
                 }
             )
             for p in policies:
-                b = df_b[(df_b["policy"] == p) & (df_b["episode"] >= s) & (df_b["episode"] <= e)]
-                bv = (b[m.b_col].to_numpy(dtype=float) * m.scale)
+                b_all = df_b_raw[df_b_raw["policy"] == p][m.b_col].to_numpy(dtype=float)
+                rv, bv = _tail_matched_pair(rv_all, b_all, max_len=len(rv_all))
+                if rv.size == 0 or bv.size == 0:
+                    continue
+                bv = bv * m.scale
                 lo, hi = _bootstrap_ci_mean(bv, rng)
                 rows.append(
                     {
@@ -214,6 +290,8 @@ def compute_window_summary(
                         "ci95_low": lo,
                         "ci95_high": hi,
                         "n": int(bv.size),
+                        "matched_k": int(bv.size),
+                        "stat_basis": "matched_tail_raw_baseline",
                     }
                 )
     out = pd.DataFrame(rows)
@@ -229,19 +307,31 @@ def compute_window_summary(
 
 def compute_phase_summary(
     df_rl: pd.DataFrame,
-    df_b: pd.DataFrame,
+    df_b_raw: pd.DataFrame,
     metrics: List[MetricSpec],
     phases: List[Tuple[str, int, int]],
 ) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
-    policies = sorted(df_b["policy"].unique())
+    policies = sorted(df_b_raw["policy"].unique())
 
     for m in metrics:
-        if not _metric_available(df_rl, df_b, m):
+        if not _metric_available(df_rl, df_b_raw, m):
             continue
         for ph_name, s, e in phases:
             r = df_rl[(df_rl["episode"] >= s) & (df_rl["episode"] <= e)]
-            rv = r[m.rl_col].to_numpy(dtype=float) * m.scale
+            rv_all = r[m.rl_col].to_numpy(dtype=float)
+            if rv_all.size == 0:
+                continue
+            base_lens = []
+            for p in policies:
+                b_all = df_b_raw[df_b_raw["policy"] == p][m.b_col].to_numpy(dtype=float)
+                b_all = b_all[np.isfinite(b_all)]
+                if b_all.size > 0:
+                    base_lens.append(int(b_all.size))
+            if not base_lens:
+                continue
+            k_common = int(min(rv_all.size, min(base_lens)))
+            rv = rv_all[-k_common:] * m.scale
             rows.append(
                 {
                     "phase": ph_name,
@@ -253,11 +343,16 @@ def compute_phase_summary(
                     "mean": float(np.mean(rv)),
                     "std": float(np.std(rv, ddof=1)) if rv.size > 1 else 0.0,
                     "n": int(rv.size),
+                    "matched_k": int(rv.size),
+                    "stat_basis": "matched_tail_raw_baseline",
                 }
             )
             for p in policies:
-                b = df_b[(df_b["policy"] == p) & (df_b["episode"] >= s) & (df_b["episode"] <= e)]
-                bv = b[m.b_col].to_numpy(dtype=float) * m.scale
+                b_all = df_b_raw[df_b_raw["policy"] == p][m.b_col].to_numpy(dtype=float)
+                rv_m, bv_m = _tail_matched_pair(rv_all, b_all, max_len=len(rv_all))
+                if rv_m.size == 0 or bv_m.size == 0:
+                    continue
+                bv = bv_m * m.scale
                 rows.append(
                     {
                         "phase": ph_name,
@@ -269,6 +364,8 @@ def compute_phase_summary(
                         "mean": float(np.mean(bv)),
                         "std": float(np.std(bv, ddof=1)) if bv.size > 1 else 0.0,
                         "n": int(bv.size),
+                        "matched_k": int(bv.size),
+                        "stat_basis": "matched_tail_raw_baseline",
                     }
                 )
     return pd.DataFrame(rows).sort_values(["metric_id", "phase", "method"]).reset_index(drop=True)
@@ -276,26 +373,25 @@ def compute_phase_summary(
 
 def compute_pairwise_significance(
     df_rl: pd.DataFrame,
-    df_b: pd.DataFrame,
+    df_b_raw: pd.DataFrame,
     metrics: List[MetricSpec],
+    seed: int = 42,
 ) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
-    policies = sorted(df_b["policy"].unique())
-    ep_rl = set(df_rl["episode"].tolist())
+    policies = sorted(df_b_raw["policy"].unique())
+    rng = np.random.default_rng(seed)
 
     for m in metrics:
-        if not _metric_available(df_rl, df_b, m):
+        if not _metric_available(df_rl, df_b_raw, m):
             continue
-        r = df_rl[["episode", m.rl_col]].dropna()
+        r = df_rl[m.rl_col].to_numpy(dtype=float)
         for p in policies:
-            b = df_b[df_b["policy"] == p][["episode", m.b_col]].dropna()
-            common_eps = sorted(ep_rl.intersection(set(b["episode"].tolist())))
-            if not common_eps:
+            b = df_b_raw[df_b_raw["policy"] == p][m.b_col].to_numpy(dtype=float)
+            rr, bb = _tail_matched_pair(r, b, max_len=len(r))
+            if rr.size == 0 or bb.size == 0:
                 continue
-            rr = r[r["episode"].isin(common_eps)].sort_values("episode")[m.rl_col].to_numpy(dtype=float) * m.scale
-            bb = b[b["episode"].isin(common_eps)].sort_values("episode")[m.b_col].to_numpy(dtype=float) * m.scale
-            if rr.size != bb.size or rr.size == 0:
-                continue
+            rr = rr * m.scale
+            bb = bb * m.scale
 
             if m.direction == "higher":
                 better = rr > bb
@@ -311,6 +407,8 @@ def compute_pairwise_significance(
             ties = int(rr.size - wins - losses)
             n_eff = wins + losses
             p_value = _binom_two_sided_pvalue(wins, n_eff) if n_eff > 0 else float("nan")
+            welch_t, welch_p = _welch_ttest(rr, bb, m.direction)
+            boot_lo, boot_hi = _bootstrap_ci_diff(rr, bb, rng, m.direction)
             rows.append(
                 {
                     "baseline": p,
@@ -319,18 +417,100 @@ def compute_pairwise_significance(
                     "direction": m.direction,
                     "n_total": int(rr.size),
                     "n_effective": int(n_eff),
+                    "matched_k": int(rr.size),
                     "wins": wins,
                     "losses": losses,
                     "ties": ties,
                     "win_rate": float(wins / n_eff) if n_eff > 0 else float("nan"),
                     "p_value_sign_test": p_value,
+                    "welch_t": welch_t,
+                    "welch_p_value": welch_p,
+                    "bootstrap_ci95_low": boot_lo,
+                    "bootstrap_ci95_high": boot_hi,
                     "mean_oriented_diff": float(np.mean(oriented_diff)),
                     "median_oriented_diff": float(np.median(oriented_diff)),
+                    "stat_basis": "matched_tail_raw_baseline",
                 }
             )
 
     out = pd.DataFrame(rows)
     return out.sort_values(["metric_id", "baseline"]).reset_index(drop=True)
+
+
+def _infer_on_task_rate(df: pd.DataFrame) -> Optional[pd.Series]:
+    for col in ("has_task_available_rate", "has_task_rate", "on_task_rate"):
+        if col in df.columns:
+            return df[col].astype(float).clip(0.0, 1.0)
+    if "no_task_rate" in df.columns:
+        return (1.0 - df["no_task_rate"].astype(float).clip(0.0, 1.0)).clip(0.0, 1.0)
+    return None
+
+
+def compute_on_task_summary(
+    df_rl: pd.DataFrame,
+    df_b_raw: pd.DataFrame,
+    windows: List[Tuple[str, int, int]],
+) -> pd.DataFrame:
+    """
+    输出 all_steps 与 on_task 条件统计（若可由 CSV 列恢复）。
+    """
+    rows: List[Dict[str, object]] = []
+    policies = sorted(df_b_raw["policy"].unique())
+    target_cols = ["illegal_action_rate", "unified_illegal_trigger_rate", "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v"]
+
+    for w_name, s, e in windows:
+        dr = df_rl[(df_rl["episode"] >= s) & (df_rl["episode"] <= e)].copy()
+        rl_on = _infer_on_task_rate(dr)
+        if rl_on is not None and len(dr) > 0:
+            rec: Dict[str, object] = {
+                "window": w_name,
+                "method": "当前算法(MAPPO)",
+                "policy": "MAPPO",
+                "n": int(len(dr)),
+                "on_task_rate_mean": float(rl_on.mean()),
+            }
+            for c in target_cols:
+                if c not in dr.columns:
+                    continue
+                all_mean = float(dr[c].mean())
+                rec[f"{c}_all_steps_mean"] = all_mean
+                if c in ("illegal_action_rate", "unified_illegal_trigger_rate"):
+                    den = float(max(rl_on.mean(), 1e-9))
+                    rec[f"{c}_on_task_mean"] = float(all_mean / den)
+                else:
+                    # decision_frac_* already uses decision denominator; treat as P(action | on_task decision)
+                    rec[f"{c}_on_task_mean"] = all_mean
+            rows.append(rec)
+
+        for p in policies:
+            db = df_b_raw[df_b_raw["policy"] == p].copy()
+            b_on = _infer_on_task_rate(db)
+            if b_on is None or len(db) == 0:
+                continue
+            k = int(min(len(dr), len(db)))
+            if k <= 0:
+                continue
+            db = db.tail(k).copy()
+            b_on = b_on.tail(k).copy()
+            rec = {
+                "window": w_name,
+                "method": p,
+                "policy": p,
+                "n": int(k),
+                "on_task_rate_mean": float(b_on.mean()),
+            }
+            for c in target_cols:
+                if c not in db.columns:
+                    continue
+                all_mean = float(db[c].mean())
+                rec[f"{c}_all_steps_mean"] = all_mean
+                if c in ("illegal_action_rate", "unified_illegal_trigger_rate"):
+                    den = float(max(b_on.mean(), 1e-9))
+                    rec[f"{c}_on_task_mean"] = float(all_mean / den)
+                else:
+                    rec[f"{c}_on_task_mean"] = all_mean
+            rows.append(rec)
+    return pd.DataFrame(rows).sort_values(["window", "method"]).reset_index(drop=True)
 
 
 def plot_trends_cn(
@@ -513,15 +693,15 @@ def plot_pairwise_heatmap_cn(pair_df: pd.DataFrame, metrics: List[MetricSpec], o
 
 def plot_tail_box_cn(
     df_rl: pd.DataFrame,
-    df_b: pd.DataFrame,
+    df_b_raw: pd.DataFrame,
     metrics: List[MetricSpec],
     out_dir: str,
     tail_n: int = 300,
 ) -> str:
-    core = [m for m in metrics if m.core and _metric_available(df_rl, df_b, m)][:4]
+    core = [m for m in metrics if m.core and _metric_available(df_rl, df_b_raw, m)][:4]
     if not core:
         return ""
-    methods = ["当前算法(MAPPO)"] + sorted(df_b["policy"].unique().tolist())
+    methods = ["当前算法(MAPPO)"] + sorted(df_b_raw["policy"].unique().tolist())
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     axes = axes.flatten()
@@ -531,8 +711,8 @@ def plot_tail_box_cn(
         rr = (df_rl.tail(tail_n)[m.rl_col].to_numpy(dtype=float) * m.scale)
         data.append(rr)
         labels.append("当前算法")
-        for p in sorted(df_b["policy"].unique()):
-            bb = (df_b[df_b["policy"] == p].tail(tail_n)[m.b_col].to_numpy(dtype=float) * m.scale)
+        for p in sorted(df_b_raw["policy"].unique()):
+            bb = (df_b_raw[df_b_raw["policy"] == p].tail(tail_n)[m.b_col].to_numpy(dtype=float) * m.scale)
             data.append(bb)
             labels.append(p)
         ax.boxplot(data, tick_labels=labels, showfliers=False)
@@ -552,6 +732,7 @@ def write_report_md(
     out_dir: str,
     window_summary: pd.DataFrame,
     pair_df: pd.DataFrame,
+    on_task_summary: pd.DataFrame,
     phases: List[Tuple[str, int, int]],
 ) -> str:
     report_path = os.path.join(out_dir, "rigorous_report_cn.md")
@@ -559,9 +740,10 @@ def write_report_md(
     lines.append("# 严谨对比报告（中文）")
     lines.append("")
     lines.append("## 方法说明")
-    lines.append("- 使用全程数据（非仅末段）进行趋势分析。")
-    lines.append("- 同时报告多窗口统计（全程/末500/末300/末100）评估结论稳健性。")
-    lines.append("- 采用逐 Episode 配对比较（Sign Test）给出胜率与显著性。")
+    lines.append("- 绘图趋势允许 baseline 曲线延展（仅用于视觉对齐）。")
+    lines.append("- 统计与显著性严格使用 baseline 原始样本（raw），不使用 forward-fill 样本。")
+    lines.append("- 多窗口统计采用 matched-tail：K=min(窗口长度, RL样本数, baseline原始样本数)。")
+    lines.append("- 显著性同时报告 Sign Test 与 Welch t-test，并给出 bootstrap 均值差95%区间。")
     lines.append(f"- 训练阶段划分: {', '.join([f'{name}[{s}-{e}]' for name, s, e in phases])}")
     lines.append("")
 
@@ -588,9 +770,26 @@ def write_report_md(
             for _, r in g.iterrows():
                 ptxt = "显著" if (pd.notna(r["p_value_sign_test"]) and r["p_value_sign_test"] < 0.05) else "不显著"
                 lines.append(
-                    f"- vs {r['baseline']}: 胜率={r['win_rate']*100:.2f}%, p={r['p_value_sign_test']:.3e} ({ptxt})"
+                    f"- vs {r['baseline']}: 胜率={r['win_rate']*100:.2f}%, sign-p={r['p_value_sign_test']:.3e}, "
+                    f"welch-p={r['welch_p_value']:.3e}, boot95=[{r['bootstrap_ci95_low']:.4g}, {r['bootstrap_ci95_high']:.4g}] ({ptxt})"
                 )
             lines.append("")
+
+    if not on_task_summary.empty:
+        lines.append("## On-Task 条件统计")
+        lines.append("- 若无显式 has_task 列，则使用 on_task_rate = 1 - no_task_rate 近似恢复。")
+        tail = on_task_summary[on_task_summary["window"].str.contains("末100", na=False)].copy()
+        if tail.empty:
+            tail = on_task_summary.copy()
+        tail = tail.sort_values("on_task_rate_mean", ascending=False)
+        for _, r in tail.iterrows():
+            lines.append(
+                f"- {r['method']}: on_task_rate={r['on_task_rate_mean']:.4f}, "
+                f"P(local|on_task)={r.get('decision_frac_local_on_task_mean', float('nan')):.4f}, "
+                f"P(rsu|on_task)={r.get('decision_frac_rsu_on_task_mean', float('nan')):.4f}, "
+                f"P(v2v|on_task)={r.get('decision_frac_v2v_on_task_mean', float('nan')):.4f}"
+            )
+        lines.append("")
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -613,18 +812,19 @@ def main() -> None:
     df_rl = _load_rl(run_dir)
     df_b_raw = _load_baselines(run_dir)
     max_ep = int(df_rl["episode"].max())
-    df_b = _expand_baselines(df_b_raw, max_ep)
+    df_b_plot = _expand_baselines(df_b_raw, max_ep)
 
-    metrics = [m for m in METRICS if _metric_available(df_rl, df_b, m)]
+    metrics = [m for m in METRICS if _metric_available(df_rl, df_b_raw, m)]
     windows = _window_defs(max_ep)
     phases = _phase_ranges(max_ep)
 
-    window_summary = compute_window_summary(df_rl, df_b, metrics, windows)
-    phase_summary = compute_phase_summary(df_rl, df_b, metrics, phases)
-    pair_df = compute_pairwise_significance(df_rl, df_b, metrics)
+    window_summary = compute_window_summary(df_rl, df_b_raw, metrics, windows)
+    phase_summary = compute_phase_summary(df_rl, df_b_raw, metrics, phases)
+    pair_df = compute_pairwise_significance(df_rl, df_b_raw, metrics)
+    on_task_summary = compute_on_task_summary(df_rl, df_b_raw, windows)
 
     fig_paths = []
-    p = plot_trends_cn(df_rl, df_b, metrics, out_dir, args.window)
+    p = plot_trends_cn(df_rl, df_b_plot, metrics, out_dir, args.window)
     if p:
         fig_paths.append(("cn_fig_01_trends_full.png", "全程趋势对比（核心指标）"))
     p = plot_window_robustness_cn(window_summary, metrics, out_dir)
@@ -636,22 +836,24 @@ def main() -> None:
     p = plot_pairwise_heatmap_cn(pair_df, metrics, out_dir)
     if p:
         fig_paths.append(("cn_fig_04_pairwise_winrate_heatmap.png", "逐Episode配对胜率热图"))
-    p = plot_tail_box_cn(df_rl, df_b, metrics, out_dir, tail_n=min(300, max_ep))
+    p = plot_tail_box_cn(df_rl, df_b_raw, metrics, out_dir, tail_n=min(300, max_ep))
     if p:
         fig_paths.append(("cn_fig_05_tail_boxplots.png", "尾段分布与稳定性对比"))
 
     window_summary.to_csv(os.path.join(out_dir, "rigorous_window_summary.csv"), index=False)
     phase_summary.to_csv(os.path.join(out_dir, "rigorous_phase_summary.csv"), index=False)
     pair_df.to_csv(os.path.join(out_dir, "rigorous_pairwise_significance.csv"), index=False)
+    on_task_summary.to_csv(os.path.join(out_dir, "rigorous_on_task_summary.csv"), index=False)
     pd.DataFrame(fig_paths, columns=["file", "title_cn"]).to_csv(
         os.path.join(out_dir, "rigorous_figure_manifest_cn.csv"), index=False
     )
-    report_path = write_report_md(out_dir, window_summary, pair_df, phases)
+    report_path = write_report_md(out_dir, window_summary, pair_df, on_task_summary, phases)
 
     with open(os.path.join(out_dir, "meta.txt"), "w", encoding="utf-8") as f:
         f.write(f"rl_metrics_path={df_rl.attrs.get('_path', '')}\n")
         f.write(f"episodes={max_ep}\n")
         f.write(f"baseline_rows={len(df_b_raw)}\n")
+        f.write("baseline_statistics_basis=raw_matched_tail\n")
         f.write(f"window={args.window}\n")
         f.write(f"report={report_path}\n")
 

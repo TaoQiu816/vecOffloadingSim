@@ -653,6 +653,11 @@ class SystemConfig:
     # 若仍使用0.02J会导致能耗项过强、训练退化为近单目标。取15J可保持能耗敏感且不过度主导。
     E_REF_UNIFIED = 15.0
     I_REF_D0 = V2V_RANGE / 2.0     # I_ref 参考距离 d0
+    # 数值稳定: 防止 I_ref 过小导致 r_interf 在早期出现极端爆表值。
+    # 不改变干扰动力学，仅用于奖励归一化尺度。
+    I_REF_MIN_UNIFIED = 1e-8
+    # 对 I_caused/I_ref 做上界裁剪，避免单项奖励主导训练。
+    INTERF_RATIO_CLIP_UNIFIED = 20.0
     # PBRS
     PBRS_BETA = 0.1                 # PBRS 系数 beta
     PBRS_GAMMA = 0.99               # PBRS 折扣 gamma

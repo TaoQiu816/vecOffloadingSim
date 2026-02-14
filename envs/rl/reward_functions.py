@@ -89,11 +89,18 @@ def compute_unified_step_reward(
         I_ref = Cfg.P_MAX_WATT * g_d0
 
     E_ref = max(E_ref, 1e-12)
-    I_ref = max(I_ref, 1e-12)
+    # Keep unified interference term numerically stable: tiny I_ref can make
+    # (I_caused / I_ref)^p explode and dominate optimization.
+    I_ref_floor = float(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-12))
+    I_ref = max(I_ref, I_ref_floor, 1e-12)
 
     r_time = -w_t * (dt / Td)
     r_energy = -w_e * (max(E_tx, 0.0) / E_ref) ** p_e
-    r_interf = -w_I * (max(I_caused, 0.0) / I_ref) ** p_I
+    interf_ratio = max(I_caused, 0.0) / I_ref
+    ratio_clip = float(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 0.0))
+    if ratio_clip > 0.0:
+        interf_ratio = min(interf_ratio, ratio_clip)
+    r_interf = -w_I * (interf_ratio ** p_I)
     rho_target = float(np.clip(rho_target, 0.0, 1.0))
     r_risk = -w_risk * ((1.0 - rho_target) ** p_risk) if bool(is_remote) else 0.0
     r_illegal = -w_ill * float(illegal)
@@ -109,6 +116,8 @@ def compute_unified_step_reward(
         'energy_norm': float(max(E_tx, 0.0) / E_ref),
         'E_tx': float(E_tx),
         'I_caused': float(I_caused),
+        'I_ref_used': float(I_ref),
+        'interf_ratio': float(interf_ratio),
         'rho_target': float(rho_target),
         'is_remote': bool(is_remote),
     }

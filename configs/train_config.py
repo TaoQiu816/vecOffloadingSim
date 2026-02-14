@@ -193,7 +193,10 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.001    # 熵正则化系数 - Entropy coefficient for exploration
+    ENTROPY_COEF = 0.001    # 当前生效熵系数（运行时可退火更新）
+    ENTROPY_COEF_START = 0.004  # 初始熵系数（增强早期探索）
+    ENTROPY_COEF_END = 0.001    # 末端熵系数（与历史默认保持一致）
+    ENTROPY_ANNEAL_STEPS = 140000  # 熵退火步数（约覆盖1000ep*200steps的70%）
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -241,13 +244,13 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 1.4    # RSU的Logit偏置 - Logit bias for RSU action [更强偏置]
+    LOGIT_BIAS_RSU = 0.0    # RSU偏置默认关闭，避免策略过早塌缩到RSU
                             # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
                             #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
                             #   需要 b = ln(5) ≈ 1.6094
                             # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 1.7  # Local的Logit偏置 - Logit bias for Local action [更强偏置]
+    LOGIT_BIAS_LOCAL = 1.2  # 适度保留Local探索偏置
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
                             #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
                             #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
@@ -268,7 +271,7 @@ class TrainConfig:
                                # 影响: 每次退火时LOGIT_BIAS_LOCAL减少的量，更缓慢的衰减
                                # Impact: Amount to reduce LOGIT_BIAS_LOCAL per decay step, slower decay
     
-    BIAS_MIN_RSU = 0.8         # RSU bias最小值 - Minimum RSU bias [保持探索]
+    BIAS_MIN_RSU = 0.0         # RSU bias最小值（保持为0，避免反向抬升）
                                # 影响: LOGIT_BIAS_RSU不会低于此值，保持RSU探索
                                # Impact: LOGIT_BIAS_RSU will not go below this value, maintains RSU exploration
     
@@ -277,9 +280,9 @@ class TrainConfig:
                                # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 
     # V2V 探索 bias（确保 early training 中 V2V tx 发生，使干扰惩罚与功率可学习）
-    LOGIT_BIAS_V2V_INIT = 1.0  # V2V 初始 logit bias
-    LOGIT_BIAS_V2V_ANNEAL_STEPS = 20000  # 线性退火步数（global_step 达到此值时 bias→0）
-    _logit_bias_v2v_current = 1.0  # 运行时动态值（由 train.py 更新）
+    LOGIT_BIAS_V2V_INIT = 0.8  # V2V 初始 logit bias（点亮干扰学习信号）
+    LOGIT_BIAS_V2V_ANNEAL_STEPS = 140000  # 慢退火，训练后段仍保留少量V2V探索
+    _logit_bias_v2v_current = 0.8  # 运行时动态值（由 train.py 更新）
 
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)

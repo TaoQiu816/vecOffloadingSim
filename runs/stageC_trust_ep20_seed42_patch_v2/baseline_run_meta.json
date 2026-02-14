@@ -1,0 +1,9 @@
+{
+  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/stageC_trust_ep20_seed42_patch_v2",
+  "created_at": "2026-02-14 23:21:55",
+  "git_commit": "f06d95a90cbd72039e85d334b3461cb3a94dc0a7",
+  "config_hash": "d06f65aabdb9ebfd5378fb8e2d8601f6a1ce4d699d9f81093082d5cc98f1ab40",
+  "seed": 42,
+  "max_steps": 200,
+  "num_episodes": 10
+}
