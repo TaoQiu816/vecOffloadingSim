@@ -1,0 +1,9 @@
+{
+  "run_dir": "/root/vecOffloadingSim/runs/scanA_stageB_main_seed42_20260215_014509",
+  "created_at": "2026-02-15 14:56:49",
+  "git_commit": "02fcaa728ab04ef95948e27c30b8dac1dc28636a",
+  "config_hash": "b82ac7cbc3fbada99eb226b456816b262fa2fefdc784b68a655f4e807090ba21",
+  "seed": 42,
+  "max_steps": 200,
+  "num_episodes": 120
+}
