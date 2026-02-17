@@ -4,9 +4,11 @@ from configs.config import SystemConfig as Cfg
 
 class ChannelModel:
     """
-    [物理信道模型] - V2V RB-SINR + V2I 带宽共享
-    
-    V2I: per-RSU 带宽共享（无衰落）
+    [物理信道模型] - V2V RB-SINR + 可切换V2I模型
+
+    V2I:
+      - SHARE: per-RSU 带宽共享（无同频互扰，向后兼容）
+      - RB_SINR: RSU内正交调度 + 跨RSU同RB干扰(ICI)
     V2V: RB 确定性分配 + per-RB SINR（含瑞利衰落 + 同 RB 干扰）
     """
 
@@ -24,6 +26,15 @@ class ChannelModel:
         # RB 干扰模型参数
         self.num_rb = getattr(Cfg, 'V2V_NUM_RB', 4)
         self.bw_per_rb = getattr(Cfg, 'V2V_BW_PER_RB', Cfg.BW_V2V / self.num_rb)
+        # V2I模型开关（默认保持旧行为）
+        self.v2i_rate_model = str(getattr(Cfg, "V2I_RATE_MODEL", "SHARE")).upper()
+        self.v2i_num_rb = int(max(getattr(Cfg, "V2I_NUM_RB", 0), 0))
+        if self.v2i_num_rb <= 0:
+            rb_bw = float(max(getattr(Cfg, "V2I_RB_BW_HZ", 180e3), 1.0))
+            self.v2i_num_rb = max(int(round(float(Cfg.BW_V2I) / rb_bw)), 1)
+        self.v2i_bw_per_rb = float(Cfg.BW_V2I) / float(max(self.v2i_num_rb, 1))
+        self.v2i_ici_enabled = bool(getattr(Cfg, "V2I_ICI_ENABLED", False))
+        self.v2i_reuse_factor = int(max(getattr(Cfg, "V2I_FREQ_REUSE_FACTOR", 1), 1))
 
         # 每步干扰统计（供 env 读取）
         self.last_v2v_stats = {
@@ -133,22 +144,92 @@ class ChannelModel:
         rates = {}
         if not v2i_links:
             return rates
-        # 按 RSU 分组计算带宽共享
+        model = str(getattr(Cfg, "V2I_RATE_MODEL", self.v2i_rate_model)).upper()
+        if model != "RB_SINR":
+            # Legacy: per-RSU bandwidth sharing.
+            groups = {}
+            for lk in v2i_links:
+                groups.setdefault(lk['rsu_id'], []).append(lk)
+            for rid, grp in groups.items():
+                n_users = len(grp)
+                bw = Cfg.BW_V2I / max(n_users, 1)
+                noise_w = self._noise_power(bw)
+                rsu_p = (rsu_pos_map or {}).get(rid, rsu_pos_default)
+                if rsu_p is None:
+                    continue
+                for lk in grp:
+                    dist = np.linalg.norm(np.asarray(lk['tx_pos']) - np.asarray(rsu_p))
+                    h = self._path_loss(dist, Cfg.PL_BETA_V2I)
+                    sinr = lk['power_w'] * h / noise_w
+                    rates[lk['sender_id']] = bw * np.log2(1 + sinr)
+            return rates
+
+        # RB_SINR: intra-cell orthogonal scheduling, inter-cell ICI on reused RBs.
         groups = {}
         for lk in v2i_links:
-            groups.setdefault(lk['rsu_id'], []).append(lk)
+            groups.setdefault(int(lk['rsu_id']), []).append(lk)
+        num_rb = int(max(getattr(Cfg, "V2I_NUM_RB", self.v2i_num_rb), 1))
+        bw_rb = float(Cfg.BW_V2I) / float(num_rb)
+        noise_rb = self._noise_power(bw_rb)
+        ici_enabled = bool(getattr(Cfg, "V2I_ICI_ENABLED", self.v2i_ici_enabled))
+        reuse_factor = int(max(getattr(Cfg, "V2I_FREQ_REUSE_FACTOR", self.v2i_reuse_factor), 1))
+
+        # Deterministic orthogonal scheduler per RSU:
+        # - Each (round, RB) has at most one user in the same RSU (intra-cell orthogonal).
+        # - All RBs are utilized each round.
+        # - Users can receive multiple RBs in one step when num_rb > n_users.
+        # - If n_users > num_rb, users are time-shared across rounds.
+        sched = []
+        rsu_rounds = {}
         for rid, grp in groups.items():
-            n_users = len(grp)
-            bw = Cfg.BW_V2I / max(n_users, 1)
-            noise_w = self._noise_power(bw)
+            grp_sorted = sorted(grp, key=lambda x: int(x.get("sender_id", -1)))
+            n_users = len(grp_sorted)
+            rounds = int(np.ceil(n_users / float(max(num_rb, 1))))
+            rounds = max(rounds, 1)
+            rsu_rounds[rid] = rounds
+            for rnd in range(rounds):
+                for rb in range(num_rb):
+                    # Round-robin mapping over users; when num_rb > n_users this
+                    # naturally allocates multiple RBs per user in a round.
+                    user_idx = int((rnd * num_rb + rb) % n_users)
+                    lk = grp_sorted[user_idx]
+                    sched.append((rid, rb, rnd, lk))
+
+        # Build fast lookup for cross-cell interferers by (rb, round, reuse_group).
+        buckets = {}
+        for rid, rb, rnd, lk in sched:
+            reuse_group = rid % reuse_factor
+            buckets.setdefault((rb, rnd, reuse_group), []).append((rid, lk))
+
+        for rid, rb, rnd, lk in sched:
             rsu_p = (rsu_pos_map or {}).get(rid, rsu_pos_default)
             if rsu_p is None:
                 continue
-            for lk in grp:
-                dist = np.linalg.norm(np.asarray(lk['tx_pos']) - np.asarray(rsu_p))
-                h = self._path_loss(dist, Cfg.PL_BETA_V2I)
-                sinr = lk['power_w'] * h / noise_w
-                rates[lk['sender_id']] = bw * np.log2(1 + sinr)
+            tx_pos = np.asarray(lk["tx_pos"], dtype=float)
+            p_sig = float(lk["power_w"])
+            d_sig = np.linalg.norm(tx_pos - np.asarray(rsu_p, dtype=float))
+            h_sig = self._path_loss(max(d_sig, 1.0), Cfg.PL_BETA_V2I)
+            sig_w = p_sig * h_sig
+
+            interf_w = 0.0
+            if ici_enabled:
+                reuse_group = rid % reuse_factor
+                candidates = buckets.get((rb, rnd, reuse_group), [])
+                for other_rid, other_lk in candidates:
+                    if other_rid == rid:
+                        continue
+                    tx_o = np.asarray(other_lk["tx_pos"], dtype=float)
+                    p_o = float(other_lk["power_w"])
+                    d_o = np.linalg.norm(tx_o - np.asarray(rsu_p, dtype=float))
+                    h_o = self._path_loss(max(d_o, 1.0), Cfg.PL_BETA_V2I)
+                    interf_w += p_o * h_o
+
+            sinr = sig_w / max(noise_rb + interf_w, 1e-12)
+            # Round-based orthogonal time sharing in overloaded cells.
+            time_share = 1.0 / float(max(rsu_rounds.get(rid, 1), 1))
+            sender_id = lk["sender_id"]
+            rates[sender_id] = float(rates.get(sender_id, 0.0) + time_share * bw_rb * np.log2(1.0 + sinr))
+
         return rates
 
     # ------------------------------------------------------------------
@@ -158,6 +239,7 @@ class ChannelModel:
         """
         [批量计算] 旧接口 — 通过 vehicle.curr_target 识别活跃传输。
         新代码应优先使用 compute_v2v_rb_sinr / compute_v2i_rates。
+        路损口径统一沿用 PL_BETA_*（由子接口内部实现）。
         """
         rates = {}
         rsu_pos_map = {}
@@ -170,17 +252,16 @@ class ChannelModel:
         if not v2i_group:
             v2i_group = [v for v in vehicles if v.curr_target == 'RSU']
         if v2i_group:
-            rsu_groups = {}
+            v2i_links = []
             for v in v2i_group:
                 rid = v.curr_target[1] if isinstance(v.curr_target, tuple) and len(v.curr_target) > 1 else -1
-                rsu_groups.setdefault(rid, []).append(v)
-            for rid, group in rsu_groups.items():
-                bw = Cfg.BW_V2I / max(len(group), 1)
-                noise_w = self._noise_power(bw)
-                for v in group:
-                    pos = rsu_pos_map.get(rid, rsu_pos)
-                    h = self._path_loss(np.linalg.norm(v.pos - pos), Cfg.PL_BETA_V2I)
-                    rates[v.id] = bw * np.log2(1 + Cfg.dbm2watt(v.tx_power_dbm) * h / noise_w)
+                v2i_links.append({
+                    "sender_id": int(v.id),
+                    "tx_pos": np.asarray(v.pos, dtype=float),
+                    "rsu_id": int(rid),
+                    "power_w": Cfg.dbm2watt(v.tx_power_dbm),
+                })
+            rates.update(self.compute_v2i_rates(v2i_links, rsu_pos_map=rsu_pos_map, rsu_pos_default=rsu_pos))
 
         # B. V2V — 委托新接口
         v2v_links = []
@@ -248,19 +329,55 @@ class ChannelModel:
         p_tx = Cfg.dbm2watt(power_dbm_override if power_dbm_override is not None else vehicle.tx_power_dbm)
 
         if link_type == 'V2I':
-            # V2I: 带宽竞争模型，无衰落
-            if v2i_user_count is not None:
-                est_users = max(int(v2i_user_count), 1)
-            elif active_tx_vehicles is not None:
-                est_users = max(len(active_tx_vehicles), 1)
+            model = str(getattr(Cfg, "V2I_RATE_MODEL", self.v2i_rate_model)).upper()
+            if model != "RB_SINR":
+                # Legacy share model (backward compatible)
+                if v2i_user_count is not None:
+                    est_users = max(int(v2i_user_count), 1)
+                elif active_tx_vehicles is not None:
+                    est_users = max(len(active_tx_vehicles), 1)
+                else:
+                    est_users = max(Cfg.NUM_VEHICLES // 5, 1)
+                bandwidth = Cfg.BW_V2I / est_users
+                noise_w = self._noise_power(bandwidth)
+                h_bar = self._path_loss(dist, Cfg.PL_BETA_V2I)
+                sinr = (p_tx * h_bar) / noise_w
+                rate = bandwidth * np.log2(1 + sinr)
             else:
-                est_users = max(Cfg.NUM_VEHICLES // 5, 1)
-            bandwidth = Cfg.BW_V2I / est_users
-            noise_w = self._noise_power(bandwidth)
-            h_bar = self._path_loss(dist, Cfg.PL_BETA_V2I)  # 修复：使用BETA（指数）而不是ALPHA（dB）
-            # V2I只有路径损耗，无衰落
-            sinr = (p_tx * h_bar) / noise_w
-            rate = bandwidth * np.log2(1 + sinr)
+                # RB-SINR estimate for observation / CFT:
+                # intra-cell orthogonal RB scheduling + probabilistic ICI.
+                if v2i_user_count is not None:
+                    est_users = max(int(v2i_user_count), 1)
+                elif active_tx_vehicles is not None:
+                    est_users = max(len(active_tx_vehicles), 1)
+                else:
+                    est_users = max(Cfg.NUM_VEHICLES // 5, 1)
+                num_rb = int(max(getattr(Cfg, "V2I_NUM_RB", self.v2i_num_rb), 1))
+                bw_rb = float(Cfg.BW_V2I) / float(num_rb)
+                rounds = max(int(np.ceil(est_users / float(max(num_rb, 1)))), 1)
+                time_share = 1.0 / float(rounds)
+                avg_rb_per_user = float(num_rb) / float(max(est_users, 1))
+
+                noise_w = self._noise_power(bw_rb)
+                h_bar = self._path_loss(dist, Cfg.PL_BETA_V2I)
+                signal_w = p_tx * h_bar
+
+                interf_w = 0.0
+                if bool(getattr(Cfg, "V2I_ICI_ENABLED", self.v2i_ici_enabled)) and active_tx_vehicles is not None:
+                    reuse_factor = int(max(getattr(Cfg, "V2I_FREQ_REUSE_FACTOR", self.v2i_reuse_factor), 1))
+                    same_rb_prob = 1.0 / float(max(num_rb, 1))
+                    same_reuse_prob = 1.0 / float(reuse_factor)
+                    p_overlap = same_rb_prob * same_reuse_prob
+                    for veh in active_tx_vehicles:
+                        if veh is None or getattr(veh, "id", None) == getattr(vehicle, "id", None):
+                            continue
+                        d_int = np.linalg.norm(np.asarray(veh.pos, dtype=float) - np.asarray(target_pos, dtype=float))
+                        h_int = self._path_loss(max(d_int, 1.0), Cfg.PL_BETA_V2I)
+                        interf_w += Cfg.dbm2watt(getattr(veh, "tx_power_dbm", Cfg.TX_POWER_MIN_DBM)) * h_int
+                    interf_w *= p_overlap
+
+                sinr = signal_w / max(noise_w + interf_w, 1e-12)
+                rate = time_share * avg_rb_per_user * bw_rb * np.log2(1 + sinr)
         else:
             # V2V: per-RB SINR（单链路预估使用单 RB 带宽 + 背景干扰）
             bandwidth = self.bw_per_rb

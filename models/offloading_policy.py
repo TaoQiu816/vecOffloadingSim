@@ -149,6 +149,8 @@ class OffloadingPolicyNetwork(nn.Module):
             use_simplified_critic=TC.USE_SIMPLIFIED_CRITIC,
             use_subtask_cond_critic=getattr(TC, "USE_SUBTASK_COND_CRITIC", True),
             use_no_ready_embed=getattr(TC, "USE_NO_READY_EMBEDDING", True),
+            use_commwait_direct=getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False),
+            commwait_dim=int(getattr(TC, "CTDE_GLOBAL_DIM", 0)),
         )
     
     @staticmethod
@@ -193,6 +195,7 @@ class OffloadingPolicyNetwork(nn.Module):
         candidate_types_list = []  # [通用化] 候选类型数组
         rate_prev_list = []        # 上步链路速率
         serving_rsu_onehot_list = []  # 当前服务RSU的one-hot编码
+        global_state_list = []        # centralized critic全局摘要（CTDE）
 
         # DAG拓扑特征（环境已提供）
         status_list = []
@@ -224,6 +227,18 @@ class OffloadingPolicyNetwork(nn.Module):
             serving_rsu_onehot_list.append(
                 obs.get('serving_rsu_onehot', np.zeros(num_rsu, dtype=np.float32))
             )
+            gdim = int(getattr(TC, "CTDE_GLOBAL_DIM", 0))
+            g = obs.get("global_state", None)
+            if g is None:
+                g = np.zeros(gdim, dtype=np.float32)
+            else:
+                g = np.asarray(g, dtype=np.float32).reshape(-1)
+                if gdim > 0:
+                    if g.shape[0] < gdim:
+                        g = np.pad(g, (0, gdim - g.shape[0]))
+                    elif g.shape[0] > gdim:
+                        g = g[:gdim]
+            global_state_list.append(g)
             
             # 从环境提供的字段中获取
             if 'status' in obs:
@@ -260,6 +275,7 @@ class OffloadingPolicyNetwork(nn.Module):
             'candidate_types': torch.from_numpy(np.stack(candidate_types_list)).long().to(device),  # [通用化]
             'rate_prev': torch.from_numpy(np.stack(rate_prev_list)).float().to(device),  # [B, M]
             'serving_rsu_onehot': torch.from_numpy(np.stack(serving_rsu_onehot_list)).float().to(device),  # [B, NUM_RSU]
+            'global_state': torch.from_numpy(np.stack(global_state_list)).float().to(device),  # [B, G]
         }
         
         return inputs
@@ -281,6 +297,7 @@ class OffloadingPolicyNetwork(nn.Module):
                 priority: Optional[torch.Tensor] = None,
                 rate_prev: Optional[torch.Tensor] = None,
                 serving_rsu_onehot: Optional[torch.Tensor] = None,
+                global_state: Optional[torch.Tensor] = None,
                 candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（Beta分布版本）
@@ -370,9 +387,7 @@ class OffloadingPolicyNetwork(nn.Module):
         if action_mask is not None:
             resource_padding_mask = resource_padding_mask | (~action_mask)
 
-        commwait_extra = None
-        if getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False):
-            raise RuntimeError("COMMWAIT_DIRECT_TO_CRITIC is no longer supported after CommWait features were removed.")
+        commwait_extra = global_state if getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False) else None
         
         # 7. Actor-Critic输出
         target_logits, alpha, beta, value = self.actor_critic(
@@ -427,6 +442,7 @@ class OffloadingPolicyNetwork(nn.Module):
             priority=inputs['priority'],  # [方案A] 传递priority
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
+            global_state=inputs.get('global_state'),
         )
 
         # 3. Target采样（Categorical分布）
@@ -508,6 +524,7 @@ class OffloadingPolicyNetwork(nn.Module):
             priority=inputs['priority'],  # [方案A] 传递priority，确保与采样时一致
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
+            global_state=inputs.get('global_state'),
         )
 
         # [通用化] 根据candidate_types动态赋logit_bias（与采样时一致）

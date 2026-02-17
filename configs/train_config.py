@@ -54,6 +54,8 @@ class TrainConfig:
     USE_SIMPLIFIED_CRITIC = True    # 是否使用简化版Critic Head
     USE_NO_READY_EMBEDDING = True   # subtask_index<0 时使用专用嵌入（避免误用节点0）
     COMMWAIT_DIRECT_TO_CRITIC = False  # 是否将CommWait特征直连拼接到Critic输入
+    # CTDE: centralized critic global summary dim（actor不使用）
+    CTDE_GLOBAL_DIM = 12
 
     # -------------------------------------------------------------------------
     # 算法消融开关 (Algorithm Ablation Switches)
@@ -62,6 +64,21 @@ class TrainConfig:
     USE_SPATIAL_BIAS = True         # Edge-Enhanced Attention中的空间距离偏置
     USE_PHYSICS_BIAS = True         # Cross-Attention中的物理偏置(距离+负载)
     USE_FIXED_POWER = False         # 使用固定功率(0.5)代替Beta分布学习
+
+    # -------------------------------------------------------------------------
+    # CMDP / PPO-Lagrangian (penalized PPO)
+    # -------------------------------------------------------------------------
+    CMDP_ENABLE = False
+    CMDP_LAMBDA_LR = 0.02
+    CMDP_LAMBDA_MAX = 5.0
+    CMDP_LAMBDA_ENERGY_INIT = 0.0
+    CMDP_LAMBDA_INTERF_INIT = 0.0
+    CMDP_LAMBDA_RISK_INIT = 0.0
+    CMDP_WARMUP_EPISODES = 0
+    # 约束阈值（episode均值）
+    CMDP_BUDGET_ENERGY = 0.20
+    CMDP_BUDGET_INTERF = 0.05
+    CMDP_BUDGET_RISK = 0.35
 
     NUM_HEADS = 4           # 注意力头数 - Number of attention heads (Multi-Head Attention)
                             # 影响: 更多头数可以捕获更多样化的依赖关系，必须被EMBED_DIM整除
@@ -281,6 +298,7 @@ class TrainConfig:
 
     # V2V 探索 bias（确保 early training 中 V2V tx 发生，使干扰惩罚与功率可学习）
     LOGIT_BIAS_V2V_INIT = 0.8  # V2V 初始 logit bias（点亮干扰学习信号）
+    LOGIT_BIAS_V2V_END = 0.15  # 末段保留少量V2V探索，防止完全塌缩
     LOGIT_BIAS_V2V_ANNEAL_STEPS = 140000  # 慢退火，训练后段仍保留少量V2V探索
     _logit_bias_v2v_current = 0.8  # 运行时动态值（由 train.py 更新）
 

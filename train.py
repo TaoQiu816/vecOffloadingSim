@@ -169,6 +169,182 @@ def _stable_config_hash(payload: Dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+class _LagrangianController:
+    """Lightweight PPO-Lagrangian controller (episode-level multiplier update)."""
+
+    def __init__(self):
+        self.enabled = bool(getattr(TC, "CMDP_ENABLE", False))
+        self.lr = float(getattr(TC, "CMDP_LAMBDA_LR", 0.02))
+        self.lam_max = float(getattr(TC, "CMDP_LAMBDA_MAX", 5.0))
+        self.warmup_episodes = int(max(getattr(TC, "CMDP_WARMUP_EPISODES", 0), 0))
+        self.lam = {
+            "energy": float(getattr(TC, "CMDP_LAMBDA_ENERGY_INIT", 0.0)),
+            "interf": float(getattr(TC, "CMDP_LAMBDA_INTERF_INIT", 0.0)),
+            "risk": float(getattr(TC, "CMDP_LAMBDA_RISK_INIT", 0.0)),
+        }
+        self.budget = {
+            "energy": float(getattr(TC, "CMDP_BUDGET_ENERGY", 0.20)),
+            "interf": float(getattr(TC, "CMDP_BUDGET_INTERF", 0.05)),
+            "risk": float(getattr(TC, "CMDP_BUDGET_RISK", 0.35)),
+        }
+
+    def penalize_step(self, rewards: List[float], actions: List[Dict], obs_list: List[Dict], info: Dict) -> tuple:
+        if not self.enabled or not rewards:
+            zeros = {"energy": 0.0, "interf": 0.0, "risk": 0.0}
+            return rewards, zeros
+
+        i_ref = float(max(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-8), 1e-12))
+        i_clip = float(max(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 20.0), 1e-6))
+        i_mean = max(float((info or {}).get("v2v_i_total_mean", 0.0) or 0.0), 0.0)
+        interf_norm = float(min(i_mean / i_ref, i_clip)) / i_clip
+
+        p_min = float(getattr(Cfg, "P_MIN_WATT", Cfg.dbm2watt(getattr(Cfg, "TX_POWER_MIN_DBM", 13.0))))
+        p_max = float(getattr(Cfg, "P_MAX_WATT", Cfg.dbm2watt(getattr(Cfg, "TX_POWER_MAX_DBM", 23.0))))
+        dt = float(getattr(Cfg, "DT", 0.1))
+        e_ref = float(max(getattr(Cfg, "E_REF_UNIFIED", 1.0), 1e-9))
+
+        out_rewards = []
+        e_vals, i_vals, r_vals = [], [], []
+        for i, r in enumerate(rewards):
+            act = actions[i] if i < len(actions) else {}
+            obs = obs_list[i] if i < len(obs_list) else {}
+            tgt_idx = int(act.get("target", 0))
+            a_power = float(np.clip(act.get("power", 0.0), 0.0, 1.0))
+
+            ctype = 0
+            c_rho = 1.0
+            ctypes = obs.get("candidate_types")
+            res = obs.get("resource_raw")
+            if ctypes is not None and 0 <= tgt_idx < len(ctypes):
+                ctype = int(ctypes[tgt_idx])
+            if res is not None and isinstance(res, np.ndarray) and res.ndim == 2 and 0 <= tgt_idx < res.shape[0] and res.shape[1] >= 13:
+                c_rho = float(np.clip(res[tgt_idx, 12], 0.0, 1.0))
+
+            is_remote = (ctype in (2, 3))
+            is_v2v = (ctype == 3)
+            p_w = p_min * ((p_max / max(p_min, 1e-12)) ** a_power)
+            c_energy = float((p_w * dt) / e_ref) if is_remote else 0.0
+            c_interf = float(interf_norm) if is_v2v else 0.0
+            c_risk = float(1.0 - c_rho) if is_remote else 0.0
+
+            penalty = (
+                self.lam["energy"] * c_energy
+                + self.lam["interf"] * c_interf
+                + self.lam["risk"] * c_risk
+            )
+            out_rewards.append(float(r) - float(penalty))
+            e_vals.append(c_energy)
+            i_vals.append(c_interf)
+            r_vals.append(c_risk)
+
+        step_cost = {
+            "energy": float(np.mean(e_vals)) if e_vals else 0.0,
+            "interf": float(np.mean(i_vals)) if i_vals else 0.0,
+            "risk": float(np.mean(r_vals)) if r_vals else 0.0,
+        }
+        return out_rewards, step_cost
+
+    def update_episode(self, ep_cost_mean: Dict[str, float], episode: int) -> Dict[str, float]:
+        if not self.enabled:
+            return dict(self.lam)
+        if int(episode) <= self.warmup_episodes:
+            return dict(self.lam)
+        for k in ("energy", "interf", "risk"):
+            c = float(ep_cost_mean.get(k, 0.0))
+            b = float(self.budget[k])
+            self.lam[k] = float(np.clip(self.lam[k] + self.lr * (c - b), 0.0, self.lam_max))
+        return dict(self.lam)
+
+
+def _build_ctde_global_state(env: VecOffloadingEnv, obs_list: List[Dict], step_info: Dict = None) -> np.ndarray:
+    """Build centralized critic summary from current env + step info."""
+    num_veh = max(len(getattr(env, "vehicles", [])), 1)
+    num_rsu = max(len(getattr(env, "rsus", [])), 1)
+    rsu_q_lens = []
+    rsu_load_ratio = []
+    per_proc_limit = float(max(getattr(Cfg, "RSU_QUEUE_CYCLES_LIMIT", 1.0), 1.0)) / float(
+        max(getattr(Cfg, "RSU_NUM_PROCESSORS", 1), 1)
+    )
+    for rsu in getattr(env, "rsus", []):
+        proc_dict = getattr(env, "rsu_cpu_q", {}).get(rsu.id, {})
+        q_len = 0
+        loads = []
+        for q in proc_dict.values():
+            q_len += len(q)
+            loads.append(sum(getattr(j, "rem_cycles", 0.0) for j in q))
+        rsu_q_lens.append(float(q_len))
+        if loads:
+            rsu_load_ratio.append(float(np.mean(loads) / max(per_proc_limit, 1e-9)))
+    rsu_q_mean = float(np.mean(rsu_q_lens)) if rsu_q_lens else 0.0
+    rsu_q_p95 = float(np.percentile(rsu_q_lens, 95)) if rsu_q_lens else 0.0
+    rsu_load_mean = float(np.mean(rsu_load_ratio)) if rsu_load_ratio else 0.0
+
+    active_v2i = sum(1 for tx, q in getattr(env, "txq_v2i", {}).items() if tx[0] == "VEH" and len(q) > 0)
+    active_v2v = sum(1 for tx, q in getattr(env, "txq_v2v", {}).items() if tx[0] == "VEH" and len(q) > 0)
+
+    rb_occ = getattr(getattr(env, "channel", None), "last_v2v_stats", {}).get("rb_occupancy", np.zeros(max(getattr(Cfg, "V2V_NUM_RB", 1), 1)))
+    rb_occ = np.asarray(rb_occ, dtype=float).reshape(-1) if rb_occ is not None else np.zeros(1, dtype=float)
+    rb_use_ratio = float(np.mean(rb_occ > 0)) if rb_occ.size > 0 else 0.0
+    rb_concurrency = float(np.mean(rb_occ[rb_occ > 0])) if np.any(rb_occ > 0) else 0.0
+
+    step_info = step_info or {}
+    i_ref = float(max(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-8), 1e-12))
+    i_clip = float(max(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 20.0), 1e-6))
+    i_norm = float(min(max(float(step_info.get("v2v_i_total_mean", 0.0) or 0.0), 0.0) / i_ref, i_clip)) / i_clip
+    sinr_p50 = float(step_info.get("v2v_sinr_p50", 0.0) or 0.0)
+    sinr_norm = float(np.log1p(max(sinr_p50, 0.0)) / np.log1p(100.0))
+
+    on_task_rate = 0.0
+    slack_norm = 0.0
+    v2v_avail_ratio = 0.0
+    if obs_list:
+        on_task_rate = float(np.mean([1.0 if int(obs.get("subtask_index", -1)) >= 0 else 0.0 for obs in obs_list]))
+        slack_vals = []
+        avail_vals = []
+        for obs in obs_list:
+            rr = obs.get("resource_raw")
+            am = obs.get("action_mask")
+            ct = obs.get("candidate_types")
+            if isinstance(rr, np.ndarray) and rr.ndim == 2 and rr.shape[0] > 0 and rr.shape[1] > 9:
+                slack_vals.append(float(np.clip(rr[0, 9], 0.0, 1.0)))
+            if isinstance(am, np.ndarray) and isinstance(ct, np.ndarray) and len(am) == len(ct):
+                valid = (am > 0)
+                denom = float(np.sum(valid))
+                if denom > 0:
+                    avail_vals.append(float(np.sum((ct == 3) & valid) / denom))
+        slack_norm = float(np.mean(slack_vals)) if slack_vals else 0.0
+        v2v_avail_ratio = float(np.mean(avail_vals)) if avail_vals else 0.0
+
+    g = np.array([
+        np.clip(rsu_q_mean / 20.0, 0.0, 1.0),
+        np.clip(rsu_q_p95 / 50.0, 0.0, 1.0),
+        np.clip(rsu_load_mean, 0.0, 2.0) / 2.0,
+        np.clip(active_v2i / float(num_veh), 0.0, 1.0),
+        np.clip(active_v2v / float(num_veh), 0.0, 1.0),
+        np.clip(rb_use_ratio, 0.0, 1.0),
+        np.clip(rb_concurrency / 4.0, 0.0, 1.0),
+        np.clip(i_norm, 0.0, 1.0),
+        np.clip(sinr_norm, 0.0, 1.0),
+        np.clip(on_task_rate, 0.0, 1.0),
+        np.clip(slack_norm, 0.0, 1.0),
+        np.clip(v2v_avail_ratio, 0.0, 1.0),
+    ], dtype=np.float32)
+    gdim = int(getattr(TC, "CTDE_GLOBAL_DIM", g.shape[0]))
+    if g.shape[0] < gdim:
+        g = np.pad(g, (0, gdim - g.shape[0]))
+    elif g.shape[0] > gdim:
+        g = g[:gdim]
+    return g.astype(np.float32)
+
+
+def _attach_global_state(obs_list: List[Dict], global_state: np.ndarray) -> None:
+    if not obs_list:
+        return
+    g = np.asarray(global_state, dtype=np.float32).reshape(-1)
+    for obs in obs_list:
+        obs["global_state"] = g.copy()
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(description="Train MAPPO offloading policy.")
     parser.add_argument("--max-episodes", type=int, default=None)
@@ -202,6 +378,8 @@ def apply_env_overrides():
     overrides_float = {
         "VEHICLE_ARRIVAL_RATE": "VEHICLE_ARRIVAL_RATE",
         "BW_V2V": "BW_V2V",
+        "BW_V2I": "BW_V2I",
+        "V2I_RB_BW_HZ": "V2I_RB_BW_HZ",
         "MIN_DATA": "MIN_DATA",
         "MAX_DATA": "MAX_DATA",
         "MIN_EDGE_DATA": "MIN_EDGE_DATA",
@@ -238,6 +416,8 @@ def apply_env_overrides():
         "NUM_RSU": "NUM_RSU",
         "V2V_NUM_RB": "V2V_NUM_RB",
         "V2V_TOP_K": "V2V_TOP_K",
+        "V2I_NUM_RB": "V2I_NUM_RB",
+        "V2I_FREQ_REUSE_FACTOR": "V2I_FREQ_REUSE_FACTOR",
         "MIN_NODES": "MIN_NODES",
         "MAX_NODES": "MAX_NODES",
         # Chain proxy parameters
@@ -248,11 +428,14 @@ def apply_env_overrides():
     }
     overrides_str = {
         "CHAIN_MODE": "CHAIN_MODE",
+        "V2I_RATE_MODEL": "V2I_RATE_MODEL",
+        "DEADLINE_MODE": "DEADLINE_MODE",
     }
     overrides_bool = {
         "CHAIN_ENABLED": "CHAIN_ENABLED",
         "CHAIN_TRUST_DELAY_COUPLED": "CHAIN_TRUST_DELAY_COUPLED",
         "TRUST_ENABLED": "TRUST_ENABLED",
+        "V2I_ICI_ENABLED": "V2I_ICI_ENABLED",
     }
     for env_key, cfg_attr in overrides_float.items():
         val = _env_float(env_key)
@@ -284,6 +467,16 @@ def apply_env_overrides():
         "LOGIT_BIAS_RSU": "LOGIT_BIAS_RSU",
         "VALUE_CLIP_RANGE": "VALUE_CLIP_RANGE",
         "LR_DECAY_RATE": "LR_DECAY_RATE",
+        "CMDP_LAMBDA_LR": "CMDP_LAMBDA_LR",
+        "CMDP_LAMBDA_MAX": "CMDP_LAMBDA_MAX",
+        "CMDP_LAMBDA_ENERGY_INIT": "CMDP_LAMBDA_ENERGY_INIT",
+        "CMDP_LAMBDA_INTERF_INIT": "CMDP_LAMBDA_INTERF_INIT",
+        "CMDP_LAMBDA_RISK_INIT": "CMDP_LAMBDA_RISK_INIT",
+        "CMDP_BUDGET_ENERGY": "CMDP_BUDGET_ENERGY",
+        "CMDP_BUDGET_INTERF": "CMDP_BUDGET_INTERF",
+        "CMDP_BUDGET_RISK": "CMDP_BUDGET_RISK",
+        "LOGIT_BIAS_V2V_INIT": "LOGIT_BIAS_V2V_INIT",
+        "LOGIT_BIAS_V2V_END": "LOGIT_BIAS_V2V_END",
     }
     tc_int = {
         "MINI_BATCH_SIZE": "MINI_BATCH_SIZE",
@@ -291,6 +484,9 @@ def apply_env_overrides():
         "LR_DECAY_STEPS": "LR_DECAY_STEPS",
         "ENTROPY_ANNEAL_STEPS": "ENTROPY_ANNEAL_STEPS",
         "SAVE_INTERVAL": "SAVE_INTERVAL",
+        "CTDE_GLOBAL_DIM": "CTDE_GLOBAL_DIM",
+        "LOGIT_BIAS_V2V_ANNEAL_STEPS": "LOGIT_BIAS_V2V_ANNEAL_STEPS",
+        "CMDP_WARMUP_EPISODES": "CMDP_WARMUP_EPISODES",
     }
     for env_key, attr in tc_float.items():
         val = _env_float(env_key)
@@ -326,6 +522,12 @@ def apply_env_overrides():
     use_fixed_power = _env_bool("USE_FIXED_POWER")
     if use_fixed_power is not None:
         TC.USE_FIXED_POWER = use_fixed_power
+    use_cmdp = _env_bool("CMDP_ENABLE")
+    if use_cmdp is not None:
+        TC.CMDP_ENABLE = use_cmdp
+    use_ctde = _env_bool("COMMWAIT_DIRECT_TO_CRITIC")
+    if use_ctde is not None:
+        TC.COMMWAIT_DIRECT_TO_CRITIC = use_ctde
 
     # Ablation: Transformer layers
     num_layers = _env_int("NUM_LAYERS")
@@ -360,6 +562,10 @@ def apply_env_overrides():
             "Inconsistent V2V bandwidth split: "
             f"V2V_BW_PER_RB*V2V_NUM_RB={bw_rb_lhs:.12f}, BW_V2V={bw_rb_rhs:.12f}"
         )
+    # V2I RB参数（RB_SINR模式会使用；SHARE模式忽略）
+    v2i_rb_bw = float(max(getattr(Cfg, "V2I_RB_BW_HZ", 180e3), 1.0))
+    if int(getattr(Cfg, "V2I_NUM_RB", 0)) <= 0:
+        Cfg.V2I_NUM_RB = max(int(round(float(Cfg.BW_V2I) / v2i_rb_bw)), 1)
 
     Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "TOPK")).upper() == "ALL")
     Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
@@ -1363,6 +1569,7 @@ def main():
 
     # 初始化经验缓冲区
     buffer = RolloutBuffer(gamma=TC.GAMMA, gae_lambda=TC.GAE_LAMBDA)
+    lagrange = _LagrangianController()
 
     best_reward = -float('inf')
     best_success_rate = 0.0  # 用于保存最佳模型
@@ -1634,6 +1841,8 @@ def main():
 
         # 重置环境
         obs_list, _ = env.reset()
+        last_step_info = {}
+        _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
 
         ep_reward = 0
         ep_start_time = time.time()
@@ -1661,10 +1870,13 @@ def main():
         }
         terminated = False
         truncated = False
+        ep_cost_sum = {"energy": 0.0, "interf": 0.0, "risk": 0.0}
+        ep_cost_steps = 0
 
         # Rollout循环
         for step in range(hyperparams['max_steps_per_ep']):
             training_state["current_step"] = step
+            _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
             # 智能体决策
             action_dict = agent.select_action(obs_list, deterministic=False)
             actions = action_dict['actions']
@@ -1676,17 +1888,21 @@ def main():
             reward_snapshot = _snapshot_reward_stats(env) if log_step_metrics else {}
             next_obs_list, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
+            train_rewards, step_cost = lagrange.penalize_step(rewards, actions, obs_list, info)
+            for _k in ep_cost_sum.keys():
+                ep_cost_sum[_k] += float(step_cost.get(_k, 0.0))
+            ep_cost_steps += 1
 
             # 统计
-            stats["agent_rewards_sum"] += sum(rewards)
-            stats["agent_rewards_count"] += len(rewards)
+            stats["agent_rewards_sum"] += sum(train_rewards)
+            stats["agent_rewards_count"] += len(train_rewards)
             active_mask = info.get("active_agent_mask")
-            if not active_mask or len(active_mask) != len(rewards):
-                active_mask = [1] * len(rewards)
+            if not active_mask or len(active_mask) != len(train_rewards):
+                active_mask = [1] * len(train_rewards)
             stats["active_sum"] += float(np.sum(active_mask))
             stats["active_total"] += float(len(active_mask))
             # 追踪每个Agent的累计奖励
-            for agent_idx, r in enumerate(rewards):
+            for agent_idx, r in enumerate(train_rewards):
                 if agent_idx not in stats["agent_rewards_per_veh"]:
                     stats["agent_rewards_per_veh"][agent_idx] = 0.0
                 stats["agent_rewards_per_veh"][agent_idx] += r
@@ -1695,7 +1911,7 @@ def main():
             buffer.add(
                 obs_list,
                 actions,
-                rewards,
+                train_rewards,
                 values,
                 log_probs,
                 done,
@@ -1705,8 +1921,8 @@ def main():
             )
 
             # 过程统计
-            num_agents = len(rewards) if len(rewards) > 0 else 1
-            step_r = sum(rewards) / num_agents
+            num_agents = len(train_rewards) if len(train_rewards) > 0 else 1
+            step_r = sum(train_rewards) / num_agents
             ep_reward += step_r
             ep_step_rewards.append(step_r)
 
@@ -1782,11 +1998,12 @@ def main():
                         "episode": episode, "step": step, "veh_id": i,
                         "target": act['target'],
                         "power": f"{act['power']:.3f}",
-                        "reward": f"{rewards[i]:.3f}",
+                        "reward": f"{train_rewards[i]:.3f}",
                         "q_len": env.vehicles[i].task_queue_len
                     })
 
             obs_list = next_obs_list
+            last_step_info = info
             if done:
                 break
 
@@ -2142,10 +2359,13 @@ def main():
         else:
             TC.ENTROPY_COEF = ent_end
 
+        _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
         last_value = agent.get_value(obs_list)
         buffer.compute_returns_and_advantages(last_value)
         update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
         buffer.clear()
+        ep_cost_mean = {k: (ep_cost_sum[k] / max(ep_cost_steps, 1)) for k in ep_cost_sum.keys()}
+        lagrange_state = lagrange.update_episode(ep_cost_mean, episode)
         update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
         if policy_entropy_val is None:
@@ -2170,9 +2390,12 @@ def main():
 
         # V2V 探索 bias 线性退火（step-based）
         _global_train_steps += total_steps
-        _v2v_anneal = getattr(TC, 'LOGIT_BIAS_V2V_ANNEAL_STEPS', 20000)
-        _v2v_init = getattr(TC, 'LOGIT_BIAS_V2V_INIT', 1.0)
-        TC._logit_bias_v2v_current = max(0.0, _v2v_init * (1.0 - _global_train_steps / max(_v2v_anneal, 1)))
+        _v2v_anneal = float(max(getattr(TC, 'LOGIT_BIAS_V2V_ANNEAL_STEPS', 20000), 1))
+        _v2v_init = float(getattr(TC, 'LOGIT_BIAS_V2V_INIT', 1.0))
+        _v2v_end = float(getattr(TC, 'LOGIT_BIAS_V2V_END', 0.0))
+        _v2v_end = min(_v2v_end, _v2v_init)
+        _v2v_prog = min(_global_train_steps / _v2v_anneal, 1.0)
+        TC._logit_bias_v2v_current = _v2v_init + (_v2v_end - _v2v_init) * _v2v_prog
 
         # =====================================================================
         # 控制台输出（每轮一行 + 周期诊断）
@@ -2241,6 +2464,12 @@ def main():
                 f"svc={_fmt_float(service_rate_active / 1e9, 3)}GHz idle={_fmt_pct(idle_fraction)}",
                 flush=True,
             )
+            if lagrange.enabled:
+                print(
+                    f"  [CMDP] lambda(E/I/R)=({lagrange_state['energy']:.3f}/{lagrange_state['interf']:.3f}/{lagrange_state['risk']:.3f}) "
+                    f"cost(E/I/R)=({ep_cost_mean['energy']:.3f}/{ep_cost_mean['interf']:.3f}/{ep_cost_mean['risk']:.3f})",
+                    flush=True,
+                )
 
         metrics_row = {
             # episode metadata

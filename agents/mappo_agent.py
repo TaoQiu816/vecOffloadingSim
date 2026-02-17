@@ -133,6 +133,7 @@ class MAPPOAgent:
                 task_mask=inputs['task_mask'],
                 rate_prev=inputs.get('rate_prev'),
                 serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
+                global_state=inputs.get('global_state'),
             )
         
         return values.cpu().squeeze(-1).numpy()
@@ -174,6 +175,7 @@ class MAPPOAgent:
             task_mask=inputs['task_mask'],
             rate_prev=inputs.get('rate_prev'),
             serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
+            global_state=inputs.get('global_state'),
         )
         
         # [通用化] 根据candidate_types动态赋logit_bias

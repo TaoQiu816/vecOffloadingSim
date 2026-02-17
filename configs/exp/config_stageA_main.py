@@ -1,8 +1,8 @@
 """
-StageC profile: trust/risk visibility with stronger reliability heterogeneity.
+StageA profile: main-paper training with feasible mixed-link regime.
 
 Scope:
-- Parameter-only overlay (no dynamics formula changes).
+- Parameter-only overlay (no queue/SINR dynamics changes).
 - Enforces RSU_RANGE > V2V_RANGE.
 """
 
@@ -12,7 +12,7 @@ from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 
 
-STAGE_C_ENV = {
+STAGE_A_ENV = {
     "NUM_VEHICLES": 20,
     "MAX_STEPS": 200,
     "NUM_RSU": 3,
@@ -20,14 +20,14 @@ STAGE_C_ENV = {
     "RSU_RANGE": 350.0,
     "V2V_RANGE": 250.0,
     "V2V_NUM_RB": 3,
-    # 双链路统一为RB-SINR口径（StageC干扰压力适中）
-    "BW_V2I": 18.0e6,
+    "BW_V2I": 20.0e6,
     "V2I_RATE_MODEL": "RB_SINR",
     "V2I_ICI_ENABLED": True,
     "V2I_FREQ_REUSE_FACTOR": 2,
     "V2I_NUM_RB": 100,
     # DAG workload calibration for MAX_STEPS=200 (TH=20s):
-    # keep risk-learning feasible while preserving heterogeneity.
+    # - nodes: 8~16
+    # - deadline mainly in 0.1~1.0s (vehicular latency regime)
     "MIN_NODES": 8,
     "MAX_NODES": 16,
     "DAG_FAT": 1.00,
@@ -38,63 +38,53 @@ STAGE_C_ENV = {
     "MAX_DATA": 4.0e6,
     "MIN_EDGE_DATA": 2.0e4,
     "MAX_EDGE_DATA": 1.5e6,
-    # 风险展示优先可行性：deadline = alpha*Tmin + slack
+    # deadline = alpha*Tmin + slack (keep feasible but non-trivial)
     "DEADLINE_MODE": "LB_ALPHA",
     "DEADLINE_ALPHA_MIN": 25.0,
     "DEADLINE_ALPHA_MAX": 35.0,
     "DEADLINE_SLACK_SECONDS": 0.60,
-    # 风险可学习性增强（对应当前TrustManager字段）
-    "TRUST_RELIABLE_PROB": 0.6,
-    "TRUST_PRIOR_A": 2.0,
-    "TRUST_PRIOR_B": 2.0,
-    # StageC主次关系：先完成任务，再学习风险差异
-    "W_INTERF": 0.10,
-    "W_TIME": 0.40,
-    "W_RISK": 0.35,
-    # 提升终局项权重，强化“完成任务”学习驱动（PBRS不动）
-    "R_SUCC": 20.0,
-    "R_FAIL": 20.0,
+    # Reward main objective stays completion/latency.
+    "W_INTERF": 0.12,
+    "W_TIME": 0.38,
+    "W_RISK": 0.28,
+    "R_SUCC": 16.0,
+    "R_FAIL": 16.0,
 }
 
-STAGE_C_TRAIN = {
+STAGE_A_TRAIN = {
     "MAX_STEPS": 200,
     "LOGIT_BIAS_RSU": 0.0,
-    "LOGIT_BIAS_V2V_INIT": 0.10,
+    "LOGIT_BIAS_V2V_INIT": 0.14,
     "LOGIT_BIAS_V2V_END": 0.08,
     "LOGIT_BIAS_V2V_ANNEAL_STEPS": 96000,
-    "ENTROPY_COEF_START": 0.0034,
+    "ENTROPY_COEF_START": 0.0035,
     "ENTROPY_COEF_END": 0.001,
-    "ENTROPY_ANNEAL_STEPS": 160000,
+    "ENTROPY_ANNEAL_STEPS": 180000,
     # CTDE + CMDP
     "USE_SIMPLIFIED_CRITIC": False,
     "COMMWAIT_DIRECT_TO_CRITIC": True,
     "CTDE_GLOBAL_DIM": 12,
     "CMDP_ENABLE": True,
-    "CMDP_LAMBDA_LR": 0.004,
-    "CMDP_LAMBDA_MAX": 2.0,
-    "CMDP_WARMUP_EPISODES": 30,
-    "CMDP_BUDGET_ENERGY": 0.25,
-    "CMDP_BUDGET_INTERF": 0.06,
-    "CMDP_BUDGET_RISK": 0.30,
+    "CMDP_LAMBDA_LR": 0.02,
+    "CMDP_BUDGET_ENERGY": 0.22,
+    "CMDP_BUDGET_INTERF": 0.05,
+    "CMDP_BUDGET_RISK": 0.35,
 }
 
 
-def apply_stage_c_profile() -> None:
-    for k, v in STAGE_C_ENV.items():
+def apply_stage_a_profile() -> None:
+    for k, v in STAGE_A_ENV.items():
         setattr(Cfg, k, v)
-    # 可靠性范围拉开到约[0.65, 0.99]
-    Cfg.TRUST_P_RELIABLE_RANGE = (0.88, 0.99)
-    Cfg.TRUST_P_UNRELIABLE_RANGE = (0.65, 0.82)
-    for k, v in STAGE_C_TRAIN.items():
+    for k, v in STAGE_A_TRAIN.items():
         setattr(TC, k, v)
 
     if float(Cfg.RSU_RANGE) <= float(Cfg.V2V_RANGE):
         raise ValueError(
-            f"StageC invalid: RSU_RANGE({Cfg.RSU_RANGE}) must be > V2V_RANGE({Cfg.V2V_RANGE})."
+            f"StageA invalid: RSU_RANGE({Cfg.RSU_RANGE}) must be > V2V_RANGE({Cfg.V2V_RANGE})."
         )
 
     if int(Cfg.V2V_NUM_RB) <= 0:
-        raise ValueError(f"StageC invalid: V2V_NUM_RB must be positive, got {Cfg.V2V_NUM_RB}")
+        raise ValueError(f"StageA invalid: V2V_NUM_RB must be positive, got {Cfg.V2V_NUM_RB}")
     Cfg.V2V_BW_PER_RB = float(Cfg.BW_V2V) / float(Cfg.V2V_NUM_RB)
     if int(getattr(Cfg, "V2I_NUM_RB", 0)) <= 0:
         Cfg.V2I_NUM_RB = max(int(round(float(Cfg.BW_V2I) / float(max(getattr(Cfg, "V2I_RB_BW_HZ", 180e3), 1.0)))), 1)

@@ -174,6 +174,15 @@ class SystemConfig:
     BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz) [文献二]
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
                             # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
+
+    # V2I链路模型开关：
+    # - SHARE: 旧模型（按RSU用户数共享带宽）
+    # - RB_SINR: PRB级建模（RSU内正交 + 跨RSU同RB干扰）
+    V2I_RATE_MODEL = "SHARE"
+    V2I_RB_BW_HZ = 180e3               # 单RB带宽口径（ETSI/3GPP常用）
+    V2I_NUM_RB = int(round(BW_V2I / V2I_RB_BW_HZ))
+    V2I_ICI_ENABLED = False            # 跨RSU同RB干扰（Inter-Cell Interference）
+    V2I_FREQ_REUSE_FACTOR = 1          # 复用因子，1=全复用
     
     # -------------------------------------------------------------------------
     # 2.2 噪声参数 (Noise Parameters)
@@ -342,21 +351,21 @@ class SystemConfig:
     DAG_LARGE_NODE_OPTIONS = [20, 50, 100]  # synthetic_large节点数候选
     WORKFLOW_JSON_PATH = "data/workflows/sample_workflow.json"  # workflow_json路径
 
-    MIN_NODES = 18          # DAG最小节点数 - Min DAG nodes [训练默认提高密度]
-                            # 影响: 提升决策密度，减少空转步
-                            # Impact: Increases decision density, reduces idle steps
+    MIN_NODES = 8           # DAG最小节点数 - Min DAG nodes
+                            # 目标: 关键路径深度落在 4~8 的可学习区间
+                            # Target: Keep critical-path depth in a learnable 4~8 regime
 
-    MAX_NODES = 24          # DAG最大节点数 - Max DAG nodes [训练默认提高密度]
-                            # 影响: 提升决策密度，减少空转步
-                            # Impact: Increases decision density, reduces idle steps
+    MAX_NODES = 16          # DAG最大节点数 - Max DAG nodes
+                            # 目标: 保持结构复杂性但避免200-step窗口内结构性超时
+                            # Target: Preserve complexity while avoiding structural timeout in 200-step horizon
     
-    DAG_FAT = 0.5           # DAG宽度参数 - DAG width parameter
-                            # 影响: 控制并行度，0.5为中等偏低宽度，减少并行任务数
-                            # Impact: Controls parallelism; 0.5 is medium-low width, reduces parallel tasks
+    DAG_FAT = 1.0           # DAG宽度参数 - DAG width parameter
+                            # 目标: 在8~16节点下维持关键路径占比约40%~70%
+                            # Target: Keep critical-path ratio around 40%~70% with 8~16 nodes
     
-    DAG_DENSITY = 0.2       # DAG连接密度 - DAG edge density
-                            # 影响: 低依赖复杂度，简化调度决策
-                            # Impact: Low dependency complexity, simplifies scheduling decisions
+    DAG_DENSITY = 0.24      # DAG连接密度 - DAG edge density
+                            # 目标: 在可行域内保留适度依赖与并行性
+                            # Target: Preserve moderate dependency/parallelism in feasible regime
     
     DAG_REGULAR = 0.5       # DAG规则性 - DAG regularity
                             # 影响: 结构规则性，0.5为半规则
@@ -369,30 +378,30 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 5.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (0.5 Gcycles) [优化: 0.8→0.5]
-                            # 影响: 小任务强车Local 62ms，保持卸载必要性
-                            # Impact: Small tasks on strong vehicles 62ms; maintains offloading relevance
+    MIN_COMP = 1.0e7        # 子任务最小计算量 (cycles) - Min subtask computation (10 Mcycles)
+                            # 口径参考: 常见VEC设定中100M cycles量级任务
+                            # Reference: Typical VEC settings include ~100M-cycle task scale
 
-    MAX_COMP = 3.5e9        # 子任务最大计算量 (cycles) - Max subtask computation (3.5 Gcycles) [优化: 2.5→3.5]
-                            # 影响: 大任务必须卸载，增加决策复杂度
-                            # Impact: Large tasks require offloading; increases decision complexity
+    MAX_COMP = 1.0e8        # 子任务最大计算量 (cycles) - Max subtask computation (100 Mcycles)
+                            # 目标: 200-step窗口内保持“可行但不必胜”
+                            # Target: Keep tasks feasible-but-nontrivial under 200-step horizon
 
     # IMPORTANT UNIT: BITS（不是 bytes）
-    MIN_DATA = 5.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.5 Mbit)
-                            # 影响: 传输开销可感知，避免“过快传输”导致决策退化
-                            # Impact: Perceivable transmission cost; avoids trivial too-fast links
+    MIN_DATA = 5.0e4        # 子任务最小数据量 (bits) - Min subtask data (0.05 Mbit)
+                            # 口径参考: VEC任务数据量常见 0.1~10 Mb 区间
+                            # Reference: VEC workloads often use 0.1~10 Mb data scale
 
-    MAX_DATA = 2.0e6        # 子任务最大数据量 (bits) - Max subtask data (2.0 Mbit)
-                            # 影响: 在拥塞/RB复用下形成明显时延压力
-                            # Impact: Creates clear latency pressure under congestion/RB reuse
+    MAX_DATA = 4.0e6        # 子任务最大数据量 (bits) - Max subtask data (4.0 Mbit)
+                            # 目标: 覆盖主任务并包含少量较重样本
+                            # Target: Cover main workloads plus a modest heavy tail
 
-    MIN_EDGE_DATA = 2.5e5   # DAG边最小数据量 (bits) - Min edge data (0.25 Mbit)
-                            # 影响: 依赖边传输具有可学习代价
-                            # Impact: Inter-task transfer carries learnable cost
+    MIN_EDGE_DATA = 2.0e4   # DAG边最小数据量 (bits) - Min edge data (0.02 Mbit)
+                            # 目标: 保持依赖传输代价可学习且不过度主导
+                            # Target: Keep dependency-transfer cost learnable but not dominant
 
-    MAX_EDGE_DATA = 1.0e6   # DAG边最大数据量 (bits) - Max edge data (1.0 Mbit)
-                            # 影响: 强化拓扑依赖对调度与链路选择的影响
-                            # Impact: Strengthens topology-dependence in scheduling/link choice
+    MAX_EDGE_DATA = 1.5e6   # DAG边最大数据量 (bits) - Max edge data (1.5 Mbit)
+                            # 目标: StageB中可点亮并发冲突与链路选择差异
+                            # Target: Enable concurrency pressure/link-choice contrast in StageB
     
     MEAN_COMP_LOAD = (MIN_COMP + MAX_COMP) / 2  # 平均计算负载 (cycles) = 2.0e9
     AVG_COMP = MEAN_COMP_LOAD
@@ -424,7 +433,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # Deadline计算模式选择
     # -------------------------------------------------------------------------
-    DEADLINE_MODE = 'TOTAL_MEDIAN'      # 选择deadline计算模式:
+    DEADLINE_MODE = 'LB_ALPHA'          # 选择deadline计算模式:
                                         # - 'CRITICAL_PATH': CP_total / f_median (关键路径，推荐)
                                         # - 'TOTAL_MEDIAN': total_comp / f_median (总量，向后兼容)
                                         # - 'TOTAL_LOCAL': total_comp / f_local (本地算力)
@@ -437,6 +446,10 @@ class SystemConfig:
                                         # 目标: 形成可行但紧迫的deadline
     DEADLINE_TIGHTENING_MAX = 1.5       # γ最大值（基于T_base）
                                         # 目标: 保持样本多样性与可学习性
+    # 可选模式：deadline = alpha * Tmin + slack
+    # 其中 Tmin = CP_total / f_max（物理下界）
+    DEADLINE_ALPHA_MIN = 25.0
+    DEADLINE_ALPHA_MAX = 35.0
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -446,7 +459,7 @@ class SystemConfig:
     DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
     DEADLINE_FIXED_MAX = 5.0            # 最大deadline (秒)
     
-    DEADLINE_SLACK_SECONDS = 0.0        # 额外松弛时间 (s) - Additional slack time
+    DEADLINE_SLACK_SECONDS = 0.6        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
                                         # Impact: Added on top of critical path
     

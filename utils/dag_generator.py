@@ -327,6 +327,17 @@ class DAGGenerator:
             deadline_raw = np.random.uniform(d_min, d_max)
             base_time = cp_cycles / f_median
             gamma = deadline_raw / max(base_time, 1e-9)  # 反推gamma
+        elif mode == 'LB_ALPHA':
+            # 模式: 物理下界驱动（CMDP/可行域校准用）
+            # deadline = alpha * Tmin + slack, Tmin = LB0 = cp_cycles / f_max
+            alpha_min = getattr(Cfg, 'DEADLINE_ALPHA_MIN', 1.4)
+            alpha_max = getattr(Cfg, 'DEADLINE_ALPHA_MAX', 2.0)
+            alpha_min = max(1.0, alpha_min)
+            alpha_max = max(alpha_min, alpha_max)
+            alpha = np.random.uniform(alpha_min, alpha_max)
+            base_time = LB0
+            deadline_raw = alpha * LB0 + slack
+            gamma = deadline_raw / max(base_time, 1e-9)
             
         elif mode == 'TOTAL_LOCAL':
             # 模式: 使用本地CPU频率 + 总计算量
