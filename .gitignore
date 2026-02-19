@@ -11,9 +11,19 @@ ENV/
 env/
 
 # 训练输出
-# runs/  # 训练结果需要同步（包括图表）
-# 仅忽略仓库根目录的 logs/，runs/**/logs/ 需要同步用于对比（baseline/metrics等）
+# runs 默认不同步（训练/测试数据均视为非核心产物）
+runs/*
+!runs/.gitkeep
 /logs/
+# 非核心/临时仿真产物（不同步）
+runs/tmp*
+runs/accept_*
+runs/smoke5_*
+runs/reg50_*
+runs/quick_train_patch_check/
+runs/exp_contract_demo/
+runs/*.train.log
+runs/tmp_*
 
 # 模型文件（较大，不同步）
 models/*.pth
@@ -36,7 +46,8 @@ sweep_results/
 out/
 
 # 审计脚本（测试/调试用，不同步）
-scripts/audit/
+scripts/audit/*
+scripts/test_*.py
 
 # 数据文件
 data/
@@ -94,3 +105,4 @@ tests/
 
 # 文档（不同步到git）
 docs/
+notes/

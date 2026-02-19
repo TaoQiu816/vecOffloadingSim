@@ -74,6 +74,8 @@ class VecOffloadingEnv(gym.Env):
         "masked_target",
         "rsu_unavailable",
         "rsu_out_of_coverage",
+        "rsu_queue_full",
+        "queue_full_conflict",
         "no_candidate_cache",
         "id_mapping_fail",
         "power_invalid",
@@ -158,6 +160,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_uncertainty_selected_values = []
         self._episode_risk_penalty_values = []
         self._episode_I_total_values = []
+        self._episode_I_caused_input_values = []
         self._last_obs_stamp = None
         # [P2性能统计] 运行期累积器
         self._p2_active_time = 0.0
@@ -535,14 +538,14 @@ class VecOffloadingEnv(gym.Env):
         eps_rate = getattr(self.config, "EPS_RATE", 1e-9)
 
         # ── 1) 从队列 + commit_plans 收集显式链路列表 ──
-        v2v_links = []       # [{sender_id, tx_pos, rx_pos, power_w}]
-        v2i_links = []       # [{sender_id, tx_pos, rsu_id, power_w}]
+        v2v_links = []       # [{sender_id, tx_pos, rx_pos, power_w, tx_kind}]
+        v2i_links = []       # [{sender_id, tx_pos, rsu_id, power_w, tx_kind}]
         v2v_target_map = {}  # sender_vid -> recv_vid （用于 link_rates key）
         v2i_rsu_map = {}     # sender_vid -> rsu_id
         seen_v2v = set()
         seen_v2i = set()
 
-        def _add_v2v(sid, rid, power_dbm):
+        def _add_v2v(sid, rid, power_dbm, tx_kind="INPUT"):
             if sid in seen_v2v:
                 return
             seen_v2v.add(sid)
@@ -556,9 +559,10 @@ class VecOffloadingEnv(gym.Env):
                 'tx_pos': np.array(tx.pos, dtype=float),
                 'rx_pos': np.array(rx.pos, dtype=float),
                 'power_w': self.config.dbm2watt(power_dbm if power_dbm is not None else tx.tx_power_dbm),
+                'tx_kind': str(tx_kind).upper(),
             })
 
-        def _add_v2i(sid, rsu_id, power_dbm):
+        def _add_v2i(sid, rsu_id, power_dbm, tx_kind="INPUT"):
             if sid in seen_v2i:
                 return
             seen_v2i.add(sid)
@@ -571,6 +575,7 @@ class VecOffloadingEnv(gym.Env):
                 'tx_pos': np.array(tx.pos, dtype=float),
                 'rsu_id': rsu_id,
                 'power_w': self.config.dbm2watt(power_dbm if power_dbm is not None else tx.tx_power_dbm),
+                'tx_kind': str(tx_kind).upper(),
             })
 
         # a) 现有队列
@@ -580,7 +585,8 @@ class VecOffloadingEnv(gym.Env):
                 for job in queue:
                     if job.dst_node[0] == "VEH":
                         _add_v2v(sid, int(job.dst_node[1]),
-                                 getattr(job, "tx_power_dbm", None))
+                                 getattr(job, "tx_power_dbm", None),
+                                 getattr(job, "kind", "INPUT"))
                         break
         for tx_node, queue in self.txq_v2i.items():
             if tx_node[0] == "VEH" and queue:
@@ -588,7 +594,8 @@ class VecOffloadingEnv(gym.Env):
                 for job in queue:
                     if job.dst_node[0] == "RSU":
                         _add_v2i(sid, int(job.dst_node[1]),
-                                 getattr(job, "tx_power_dbm", None))
+                                 getattr(job, "tx_power_dbm", None),
+                                 getattr(job, "kind", "INPUT"))
                         break
 
         # b) 本步 commit_plans
@@ -599,9 +606,9 @@ class VecOffloadingEnv(gym.Env):
             vid = int(plan["vehicle_id"])
             pdbm = plan.get("power_dbm")
             if isinstance(tgt, int):
-                _add_v2v(vid, int(tgt), pdbm)
+                _add_v2v(vid, int(tgt), pdbm, "INPUT")
             elif isinstance(tgt, tuple) and tgt[0] == "RSU":
-                _add_v2i(vid, int(tgt[1]), pdbm)
+                _add_v2i(vid, int(tgt[1]), pdbm, "INPUT")
 
         # ── 2) 调用新的显式接口计算速率（不修改任何 env 状态）──
         v2v_rates = self.channel.compute_v2v_rb_sinr(v2v_links)
@@ -1890,6 +1897,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_uncertainty_selected_values = []
         self._episode_risk_penalty_values = []
         self._episode_I_total_values = []
+        self._episode_I_caused_input_values = []
         self._pbrs_debug_records = []
         self._last_phi_debug = {}
         self._episode_illegal_count = 0
@@ -2705,8 +2713,8 @@ class VecOffloadingEnv(gym.Env):
         prev_completed_counts = {
             v.id: int(np.sum(v.task_dag.status == 3)) for v in self.vehicles
         }
-        prev_energy_cost = {
-            v.id: float(self.E_tx_input_cost.get(v.id, 0.0) + self.E_cpu_local_cost.get(v.id, 0.0))
+        prev_energy_input_cost = {
+            v.id: float(self.E_tx_input_cost.get(v.id, 0.0))
             for v in self.vehicles
         }
 
@@ -3107,19 +3115,18 @@ class VecOffloadingEnv(gym.Env):
         for v in self.vehicles:
             # 更新车辆位置（道路模型：一维移动）
             v.update_pos(self.config.DT, self.config.MAP_SIZE)
-        
-        # 移除超出边界的车辆（道路模型：车辆超出道路长度L后移除）
-        vehicles_to_remove = []
 
         step_completed_counts = {}
         step_energy_cost = {}
+        step_energy_input_cost = {}
         for v in self.vehicles:
             prev_completed = prev_completed_counts.get(v.id, 0)
             curr_completed = int(np.sum(v.task_dag.status == 3))
             step_completed_counts[v.id] = max(curr_completed - prev_completed, 0)
-            prev_energy = prev_energy_cost.get(v.id, 0.0)
-            curr_energy = float(self.E_tx_input_cost.get(v.id, 0.0) + self.E_cpu_local_cost.get(v.id, 0.0))
+            prev_energy = prev_energy_input_cost.get(v.id, 0.0)
+            curr_energy = float(self.E_tx_input_cost.get(v.id, 0.0))
             step_energy_cost[v.id] = max(curr_energy - prev_energy, 0.0)
+            step_energy_input_cost[v.id] = step_energy_cost[v.id]
 
         phi_next_cache = {}
         phi_next_debug_cache = {}
@@ -3166,11 +3173,17 @@ class VecOffloadingEnv(gym.Env):
                 illegal = bool(ctx.get("illegal_action", ctx.get("illegal", False)))
                 if illegal:
                     step_unified_illegal_trigger_count += 1
-                energy_step = step_energy_cost.get(v.id, 0.0)
-                i_caused = 0.0
+                energy_step = step_energy_input_cost.get(v.id, 0.0)
                 v2v_stats = getattr(self.channel, 'last_v2v_stats', {})
-                if v.id in v2v_stats.get('i_caused', {}):
-                    i_caused = v2v_stats['i_caused'][v.id]
+                v2i_stats = getattr(self.channel, 'last_v2i_stats', {})
+                # 可控干扰口径：仅统计 INPUT_TX 造成的干扰（EDGE 仅作为背景负载）
+                i_caused_input = float(v2v_stats.get('i_caused_input', {}).get(v.id, 0.0)) + float(
+                    v2i_stats.get('i_caused_input', {}).get(v.id, 0.0)
+                )
+                # 全量干扰口径：用于场景统计（包含 INPUT/EDGE）
+                i_total_all = float(v2v_stats.get('i_total', {}).get(v.id, 0.0)) + float(
+                    v2i_stats.get('i_total', {}).get(v.id, 0.0)
+                )
                 target = ctx.get("target", "Local")
                 is_remote = not (target is None or target == "Local")
                 rho_target = 1.0
@@ -3201,7 +3214,7 @@ class VecOffloadingEnv(gym.Env):
 
                 r_step, step_info = compute_unified_step_reward(
                     dt=self.config.DT, Td=Td,
-                    E_tx=energy_step, I_caused=i_caused,
+                    E_tx=energy_step, I_caused=i_caused_input,
                     illegal=illegal,
                     is_remote=is_remote, rho_target=rho_target,
                 )
@@ -3255,16 +3268,17 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("r_step_abs", abs(float(r_step)))
                     self._reward_stats.add_metric("energy_norm", step_info.get("energy_norm", 0.0))
                     # Interference externality (per decision-step)
-                    self._reward_stats.add_metric("I_total", float(i_caused))
-                    self._reward_stats.add_metric("I_total_abs", abs(float(i_caused)))
-                    # Reputation oracle stats (only meaningful for remote decisions)
+                    self._reward_stats.add_metric("I_total", float(i_total_all))
+                    self._reward_stats.add_metric("I_total_abs", abs(float(i_total_all)))
+                # Reputation oracle stats (only meaningful for remote decisions)
                     if is_remote:
                         self._reward_stats.add_metric("rho_selected", float(rho_target))
                         self._reward_stats.add_metric("uncertainty_selected", float(max(uncertainty_target, 0.0)))
                         risk_penalty = -float(step_info.get("r_risk", 0.0))
                         self._reward_stats.add_metric("risk_penalty", float(max(risk_penalty, 0.0)))
                 self._episode_energy_norm_values.append(step_info.get("energy_norm", 0.0))
-                self._episode_I_total_values.append(float(i_caused))
+                self._episode_I_total_values.append(float(i_total_all))
+                self._episode_I_caused_input_values.append(float(i_caused_input))
                 if is_remote:
                     self._episode_rho_selected_values.append(float(rho_target))
                     self._episode_uncertainty_selected_values.append(float(max(uncertainty_target, 0.0)))
@@ -3861,10 +3875,21 @@ class VecOffloadingEnv(gym.Env):
         # =========== E. 统一指标输出 ===========
         # 四段分解 + 干扰 + 公平性（每步累积，终局时输出汇总）
         v2v_stats = getattr(self.channel, 'last_v2v_stats', {})
+        v2i_stats = getattr(self.channel, 'last_v2i_stats', {})
         sinr_vals = v2v_stats.get('sinr_values', [])
         rb_occ = v2v_stats.get('rb_occupancy', np.zeros(getattr(self.channel, 'num_rb', 4), dtype=int))
         i_caused_dict = v2v_stats.get('i_caused', {})
         i_total_dict = v2v_stats.get('i_total', {})
+        i_caused_input_dict = v2v_stats.get('i_caused_input', {})
+        i_total_input_dict = v2v_stats.get('i_total_input', {})
+        v2i_sinr_vals = v2i_stats.get('sinr_values', [])
+        v2i_i_caused_dict = v2i_stats.get('i_caused', {})
+        v2i_i_total_dict = v2i_stats.get('i_total', {})
+        v2i_i_caused_input_dict = v2i_stats.get('i_caused_input', {})
+        v2i_i_total_input_dict = v2i_stats.get('i_total_input', {})
+
+        i_total_all_vals = list(i_total_dict.values()) + list(v2i_i_total_dict.values())
+        i_caused_input_all_vals = list(i_caused_input_dict.values()) + list(v2i_i_caused_input_dict.values())
 
         # 累积 per-step 干扰统计
         if not hasattr(self, '_ep_sinr_all'):
@@ -3878,11 +3903,13 @@ class VecOffloadingEnv(gym.Env):
 
         if sinr_vals:
             self._ep_sinr_all.extend(sinr_vals)
-        self._ep_i_caused_all.extend(i_caused_dict.values())
-        self._ep_i_total_all.extend(i_total_dict.values())
+        if v2i_sinr_vals:
+            self._ep_sinr_all.extend(v2i_sinr_vals)
+        self._ep_i_caused_all.extend(i_caused_input_all_vals)
+        self._ep_i_total_all.extend(i_total_all_vals)
         if np.any(rb_occ > 0):
             self._ep_rb_occ_all.append(rb_occ.copy())
-        for vid, e in step_energy_cost.items():
+        for vid, e in step_energy_input_cost.items():
             if e > 0:
                 self._ep_e_tx_all.append(float(e))
         for pid, pw in step_power_ratio.items():
@@ -3896,8 +3923,16 @@ class VecOffloadingEnv(gym.Env):
         info['v2v_sinr_p50'] = float(np.median(sinr_vals)) if sinr_vals else 0.0
         info['v2v_sinr_p05'] = float(np.percentile(sinr_vals, 5)) if len(sinr_vals) >= 2 else 0.0
         info['v2v_rb_concurrency'] = float(np.mean(rb_occ[rb_occ > 0])) if np.any(rb_occ > 0) else 0.0
-        info['v2v_i_caused_mean'] = float(np.mean(list(i_caused_dict.values()))) if i_caused_dict else 0.0
+        info['v2v_i_caused_mean'] = float(np.mean(list(i_caused_input_dict.values()))) if i_caused_input_dict else 0.0
         info['v2v_i_total_mean'] = float(np.mean(list(i_total_dict.values()))) if i_total_dict else 0.0
+        info['v2v_i_total_p95'] = float(np.percentile(list(i_total_dict.values()), 95)) if i_total_dict else 0.0
+        info['v2v_i_caused_input_mean'] = float(np.mean(list(i_caused_input_dict.values()))) if i_caused_input_dict else 0.0
+        info['v2i_i_total_mean'] = float(np.mean(list(v2i_i_total_dict.values()))) if v2i_i_total_dict else 0.0
+        info['v2i_i_total_p95'] = float(np.percentile(list(v2i_i_total_dict.values()), 95)) if v2i_i_total_dict else 0.0
+        info['v2i_i_caused_input_mean'] = float(np.mean(list(v2i_i_caused_input_dict.values()))) if v2i_i_caused_input_dict else 0.0
+        info['interf_i_total_all_mean'] = float(np.mean(i_total_all_vals)) if i_total_all_vals else 0.0
+        info['interf_i_total_all_p95'] = float(np.percentile(i_total_all_vals, 95)) if i_total_all_vals else 0.0
+        info['interf_i_caused_input_mean'] = float(np.mean(i_caused_input_all_vals)) if i_caused_input_all_vals else 0.0
 
         # Handover 事件数
         info['ho_event_count'] = len(getattr(self, '_ho_events', []))
@@ -4042,10 +4077,28 @@ class VecOffloadingEnv(gym.Env):
                         v.task_dag.set_failed(reason='overflow')
                     # 其他未标记的保留（在_log_episode_stats中会归为unfinished或truncated）
 
+        boundary_respawn_count = 0
+        if not terminated and not truncated:
+            exited_ids = []
+            map_size = float(self.config.MAP_SIZE)
+            for v in self.vehicles:
+                x_pos = float(v.pos[0])
+                if 0.0 <= x_pos <= map_size:
+                    continue
+                if self._vehicle_has_active_jobs(v.id):
+                    # 车辆仍有在途任务时，不直接重生，先回退到边界避免通信队列长期停滞。
+                    v.pos[0] = float(np.clip(x_pos, 0.0, map_size))
+                else:
+                    exited_ids.append(v.id)
+            for vehicle_id in exited_ids:
+                self._respawn_vehicle(vehicle_id)
+                boundary_respawn_count += 1
+
         arrival_count = 0
         if not terminated and not truncated:
             arrival_count = self._handle_dynamic_arrivals()
         info['arrival_count'] = int(arrival_count)
+        info['boundary_respawn_count'] = int(boundary_respawn_count)
 
         return self._get_obs(), rewards, terminated, truncated, info
 
@@ -7056,16 +7109,20 @@ class VecOffloadingEnv(gym.Env):
 
         # Interference / trust oracle (episode aggregates)
         if self._episode_I_total_values:
-            arr = np.array(self._episode_I_total_values, dtype=np.float32)
-            episode_metrics["I_total_mean"] = float(np.mean(arr))
-            episode_metrics["I_total_p50"] = float(np.percentile(arr, 50))
-            episode_metrics["I_total_p95"] = float(np.percentile(arr, 95))
-            episode_metrics["I_caused_mean"] = float(np.mean(arr))
-            episode_metrics["I_caused_p95"] = float(np.percentile(arr, 95))
+            arr_total = np.array(self._episode_I_total_values, dtype=np.float32)
+            episode_metrics["I_total_mean"] = float(np.mean(arr_total))
+            episode_metrics["I_total_p50"] = float(np.percentile(arr_total, 50))
+            episode_metrics["I_total_p95"] = float(np.percentile(arr_total, 95))
         else:
             episode_metrics["I_total_mean"] = 0.0
             episode_metrics["I_total_p50"] = 0.0
             episode_metrics["I_total_p95"] = 0.0
+
+        if self._episode_I_caused_input_values:
+            arr_caused = np.array(self._episode_I_caused_input_values, dtype=np.float32)
+            episode_metrics["I_caused_mean"] = float(np.mean(arr_caused))
+            episode_metrics["I_caused_p95"] = float(np.percentile(arr_caused, 95))
+        else:
             episode_metrics["I_caused_mean"] = 0.0
             episode_metrics["I_caused_p95"] = 0.0
         if self._episode_rho_selected_values:

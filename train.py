@@ -55,7 +55,7 @@ from models.offloading_policy import OffloadingPolicyNetwork
 from agents.mappo_agent import MAPPOAgent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
-from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy, LBGreedyPolicy
+from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy, LBGreedyPolicy, OracleMinPolicy
 from baselines.cp_first_eft_policy import CPFirstEFTPolicy
 from utils.train_helpers import (
     ensure_dir as _ensure_dir,
@@ -70,7 +70,7 @@ from utils.train_helpers import (
 )
 
 
-BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "EFT", "CP-EFT", "LB-Greedy", "Static"]
+BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "Oracle-Min", "EFT", "CP-EFT", "LB-Greedy", "Static"]
 
 TRAINING_STATS_FIELDS = [
     "episode", "steps", "wall_time", "sim_time",
@@ -195,7 +195,16 @@ class _LagrangianController:
 
         i_ref = float(max(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-8), 1e-12))
         i_clip = float(max(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 20.0), 1e-6))
-        i_mean = max(float((info or {}).get("v2v_i_total_mean", 0.0) or 0.0), 0.0)
+        i_mean = max(
+            float(
+                (info or {}).get(
+                    "interf_i_total_all_mean",
+                    (info or {}).get("v2v_i_total_mean", 0.0),
+                )
+                or 0.0
+            ),
+            0.0,
+        )
         interf_norm = float(min(i_mean / i_ref, i_clip)) / i_clip
 
         p_min = float(getattr(Cfg, "P_MIN_WATT", Cfg.dbm2watt(getattr(Cfg, "TX_POWER_MIN_DBM", 13.0))))
@@ -257,14 +266,24 @@ class _LagrangianController:
 
 
 def _build_ctde_global_state(env: VecOffloadingEnv, obs_list: List[Dict], step_info: Dict = None) -> np.ndarray:
-    """Build centralized critic summary from current env + step info."""
+    """Build fixed-dim centralized critic summary (paper version CTDE)."""
     num_veh = max(len(getattr(env, "vehicles", [])), 1)
     num_rsu = max(len(getattr(env, "rsus", [])), 1)
     rsu_q_lens = []
     rsu_load_ratio = []
+    rsu_user_counts = [0.0 for _ in range(num_rsu)]
     per_proc_limit = float(max(getattr(Cfg, "RSU_QUEUE_CYCLES_LIMIT", 1.0), 1.0)) / float(
         max(getattr(Cfg, "RSU_NUM_PROCESSORS", 1), 1)
     )
+    # Count V2I users per RSU from current tx queues (for RSU occupancy summary).
+    for _, q in getattr(env, "txq_v2i", {}).items():
+        if not q:
+            continue
+        dst = getattr(q[0], "dst_node", None)
+        if isinstance(dst, tuple) and len(dst) >= 2 and dst[0] == "RSU":
+            rid = int(dst[1])
+            if 0 <= rid < num_rsu:
+                rsu_user_counts[rid] += 1.0
     for rsu in getattr(env, "rsus", []):
         proc_dict = getattr(env, "rsu_cpu_q", {}).get(rsu.id, {})
         q_len = 0
@@ -276,31 +295,69 @@ def _build_ctde_global_state(env: VecOffloadingEnv, obs_list: List[Dict], step_i
         if loads:
             rsu_load_ratio.append(float(np.mean(loads) / max(per_proc_limit, 1e-9)))
     rsu_q_mean = float(np.mean(rsu_q_lens)) if rsu_q_lens else 0.0
+    rsu_q_min = float(np.min(rsu_q_lens)) if rsu_q_lens else 0.0
     rsu_q_p95 = float(np.percentile(rsu_q_lens, 95)) if rsu_q_lens else 0.0
+    rsu_q_max = float(np.max(rsu_q_lens)) if rsu_q_lens else 0.0
     rsu_load_mean = float(np.mean(rsu_load_ratio)) if rsu_load_ratio else 0.0
+    rsu_load_p95 = float(np.percentile(rsu_load_ratio, 95)) if rsu_load_ratio else 0.0
+    rsu_users_mean = float(np.mean(rsu_user_counts)) if rsu_user_counts else 0.0
+    rsu_users_p95 = float(np.percentile(rsu_user_counts, 95)) if rsu_user_counts else 0.0
 
     active_v2i = sum(1 for tx, q in getattr(env, "txq_v2i", {}).items() if tx[0] == "VEH" and len(q) > 0)
     active_v2v = sum(1 for tx, q in getattr(env, "txq_v2v", {}).items() if tx[0] == "VEH" and len(q) > 0)
 
-    rb_occ = getattr(getattr(env, "channel", None), "last_v2v_stats", {}).get("rb_occupancy", np.zeros(max(getattr(Cfg, "V2V_NUM_RB", 1), 1)))
+    rb_occ = getattr(getattr(env, "channel", None), "last_v2v_stats", {}).get(
+        "rb_occupancy", np.zeros(max(getattr(Cfg, "V2V_NUM_RB", 1), 1))
+    )
     rb_occ = np.asarray(rb_occ, dtype=float).reshape(-1) if rb_occ is not None else np.zeros(1, dtype=float)
     rb_use_ratio = float(np.mean(rb_occ > 0)) if rb_occ.size > 0 else 0.0
+    rb_occ_mean = float(np.mean(rb_occ)) if rb_occ.size > 0 else 0.0
+    rb_occ_p95 = float(np.percentile(rb_occ, 95)) if rb_occ.size > 0 else 0.0
     rb_concurrency = float(np.mean(rb_occ[rb_occ > 0])) if np.any(rb_occ > 0) else 0.0
 
     step_info = step_info or {}
     i_ref = float(max(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-8), 1e-12))
     i_clip = float(max(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 20.0), 1e-6))
-    i_norm = float(min(max(float(step_info.get("v2v_i_total_mean", 0.0) or 0.0), 0.0) / i_ref, i_clip)) / i_clip
+    i_mean = float(
+        step_info.get(
+            "interf_i_total_all_mean",
+            step_info.get("v2v_i_total_mean", 0.0),
+        )
+        or 0.0
+    )
+    i_p95 = float(
+        step_info.get(
+            "interf_i_total_all_p95",
+            step_info.get("v2v_i_total_p95", i_mean),
+        )
+        or i_mean
+    )
+    i_mean_norm = float(min(max(i_mean, 0.0) / i_ref, i_clip)) / i_clip
+    i_p95_norm = float(min(max(i_p95, 0.0) / i_ref, i_clip)) / i_clip
     sinr_p50 = float(step_info.get("v2v_sinr_p50", 0.0) or 0.0)
+    sinr_p10 = float(step_info.get("v2v_sinr_p10", sinr_p50) or sinr_p50)
     sinr_norm = float(np.log1p(max(sinr_p50, 0.0)) / np.log1p(100.0))
+    sinr_p10_norm = float(np.log1p(max(sinr_p10, 0.0)) / np.log1p(100.0))
 
     on_task_rate = 0.0
-    slack_norm = 0.0
+    slack_mean = 0.0
+    slack_p10 = 0.0
+    slack_p90 = 0.0
     v2v_avail_ratio = 0.0
+    rsu_avail_ratio = 0.0
+    remote_avail_ratio = 0.0
+    rho_mean = 1.0
+    rho_p10 = 1.0
+    unc_mean = 0.0
+    unc_p90 = 0.0
     if obs_list:
         on_task_rate = float(np.mean([1.0 if int(obs.get("subtask_index", -1)) >= 0 else 0.0 for obs in obs_list]))
         slack_vals = []
-        avail_vals = []
+        v2v_vals = []
+        rsu_vals = []
+        remote_vals = []
+        rho_vals = []
+        unc_vals = []
         for obs in obs_list:
             rr = obs.get("resource_raw")
             am = obs.get("action_mask")
@@ -311,23 +368,66 @@ def _build_ctde_global_state(env: VecOffloadingEnv, obs_list: List[Dict], step_i
                 valid = (am > 0)
                 denom = float(np.sum(valid))
                 if denom > 0:
-                    avail_vals.append(float(np.sum((ct == 3) & valid) / denom))
-        slack_norm = float(np.mean(slack_vals)) if slack_vals else 0.0
-        v2v_avail_ratio = float(np.mean(avail_vals)) if avail_vals else 0.0
+                    v2v_vals.append(float(np.sum((ct == 3) & valid) / denom))
+                    rsu_vals.append(float(np.sum((ct == 2) & valid) / denom))
+                    remote_mask = ((ct == 2) | (ct == 3)) & valid
+                    remote_vals.append(float(np.sum(remote_mask) / denom))
+                    if isinstance(rr, np.ndarray) and rr.ndim == 2 and rr.shape[0] == len(ct) and rr.shape[1] >= 14:
+                        if np.any(remote_mask):
+                            rho_remote = rr[remote_mask, 12]
+                            unc_remote = rr[remote_mask, 13]
+                            rho_vals.extend(np.clip(rho_remote, 0.0, 1.0).tolist())
+                            unc_vals.extend(np.clip(unc_remote, 0.0, 1.0).tolist())
+        if slack_vals:
+            slack_mean = float(np.mean(slack_vals))
+            slack_p10 = float(np.percentile(slack_vals, 10))
+            slack_p90 = float(np.percentile(slack_vals, 90))
+        v2v_avail_ratio = float(np.mean(v2v_vals)) if v2v_vals else 0.0
+        rsu_avail_ratio = float(np.mean(rsu_vals)) if rsu_vals else 0.0
+        remote_avail_ratio = float(np.mean(remote_vals)) if remote_vals else 0.0
+        if rho_vals:
+            rho_mean = float(np.mean(rho_vals))
+            rho_p10 = float(np.percentile(rho_vals, 10))
+        if unc_vals:
+            unc_mean = float(np.mean(unc_vals))
+            unc_p90 = float(np.percentile(unc_vals, 90))
 
+    no_task_rate = 1.0 - on_task_rate
     g = np.array([
+        # RSU side
         np.clip(rsu_q_mean / 20.0, 0.0, 1.0),
         np.clip(rsu_q_p95 / 50.0, 0.0, 1.0),
-        np.clip(rsu_load_mean, 0.0, 2.0) / 2.0,
+        np.clip(rsu_q_min / 20.0, 0.0, 1.0),
+        np.clip(rsu_q_max / 50.0, 0.0, 1.0),
+        np.clip(rsu_load_mean / 2.0, 0.0, 1.0),
+        np.clip(rsu_load_p95 / 2.0, 0.0, 1.0),
+        np.clip(rsu_users_mean / float(num_veh), 0.0, 1.0),
+        np.clip(rsu_users_p95 / float(num_veh), 0.0, 1.0),
+        # Link activity / V2V interference
         np.clip(active_v2i / float(num_veh), 0.0, 1.0),
         np.clip(active_v2v / float(num_veh), 0.0, 1.0),
         np.clip(rb_use_ratio, 0.0, 1.0),
-        np.clip(rb_concurrency / 4.0, 0.0, 1.0),
-        np.clip(i_norm, 0.0, 1.0),
+        np.clip(rb_occ_mean / float(num_veh), 0.0, 1.0),
+        np.clip(rb_occ_p95 / float(num_veh), 0.0, 1.0),
+        np.clip(rb_concurrency / float(num_veh), 0.0, 1.0),
+        np.clip(i_mean_norm, 0.0, 1.0),
+        np.clip(i_p95_norm, 0.0, 1.0),
         np.clip(sinr_norm, 0.0, 1.0),
+        np.clip(sinr_p10_norm, 0.0, 1.0),
+        # Deadline/task pressure
         np.clip(on_task_rate, 0.0, 1.0),
-        np.clip(slack_norm, 0.0, 1.0),
+        np.clip(no_task_rate, 0.0, 1.0),
+        np.clip(slack_mean, 0.0, 1.0),
+        np.clip(slack_p10, 0.0, 1.0),
+        np.clip(slack_p90, 0.0, 1.0),
         np.clip(v2v_avail_ratio, 0.0, 1.0),
+        np.clip(rsu_avail_ratio, 0.0, 1.0),
+        np.clip(remote_avail_ratio, 0.0, 1.0),
+        # Trust summary
+        np.clip(rho_mean, 0.0, 1.0),
+        np.clip(rho_p10, 0.0, 1.0),
+        np.clip(unc_mean, 0.0, 1.0),
+        np.clip(unc_p90, 0.0, 1.0),
     ], dtype=np.float32)
     gdim = int(getattr(TC, "CTDE_GLOBAL_DIM", g.shape[0]))
     if g.shape[0] < gdim:
@@ -343,6 +443,47 @@ def _attach_global_state(obs_list: List[Dict], global_state: np.ndarray) -> None
     g = np.asarray(global_state, dtype=np.float32).reshape(-1)
     for obs in obs_list:
         obs["global_state"] = g.copy()
+
+
+def _print_unified_reward_scale_check():
+    """Lightweight numeric sanity check for unified reward scales."""
+    td_candidates = []
+    for k in ("TASK_A_DEADLINE_MIN", "TASK_B_DEADLINE_MIN", "DEADLINE_FIXED_MIN"):
+        v = getattr(Cfg, k, None)
+        if v is not None:
+            try:
+                td_candidates.append(float(v))
+            except Exception:
+                pass
+    td_min = min([x for x in td_candidates if x > 0.0], default=max(float(getattr(Cfg, "DT", 0.1)) * 4.0, 0.4))
+    dt = float(getattr(Cfg, "DT", 0.1))
+    max_steps = int(getattr(TC, "MAX_STEPS", getattr(Cfg, "MAX_STEPS", 200)))
+
+    w_t = float(getattr(Cfg, "W_TIME", 0.0))
+    w_e = float(getattr(Cfg, "W_ENERGY", 0.0))
+    w_i = float(getattr(Cfg, "W_INTERF", 0.0))
+    w_r = float(getattr(Cfg, "W_RISK", 0.0))
+    p_e = float(getattr(Cfg, "P_ENERGY", 1.0))
+    p_i = float(getattr(Cfg, "P_INTERF", 1.0))
+    e_ratio_cap = float(getattr(Cfg, "REWARD_SCALE_E_RATIO_CAP", 1.5))
+    i_ratio_cap = float(max(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 3.0), 1e-6))
+
+    r_time_max = w_t * (dt / max(td_min, 1e-6))
+    r_energy_max = w_e * (e_ratio_cap ** p_e)
+    r_interf_max = w_i * (i_ratio_cap ** p_i)
+    r_risk_max = w_r
+    step_legal_cap = r_time_max + r_energy_max + r_interf_max + r_risk_max
+    ep_legal_cap = step_legal_cap * max_steps
+    term_cap = max(float(getattr(Cfg, "R_SUCC", 10.0)), float(getattr(Cfg, "R_FAIL", 10.0)))
+    ratio = ep_legal_cap / max(term_cap, 1e-6)
+    print(
+        "[ScaleCheck] UNIFIED cap:"
+        f" step<=~{step_legal_cap:.3f}"
+        f" ep<=~{ep_legal_cap:.1f}"
+        f" term={term_cap:.1f}"
+        f" ep/term={ratio:.2f}"
+        f" (Td_min={td_min:.2f}s, DT={dt:.2f}s, i_cap={i_ratio_cap:g}, e_cap={e_ratio_cap:g})"
+    )
 
 
 def _parse_args():
@@ -525,10 +666,6 @@ def apply_env_overrides():
     use_cmdp = _env_bool("CMDP_ENABLE")
     if use_cmdp is not None:
         TC.CMDP_ENABLE = use_cmdp
-    use_ctde = _env_bool("COMMWAIT_DIRECT_TO_CRITIC")
-    if use_ctde is not None:
-        TC.COMMWAIT_DIRECT_TO_CRITIC = use_ctde
-
     # Ablation: Transformer layers
     num_layers = _env_int("NUM_LAYERS")
     if num_layers is not None:
@@ -1012,6 +1149,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         policy = LocalOnlyPolicy()
     elif policy_name == 'Greedy':
         policy = GreedyPolicy(env)
+    elif policy_name == 'Oracle-Min':
+        policy = OracleMinPolicy(env)
     elif policy_name == 'EFT':
         policy = EFTPPolicy(env)
     elif policy_name == 'CP-EFT':
@@ -1405,6 +1544,26 @@ def main():
     device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
     if device == "cuda":
         torch.cuda.empty_cache()
+
+    # 固定算法定义：PS-MAPPO-CTDE-Hybrid（论文版）
+    # 约束为严格CTDE（actor局部观测，critic读取集中摘要），不依赖可切换模式。
+    TC.USE_SIMPLIFIED_CRITIC = False
+    TC.COMMWAIT_DIRECT_TO_CRITIC = True
+    TC.USE_LOGIT_BIAS = True
+    TC.USE_FIXED_POWER = False
+    if bool(getattr(TC, "USE_SIMPLIFIED_CRITIC", False)):
+        raise ValueError(
+            "PS-MAPPO-CTDE-Hybrid requires USE_SIMPLIFIED_CRITIC=False (centralized critic)."
+        )
+    if not bool(getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False)):
+        raise ValueError(
+            "PS-MAPPO-CTDE-Hybrid requires COMMWAIT_DIRECT_TO_CRITIC=True."
+        )
+    if int(getattr(TC, "CTDE_GLOBAL_DIM", 0)) <= 0:
+        raise ValueError(
+            "PS-MAPPO-CTDE-Hybrid requires CTDE_GLOBAL_DIM > 0."
+        )
+    _print_unified_reward_scale_check()
 
     # 初始化配置和日志记录器
     exp_name = f"MAPPO_DAG_N{Cfg.MIN_NODES}-{Cfg.MAX_NODES}_Veh{Cfg.NUM_VEHICLES}"
@@ -2382,20 +2541,24 @@ def main():
         # Bias退火逻辑 (Bias Annealing)
         # [P18修复] 网络从TC直接读取bias值，无需额外同步
         # =====================================================================
-        if TC.USE_LOGIT_BIAS and (episode % TC.BIAS_DECAY_EVERY_EP == 0 and episode > 0):
-            if TC.LOGIT_BIAS_RSU > TC.BIAS_MIN_RSU:
-                TC.LOGIT_BIAS_RSU = max(TC.BIAS_MIN_RSU, TC.LOGIT_BIAS_RSU - TC.BIAS_DECAY_RSU)
-            if TC.LOGIT_BIAS_LOCAL > TC.BIAS_MIN_LOCAL:
-                TC.LOGIT_BIAS_LOCAL = max(TC.BIAS_MIN_LOCAL, TC.LOGIT_BIAS_LOCAL - TC.BIAS_DECAY_LOCAL)
-
-        # V2V 探索 bias 线性退火（step-based）
         _global_train_steps += total_steps
-        _v2v_anneal = float(max(getattr(TC, 'LOGIT_BIAS_V2V_ANNEAL_STEPS', 20000), 1))
-        _v2v_init = float(getattr(TC, 'LOGIT_BIAS_V2V_INIT', 1.0))
-        _v2v_end = float(getattr(TC, 'LOGIT_BIAS_V2V_END', 0.0))
-        _v2v_end = min(_v2v_end, _v2v_init)
-        _v2v_prog = min(_global_train_steps / _v2v_anneal, 1.0)
-        TC._logit_bias_v2v_current = _v2v_init + (_v2v_end - _v2v_init) * _v2v_prog
+        if TC.USE_LOGIT_BIAS:
+            # 论文固定版：类别级轻先验，在线性日程内统一退火到0，避免末段先验锁死。
+            _total_plan_steps = max(int(getattr(TC, "MAX_EPISODES", 1) * getattr(TC, "MAX_STEPS", 1)), 1)
+            _anneal_frac = float(np.clip(getattr(TC, "BIAS_ANNEAL_FRAC", 0.50), 0.05, 1.0))
+            _anneal_steps = max(int(_total_plan_steps * _anneal_frac), 1)
+            _prog = min(_global_train_steps / float(_anneal_steps), 1.0)
+            _remain = 1.0 - _prog
+            _l0 = float(getattr(TC, "LOGIT_BIAS_LOCAL_INIT", 0.2))
+            _r0 = float(getattr(TC, "LOGIT_BIAS_RSU_INIT", 0.05))
+            _v0 = float(getattr(TC, "LOGIT_BIAS_V2V_INIT", 0.10))
+            TC.LOGIT_BIAS_LOCAL = _l0 * _remain
+            TC.LOGIT_BIAS_RSU = _r0 * _remain
+            TC._logit_bias_v2v_current = _v0 * _remain
+        else:
+            TC.LOGIT_BIAS_LOCAL = 0.0
+            TC.LOGIT_BIAS_RSU = 0.0
+            TC._logit_bias_v2v_current = 0.0
 
         # =====================================================================
         # 控制台输出（每轮一行 + 周期诊断）

@@ -37,12 +37,29 @@ class ChannelModel:
         self.v2i_reuse_factor = int(max(getattr(Cfg, "V2I_FREQ_REUSE_FACTOR", 1), 1))
 
         # 每步干扰统计（供 env 读取）
-        self.last_v2v_stats = {
-            'sinr_values': [],        # 所有 link 的 SINR (linear)
-            'i_caused': {},           # link_idx -> 该 link 对同 RB 其他接收端的干扰总和
-            'i_total': {},            # link_idx -> 该 link 接收端收到的总干扰
-            'rb_occupancy': np.zeros(self.num_rb, dtype=int),  # 每 RB 并发链路数
-            'rb_assignment': {},      # link_idx -> rb_id
+        self.last_v2v_stats = self._empty_v2v_stats()
+        self.last_v2i_stats = self._empty_v2i_stats()
+
+    def _empty_v2v_stats(self):
+        return {
+            'sinr_values': [],               # 所有 link 的 SINR (linear)
+            'i_caused': {},                  # sender_id -> 该 link 对同 RB 其他接收端干扰
+            'i_total': {},                   # sender_id -> 该 link 接收端总干扰
+            'i_caused_input': {},            # sender_id -> 仅 INPUT_TX 造成的可控干扰
+            'i_total_input': {},             # sender_id -> 仅 INPUT_TX 受到的总干扰
+            'rb_occupancy': np.zeros(self.num_rb, dtype=int),
+            'rb_assignment': {},             # sender_id -> rb_id
+        }
+
+    def _empty_v2i_stats(self):
+        return {
+            'sinr_values': [],
+            'i_caused': {},                  # sender_id -> 该链路对其他接收端干扰
+            'i_total': {},                   # sender_id -> 该链路接收端总干扰
+            'i_caused_input': {},            # sender_id -> 仅 INPUT_TX 造成的可控干扰
+            'i_total_input': {},             # sender_id -> 仅 INPUT_TX 受到的总干扰
+            'rb_occupancy': np.zeros(self.v2i_num_rb, dtype=int),
+            'rb_assignment': {},             # sender_id -> [rb ids]
         }
 
     # ------------------------------------------------------------------
@@ -60,11 +77,7 @@ class ChannelModel:
             （同时更新 self.last_v2v_stats）
         """
         # 重置统计
-        self.last_v2v_stats = {
-            'sinr_values': [], 'i_caused': {}, 'i_total': {},
-            'rb_occupancy': np.zeros(self.num_rb, dtype=int),
-            'rb_assignment': {},
-        }
+        self.last_v2v_stats = self._empty_v2v_stats()
         v2v_rates = {}
         if not v2v_links:
             return v2v_rates
@@ -120,11 +133,19 @@ class ChannelModel:
         rb_occ = np.zeros(self.num_rb, dtype=int)
         for i in range(n):
             sid = v2v_links[i]['sender_id']
+            tx_kind = str(v2v_links[i].get("tx_kind", "INPUT")).upper()
             rb_occ[rb_assign[i]] += 1
-            v2v_rates[sid] = float(rates_vec[i])
+            v2v_rates[sid] = float(v2v_rates.get(sid, 0.0) + rates_vec[i])
             self.last_v2v_stats['rb_assignment'][sid] = int(rb_assign[i])
-            self.last_v2v_stats['i_caused'][sid] = float(i_caused_arr[i])
-            self.last_v2v_stats['i_total'][sid] = float(i_total_arr[i])
+            self.last_v2v_stats['i_caused'][sid] = float(self.last_v2v_stats['i_caused'].get(sid, 0.0) + i_caused_arr[i])
+            self.last_v2v_stats['i_total'][sid] = float(self.last_v2v_stats['i_total'].get(sid, 0.0) + i_total_arr[i])
+            if tx_kind == "INPUT":
+                self.last_v2v_stats['i_caused_input'][sid] = float(
+                    self.last_v2v_stats['i_caused_input'].get(sid, 0.0) + i_caused_arr[i]
+                )
+                self.last_v2v_stats['i_total_input'][sid] = float(
+                    self.last_v2v_stats['i_total_input'].get(sid, 0.0) + i_total_arr[i]
+                )
         self.last_v2v_stats['sinr_values'] = sinr_arr.tolist()
         self.last_v2v_stats['rb_occupancy'] = rb_occ
         return v2v_rates
@@ -142,6 +163,7 @@ class ChannelModel:
             dict  sender_id -> rate
         """
         rates = {}
+        self.last_v2i_stats = self._empty_v2i_stats()
         if not v2i_links:
             return rates
         model = str(getattr(Cfg, "V2I_RATE_MODEL", self.v2i_rate_model)).upper()
@@ -162,6 +184,13 @@ class ChannelModel:
                     h = self._path_loss(dist, Cfg.PL_BETA_V2I)
                     sinr = lk['power_w'] * h / noise_w
                     rates[lk['sender_id']] = bw * np.log2(1 + sinr)
+                    sid = lk['sender_id']
+                    self.last_v2i_stats['sinr_values'].append(float(sinr))
+                    self.last_v2i_stats['i_caused'][sid] = 0.0
+                    self.last_v2i_stats['i_total'][sid] = 0.0
+                    if str(lk.get("tx_kind", "INPUT")).upper() == "INPUT":
+                        self.last_v2i_stats['i_caused_input'][sid] = 0.0
+                        self.last_v2i_stats['i_total_input'][sid] = 0.0
             return rates
 
         # RB_SINR: intra-cell orthogonal scheduling, inter-cell ICI on reused RBs.
@@ -194,6 +223,11 @@ class ChannelModel:
                     user_idx = int((rnd * num_rb + rb) % n_users)
                     lk = grp_sorted[user_idx]
                     sched.append((rid, rb, rnd, lk))
+                    self.last_v2i_stats['rb_occupancy'][rb] += 1
+                    sid = lk["sender_id"]
+                    if sid not in self.last_v2i_stats['rb_assignment']:
+                        self.last_v2i_stats['rb_assignment'][sid] = []
+                    self.last_v2i_stats['rb_assignment'][sid].append(int(rb))
 
         # Build fast lookup for cross-cell interferers by (rb, round, reuse_group).
         buckets = {}
@@ -225,9 +259,38 @@ class ChannelModel:
                     interf_w += p_o * h_o
 
             sinr = sig_w / max(noise_rb + interf_w, 1e-12)
+            sender_id = lk["sender_id"]
+            tx_kind = str(lk.get("tx_kind", "INPUT")).upper()
+            reuse_group = rid % reuse_factor
+            caused_w = 0.0
+            if ici_enabled:
+                candidates = buckets.get((rb, rnd, reuse_group), [])
+                for other_rid, other_lk in candidates:
+                    if other_rid == rid:
+                        continue
+                    rsu_o = (rsu_pos_map or {}).get(other_rid, rsu_pos_default)
+                    if rsu_o is None:
+                        continue
+                    d_to_other = np.linalg.norm(tx_pos - np.asarray(rsu_o, dtype=float))
+                    h_to_other = self._path_loss(max(d_to_other, 1.0), Cfg.PL_BETA_V2I)
+                    caused_w += p_sig * h_to_other
+
+            self.last_v2i_stats['sinr_values'].append(float(sinr))
+            self.last_v2i_stats['i_total'][sender_id] = float(
+                self.last_v2i_stats['i_total'].get(sender_id, 0.0) + interf_w
+            )
+            self.last_v2i_stats['i_caused'][sender_id] = float(
+                self.last_v2i_stats['i_caused'].get(sender_id, 0.0) + caused_w
+            )
+            if tx_kind == "INPUT":
+                self.last_v2i_stats['i_total_input'][sender_id] = float(
+                    self.last_v2i_stats['i_total_input'].get(sender_id, 0.0) + interf_w
+                )
+                self.last_v2i_stats['i_caused_input'][sender_id] = float(
+                    self.last_v2i_stats['i_caused_input'].get(sender_id, 0.0) + caused_w
+                )
             # Round-based orthogonal time sharing in overloaded cells.
             time_share = 1.0 / float(max(rsu_rounds.get(rid, 1), 1))
-            sender_id = lk["sender_id"]
             rates[sender_id] = float(rates.get(sender_id, 0.0) + time_share * bw_rb * np.log2(1.0 + sinr))
 
         return rates

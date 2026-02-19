@@ -258,6 +258,10 @@ class SystemConfig:
     TRUST_ENABLED = True            # 是否启用信誉外生过程
     TRUST_P_RELIABLE_RANGE = (0.7, 1.0)   # 可靠节点 p_j 范围
     TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围
+    # [类型化可靠性覆盖] 若非None，则按节点类型覆盖上面的混合分布采样：
+    # RSU: TRUST_P_RSU_RANGE, VEH: TRUST_P_VEH_RANGE
+    TRUST_P_RSU_RANGE = None      # e.g. (0.95, 0.995)
+    TRUST_P_VEH_RANGE = None      # e.g. (0.60, 0.95)
     TRUST_RELIABLE_PROB = 0.8       # 节点为可靠类型的先验概率
     TRUST_PRIOR_A = 1.0             # Beta 先验 a
     TRUST_PRIOR_B = 1.0             # Beta 先验 b
@@ -374,32 +378,65 @@ class SystemConfig:
     DAG_CCR = 0.2           # 通信计算比 - Communication-to-Computation Ratio
                             # 影响: 结构生成参数，影响边数据量
                             # Impact: Structure generation parameter, affects edge data volume
+
+    # -------------------------------------------------------------------------
+    # 4.1.1 两类任务混合 (Two-Class Workload Mixture)
+    # -------------------------------------------------------------------------
+    # 说明:
+    # - 面向 DT=0.1s 的离散仿真，deadline 主体设为 0.4~2.5s（4~25 step），
+    #   避免 0.1~0.3s 在该离散粒度下退化为“1~3步硬阈值”问题。
+    # - 口径对应:
+    #   ETSI TS 122 185/3GPP TS 22.185 的消息级时延等级(20ms/100ms/1000ms)；
+    #   Deadline-aware VEC 的任务级 deadline(100ms~5s)；
+    #   以及 VEC 轻任务量级(0.1~10Mb, 1e8 cycles)。
+    TASK_CLASS_MIX_ENABLE = False
+    TASK_CLASS_B_PROB = 0.20
+
+    # A类（协同感知/轻量推理，主流）
+    TASK_A_TOTAL_DATA_MIN = 3.0e5    # bits, 0.3 Mb
+    TASK_A_TOTAL_DATA_MAX = 1.2e7    # bits, 12 Mb
+    TASK_A_TOTAL_COMP_MIN = 1.0e9    # cycles
+    TASK_A_TOTAL_COMP_MAX = 4.0e9    # cycles
+    TASK_A_DEADLINE_MIN = 0.4        # s (DT=0.1 -> 4 steps)
+    TASK_A_DEADLINE_MAX = 1.0        # s (DT=0.1 -> 10 steps)
+
+    # B类（较重任务，少量）
+    TASK_B_TOTAL_DATA_MIN = 1.2e7    # bits, 12 Mb
+    TASK_B_TOTAL_DATA_MAX = 4.5e7    # bits, 45 Mb
+    TASK_B_TOTAL_COMP_MIN = 3.0e9    # cycles
+    TASK_B_TOTAL_COMP_MAX = 8.0e9    # cycles
+    TASK_B_DEADLINE_MIN = 1.0        # s
+    TASK_B_DEADLINE_MAX = 2.5        # s
+
+    # 总量拆分到节点/入口节点时的随机抖动
+    TASK_COMP_SPLIT_JITTER = 0.6
+    TASK_DATA_SPLIT_JITTER = 0.8
     
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 1.0e7        # 子任务最小计算量 (cycles) - Min subtask computation (10 Mcycles)
+    MIN_COMP = 1.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (100 Mcycles)
                             # 口径参考: 常见VEC设定中100M cycles量级任务
                             # Reference: Typical VEC settings include ~100M-cycle task scale
 
-    MAX_COMP = 1.0e8        # 子任务最大计算量 (cycles) - Max subtask computation (100 Mcycles)
+    MAX_COMP = 4.0e9        # 子任务最大计算量 (cycles)
                             # 目标: 200-step窗口内保持“可行但不必胜”
                             # Target: Keep tasks feasible-but-nontrivial under 200-step horizon
 
     # IMPORTANT UNIT: BITS（不是 bytes）
-    MIN_DATA = 5.0e4        # 子任务最小数据量 (bits) - Min subtask data (0.05 Mbit)
+    MIN_DATA = 1.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.1 Mbit)
                             # 口径参考: VEC任务数据量常见 0.1~10 Mb 区间
                             # Reference: VEC workloads often use 0.1~10 Mb data scale
 
-    MAX_DATA = 4.0e6        # 子任务最大数据量 (bits) - Max subtask data (4.0 Mbit)
+    MAX_DATA = 1.0e7        # 子任务最大数据量 (bits) - Max subtask data (10.0 Mbit)
                             # 目标: 覆盖主任务并包含少量较重样本
                             # Target: Cover main workloads plus a modest heavy tail
 
-    MIN_EDGE_DATA = 2.0e4   # DAG边最小数据量 (bits) - Min edge data (0.02 Mbit)
+    MIN_EDGE_DATA = 5.0e4   # DAG边最小数据量 (bits)
                             # 目标: 保持依赖传输代价可学习且不过度主导
                             # Target: Keep dependency-transfer cost learnable but not dominant
 
-    MAX_EDGE_DATA = 1.5e6   # DAG边最大数据量 (bits) - Max edge data (1.5 Mbit)
+    MAX_EDGE_DATA = 2.0e6   # DAG边最大数据量 (bits)
                             # 目标: StageB中可点亮并发冲突与链路选择差异
                             # Target: Enable concurrency pressure/link-choice contrast in StageB
     
@@ -448,18 +485,20 @@ class SystemConfig:
                                         # 目标: 保持样本多样性与可学习性
     # 可选模式：deadline = alpha * Tmin + slack
     # 其中 Tmin = CP_total / f_max（物理下界）
-    DEADLINE_ALPHA_MIN = 25.0
-    DEADLINE_ALPHA_MAX = 35.0
+    DEADLINE_ALPHA_MIN = 2.0
+    DEADLINE_ALPHA_MAX = 4.0
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
                                         # 推荐范围: 0.05~0.1
+    DEADLINE_STEP_GUARD_DELTA = 3.0     # step量化下界保护: LB* = max(LB0, (L_cp+delta)*DT)
+                                        # 目的: 避免DT=0.1下过小deadline退化为1~2步硬阈值
     
     # 模式FIXED_RANGE: 固定范围的deadline (秒)
     DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
     DEADLINE_FIXED_MAX = 5.0            # 最大deadline (秒)
     
-    DEADLINE_SLACK_SECONDS = 0.6        # 额外松弛时间 (s) - Additional slack time
+    DEADLINE_SLACK_SECONDS = 0.2        # 额外松弛时间 (s) - Additional slack time
                                         # 影响: 在关键路径基础上附加
                                         # Impact: Added on top of critical path
     
@@ -490,9 +529,9 @@ class SystemConfig:
                                 # 影响: 适应新的MAX_COMP=3.5e9
                                 # Impact: Adapts to new MAX_COMP=3.5e9
     
-    NORM_MAX_DATA = 5.0e6       # 数据量归一化基准 (bits) - Data normalization baseline
-                                # 影响: 适应约4e6 bit数据量
-                                # Impact: Adapts to ~4e6 bit data volume
+    NORM_MAX_DATA = 4.0e7       # 数据量归一化基准 (bits) - Data normalization baseline
+                                # 影响: 覆盖A/B混合任务的输入数据上界，避免长期饱和
+                                # Impact: Covers mixed workload upper bound to avoid persistent saturation
     
     NORM_MAX_RATE_V2I = 50e6    # V2I速率归一化基准 (bps) - V2I rate normalization baseline
     NORM_MAX_RATE_V2V = 20e6    # V2V速率归一化基准 (bps) - V2V rate normalization baseline
@@ -648,19 +687,19 @@ class SystemConfig:
     # 6.7.3 新统一奖励参数 (Unified Reward - nonlinear, dimensionless)
     # -------------------------------------------------------------------------
     # 终局 Terminal
-    R_SUCC = 10.0                   # 成功奖励系数 R_s
-    R_FAIL = 10.0                   # 失败惩罚系数 R_f
-    P_SUCC = 1.3                    # 成功奖励指数 p_s (>1 超线性奖励提前完成)
-    P_FAIL = 1.5                    # 失败惩罚指数 p_f (超线性)
+    R_SUCC = 50.0                   # 成功奖励系数 R_s
+    R_FAIL = 50.0                   # 失败惩罚系数 R_f
+    P_SUCC = 1.0                    # 成功奖励指数 p_s
+    P_FAIL = 1.0                    # 失败惩罚指数 p_f
     # 每步 Step-wise
-    W_TIME = 0.2                    # 时间推进惩罚权重 w_t
-    W_ENERGY = 0.5                  # 能耗惩罚权重 w_e
+    W_TIME = 0.35                   # 时间推进惩罚权重 w_t（成功率/时延优先）
+    W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
-    W_INTERF = 0.5                  # 干扰惩罚权重 w_I
+    W_INTERF = 0.03                 # 干扰惩罚权重 w_I
     P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
-    W_RISK = 0.5                    # 信誉风险惩罚权重 w_risk
+    W_RISK = 0.04                   # 信誉风险惩罚权重 w_risk
     P_RISK = 1.5                    # 信誉风险惩罚指数 p_risk
-    W_ILLEGAL = 2.0                 # 非法动作惩罚 w_ill
+    W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
     # E_ref / I_ref
     # [N=20对比建议] 统一奖励中的能耗项当前包含了本地计算能耗分量，量级可到J~10J以上；
     # 若仍使用0.02J会导致能耗项过强、训练退化为近单目标。取15J可保持能耗敏感且不过度主导。
@@ -670,7 +709,8 @@ class SystemConfig:
     # 不改变干扰动力学，仅用于奖励归一化尺度。
     I_REF_MIN_UNIFIED = 1e-8
     # 对 I_caused/I_ref 做上界裁剪，避免单项奖励主导训练。
-    INTERF_RATIO_CLIP_UNIFIED = 20.0
+    INTERF_RATIO_CLIP_UNIFIED = 3.0
+    REWARD_SCALE_E_RATIO_CAP = 1.5   # 训练前尺度核验用：energy_norm上界假设
     # PBRS
     PBRS_BETA = 0.1                 # PBRS 系数 beta
     PBRS_GAMMA = 0.99               # PBRS 折扣 gamma

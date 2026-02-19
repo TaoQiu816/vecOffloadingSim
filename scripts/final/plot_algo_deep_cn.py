@@ -79,6 +79,37 @@ def plot_all(df: pd.DataFrame, out_dir: str, window: int) -> List[Tuple[str, str
     x = df["episode"]
     files: List[Tuple[str, str]] = []
 
+    # 00 单独收敛曲线
+    fig, axs = plt.subplots(2, 2, figsize=(14, 9))
+    axs = axs.flatten()
+    axs[0].plot(x, rolling(g(df, "task_success_rate") * 100, window), lw=2.2, label="任务成功率")
+    axs[0].plot(x, rolling(g(df, "subtask_success_rate") * 100, window), lw=1.8, label="子任务成功率")
+    axs[0].set_title("收敛曲线-成功率")
+    axs[0].set_ylabel("%")
+    axs[0].legend(fontsize=9)
+    axs[1].plot(x, rolling(g(df, "deadline_miss_rate") * 100, window), lw=2.2, color="#d62728", label="超时失败率")
+    axs[1].plot(x, rolling(g(df, "time_limit_rate") * 100, window), lw=1.8, color="#ff7f0e", label="回合时限率")
+    axs[1].set_title("收敛曲线-失败/时限")
+    axs[1].set_ylabel("%")
+    axs[1].legend(fontsize=9)
+    axs[2].plot(x, rolling(g(df, "reward_mean"), window), lw=2.2, color="#9467bd", label="reward_mean")
+    if "reward_p50" in df.columns:
+        axs[2].plot(x, rolling(g(df, "reward_p50"), window), lw=1.6, color="#8c564b", label="reward_p50")
+    if "reward_p95" in df.columns:
+        axs[2].plot(x, rolling(g(df, "reward_p95"), window), lw=1.6, color="#2ca02c", label="reward_p95")
+    axs[2].set_title("收敛曲线-奖励")
+    axs[2].set_xlabel("Episode")
+    axs[2].legend(fontsize=9)
+    axs[3].plot(x, rolling(g(df, "mean_cft_est"), window), lw=2.2, color="#1f77b4", label="mean_cft_est")
+    axs[3].plot(x, rolling(g(df, "episode_time_seconds"), window), lw=1.8, color="#17becf", label="episode_time_seconds")
+    axs[3].set_title("收敛曲线-时延")
+    axs[3].set_xlabel("Episode")
+    axs[3].set_ylabel("秒")
+    axs[3].legend(fontsize=9)
+    fig.suptitle("训练收敛曲线（单独图）", fontsize=14, fontweight="bold", y=1.02)
+    files.append(("algo_deep_00_convergence_only.png", "训练收敛曲线（单独图）"))
+    save_fig(fig, out_dir, files[-1][0])
+
     # 01 核心收敛
     fig, axs = plt.subplots(2, 2, figsize=(14, 9))
     axs = axs.flatten()
@@ -324,6 +355,70 @@ def plot_all(df: pd.DataFrame, out_dir: str, window: int) -> List[Tuple[str, str
         axs[i].hist(tail[c].dropna().to_numpy(dtype=float), bins=20, alpha=0.85, color="#4c78a8")
         axs[i].set_title(title)
     files.append(("algo_deep_14_tail_hist.png", "尾段分布直方图"))
+    save_fig(fig, out_dir, files[-1][0])
+
+    # 15 Deadline 与可行性
+    fig, axs = plt.subplots(1, 4, figsize=(18, 4.6))
+    axs[0].plot(x, rolling(g(df, "deadline_seconds"), window), lw=2.0)
+    axs[0].set_title("deadline_seconds")
+    axs[1].plot(x, rolling(g(df, "deadline_gamma"), window), lw=2.0, color="#ff7f0e")
+    axs[1].set_title("deadline_gamma")
+    axs[2].plot(x, rolling(g(df, "time_limit_penalty_applied") * 100, window), lw=2.0, color="#d62728")
+    axs[2].set_title("time_limit_penalty_applied(%)")
+    axs[3].plot(x, rolling(g(df, "time_limit_penalty_value"), window), lw=2.0, color="#9467bd")
+    axs[3].set_title("time_limit_penalty_value")
+    for ax in axs:
+        ax.set_xlabel("Episode")
+    files.append(("algo_deep_15_deadline_feasibility.png", "Deadline与可行性"))
+    save_fig(fig, out_dir, files[-1][0])
+
+    # 16 任务负载与稀疏性
+    fig, axs = plt.subplots(2, 2, figsize=(14, 8))
+    axs = axs.flatten()
+    axs[0].plot(x, rolling(g(df, "episode_task_count"), window), lw=2.0)
+    axs[0].set_title("episode_task_count")
+    axs[1].plot(x, rolling(g(df, "total_subtasks"), window), lw=2.0, color="#2ca02c")
+    axs[1].set_title("total_subtasks")
+    axs[2].plot(x, rolling(g(df, "on_task_rate") * 100, window), lw=2.0, label="on_task_rate")
+    axs[2].plot(x, rolling(g(df, "has_task_available_rate") * 100, window), lw=1.8, label="has_task_available_rate")
+    axs[2].plot(x, rolling(g(df, "active_ratio") * 100, window), lw=1.8, label="active_ratio")
+    axs[2].set_title("任务活跃度(%)")
+    axs[2].legend(fontsize=8)
+    axs[3].plot(x, rolling(g(df, "no_task_rate") * 100, window), lw=2.0, color="#d62728")
+    axs[3].set_title("no_task_rate(%)")
+    for ax in axs:
+        ax.set_xlabel("Episode")
+    files.append(("algo_deep_16_task_activity.png", "任务负载与活跃度"))
+    save_fig(fig, out_dir, files[-1][0])
+
+    # 17 队列与负载
+    fig, axs = plt.subplots(1, 3, figsize=(15, 4.5))
+    axs[0].plot(x, rolling(g(df, "avg_rsu_queue"), window), lw=2.0)
+    axs[0].set_title("avg_rsu_queue")
+    axs[1].plot(x, rolling(g(df, "rsu_queue_p95"), window), lw=2.0, color="#ff7f0e")
+    axs[1].set_title("rsu_queue_p95")
+    axs[2].plot(x, rolling(g(df, "queue_lb"), window), lw=2.0, color="#2ca02c")
+    axs[2].set_title("queue_lb")
+    for ax in axs:
+        ax.set_xlabel("Episode")
+    files.append(("algo_deep_17_queue_load.png", "队列负载演化"))
+    save_fig(fig, out_dir, files[-1][0])
+
+    # 18 奖励分位稳定性
+    fig, ax = plt.subplots(figsize=(13, 5))
+    for c, lbl, col in [
+        ("reward_min", "reward_min", "#d62728"),
+        ("reward_p50", "reward_p50", "#1f77b4"),
+        ("reward_p95", "reward_p95", "#2ca02c"),
+        ("reward_max", "reward_max", "#9467bd"),
+    ]:
+        if c in df.columns:
+            ax.plot(x, rolling(g(df, c), window), lw=1.8, label=lbl, color=col)
+    ax.set_title("奖励分位与极值稳定性")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Reward")
+    ax.legend(ncol=4, fontsize=9)
+    files.append(("algo_deep_18_reward_quantiles.png", "奖励分位稳定性"))
     save_fig(fig, out_dir, files[-1][0])
 
     return files

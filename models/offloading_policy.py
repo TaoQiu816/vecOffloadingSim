@@ -146,19 +146,39 @@ class OffloadingPolicyNetwork(nn.Module):
         # 5. Actor-Critic网络
         self.actor_critic = ActorCriticNetwork(
             d_model, num_heads, num_layers, d_ff, dropout,
-            use_simplified_critic=TC.USE_SIMPLIFIED_CRITIC,
-            use_subtask_cond_critic=getattr(TC, "USE_SUBTASK_COND_CRITIC", True),
-            use_no_ready_embed=getattr(TC, "USE_NO_READY_EMBEDDING", True),
-            use_commwait_direct=getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False),
-            commwait_dim=int(getattr(TC, "CTDE_GLOBAL_DIM", 0)),
+            # 论文固定版：严格CTDE（不依赖可切换模式）
+            use_simplified_critic=False,
+            use_subtask_cond_critic=True,
+            use_no_ready_embed=True,
+            use_commwait_direct=True,
+            commwait_dim=int(getattr(TC, "CTDE_GLOBAL_DIM", 30)),
         )
+
+        # 条件功率头：让 power 分布显式依赖选中的 target（混合动作一致性）
+        cond_in_dim = int(Cfg.RESOURCE_RAW_DIM) + 3  # resource_raw + one-hot(candidate_type)
+        cond_hidden = max(d_model // 2, 16)
+        self.power_cond_mlp = nn.Sequential(
+            nn.Linear(cond_in_dim, cond_hidden),
+            nn.ReLU(),
+            nn.Linear(cond_hidden, 2),
+        )
+        # 零初始化最后一层，保证启用时不破坏已有训练稳定性
+        nn.init.zeros_(self.power_cond_mlp[-1].weight)
+        nn.init.zeros_(self.power_cond_mlp[-1].bias)
     
     @staticmethod
     def _apply_logit_bias(target_logits: torch.Tensor,
-                          candidate_types: torch.Tensor) -> torch.Tensor:
+                          candidate_types: torch.Tensor,
+                          action_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         [通用化] 根据candidate_types动态赋logit_bias，取代硬编码index 0/1。
         candidate_types: [B, M]，1=Local, 2=RSU, 3=V2V
+
+        类别平衡校正（仅概率质量分配，不是硬约束）:
+        - Local: +b_L
+        - RSU  : +b_R
+        - V2V每个候选: +(b_V - log(max(n_V, 1)))
+          其中 n_V 为当前步可行动作中 V2V 候选数量（按 action_mask 计数）。
         """
         if not TC.USE_LOGIT_BIAS:
             return target_logits
@@ -166,10 +186,59 @@ class OffloadingPolicyNetwork(nn.Module):
         logit_bias[candidate_types == 1] = TC.LOGIT_BIAS_LOCAL   # Local槽位
         logit_bias[candidate_types == 2] = TC.LOGIT_BIAS_RSU     # RSU槽位（所有RSU统一）
         # V2V 探索 bias（线性退火，由 train.py 更新 _logit_bias_v2v_current）
-        v2v_bias = getattr(TC, '_logit_bias_v2v_current', 0.0)
-        if v2v_bias > 1e-6:
-            logit_bias[candidate_types == 3] = v2v_bias
+        # 叠加类别规模校正: -log(n_V)，抵消 ALL 候选下 V2V 槽位数过多的先天优势。
+        v2v_bias = float(getattr(TC, '_logit_bias_v2v_current', 0.0))
+        v2v_mask = (candidate_types == 3)
+        if action_mask is not None:
+            feasible_mask = action_mask > 0
+            feasible_v2v = v2v_mask & feasible_mask
+        else:
+            feasible_v2v = v2v_mask
+        n_v = feasible_v2v.sum(dim=-1, keepdim=True).to(dtype=target_logits.dtype)  # [B,1]
+        n_v_safe = torch.clamp(n_v, min=1.0)
+        v2v_size_correction = torch.log(n_v_safe)
+        v2v_slot_bias = (v2v_bias - v2v_size_correction)  # [B,1], broadcast to V2V slots
+        logit_bias = logit_bias + v2v_mask.to(dtype=target_logits.dtype) * v2v_slot_bias
         return target_logits + logit_bias
+
+    @staticmethod
+    def _gather_selected(x: torch.Tensor, target_actions: torch.Tensor) -> torch.Tensor:
+        """Gather per-batch selected target features from x:[B,M,D] or x:[B,M]."""
+        ta = target_actions.long().view(-1)
+        if x.dim() == 3:
+            idx = ta.view(-1, 1, 1).expand(-1, 1, x.shape[-1])
+            return torch.gather(x, 1, idx).squeeze(1)
+        idx = ta.view(-1, 1)
+        return torch.gather(x, 1, idx).squeeze(1)
+
+    def _build_target_conditioned_power_dist(
+        self,
+        alpha: torch.Tensor,
+        beta: torch.Tensor,
+        resource_raw: torch.Tensor,
+        candidate_types: torch.Tensor,
+        target_actions: torch.Tensor,
+    ) -> Beta:
+        """
+        Build Beta(power | o, target).
+        Keep base alpha/beta from actor head, then modulate by selected target features.
+        """
+        base_alpha = alpha.squeeze(-1)
+        base_beta = beta.squeeze(-1)
+
+        sel_raw = self._gather_selected(resource_raw, target_actions)  # [B, R]
+        sel_type = self._gather_selected(candidate_types, target_actions).long()  # [B]
+        sel_type = torch.clamp(sel_type - 1, min=0, max=2)
+        type_oh = F.one_hot(sel_type, num_classes=3).to(dtype=sel_raw.dtype, device=sel_raw.device)
+        cond_in = torch.cat([sel_raw, type_oh], dim=-1)
+
+        delta = torch.tanh(self.power_cond_mlp(cond_in))
+        cond_scale = float(getattr(TC, "POWER_COND_SCALE", 0.20))
+        delta = delta * cond_scale
+
+        alpha_cond = torch.clamp(base_alpha * torch.exp(delta[:, 0]), min=1.001, max=100.0)
+        beta_cond = torch.clamp(base_beta * torch.exp(delta[:, 1]), min=1.001, max=100.0)
+        return Beta(alpha_cond, beta_cond)
 
     def prepare_inputs(self, obs_list: List[Dict], device='cpu') -> Dict[str, torch.Tensor]:
         """
@@ -387,7 +456,17 @@ class OffloadingPolicyNetwork(nn.Module):
         if action_mask is not None:
             resource_padding_mask = resource_padding_mask | (~action_mask)
 
-        commwait_extra = global_state if getattr(TC, "COMMWAIT_DIRECT_TO_CRITIC", False) else None
+        # 论文固定版：critic始终读取集中摘要global_state
+        # 测试/独立前向场景下若未提供，回退为零向量以保持输入维度一致。
+        if global_state is None:
+            gdim = int(getattr(TC, "CTDE_GLOBAL_DIM", 0))
+            if gdim > 0:
+                global_state = torch.zeros(
+                    (node_x.shape[0], gdim),
+                    dtype=node_x.dtype,
+                    device=node_x.device,
+                )
+        commwait_extra = global_state
         
         # 7. Actor-Critic输出
         target_logits, alpha, beta, value = self.actor_critic(
@@ -447,7 +526,11 @@ class OffloadingPolicyNetwork(nn.Module):
 
         # 3. Target采样（Categorical分布）
         # [通用化] 根据candidate_types动态赋logit_bias
-        target_logits = self._apply_logit_bias(target_logits, inputs['candidate_types'])
+        target_logits = self._apply_logit_bias(
+            target_logits,
+            inputs['candidate_types'],
+            action_mask=inputs['action_mask'],
+        )
         
         # 应用action_mask，将无效动作的logits设为极小值
         # [P33修复] 使用统一的MASK_VALUE常量
@@ -467,22 +550,34 @@ class OffloadingPolicyNetwork(nn.Module):
             target_actions = target_dist.sample()
         
         log_prob_target = target_dist.log_prob(target_actions)
-        
-        # 4. Power采样（Beta分布）
-        power_dist = Beta(alpha.squeeze(-1), beta.squeeze(-1))
+
+        # target类型：1=Local, 2=RSU, 3=V2V
+        sel_type = self._gather_selected(inputs['candidate_types'], target_actions).long()
+        remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
+
+        # 4. Power采样（条件Beta分布，显式依赖target）
+        power_dist = self._build_target_conditioned_power_dist(
+            alpha=alpha,
+            beta=beta,
+            resource_raw=inputs['resource_raw'],
+            candidate_types=inputs['candidate_types'],
+            target_actions=target_actions,
+        )
         
         if deterministic:
-            # 使用期望值作为确定性动作
-            power_actions = alpha / (alpha + beta)
+            power_actions = power_dist.mean
         else:
             power_actions = power_dist.sample()
-        
-        log_prob_power = power_dist.log_prob(power_actions.squeeze(-1))
+
+        # Local动作无发送功率语义：固定到0.5并mask掉power分量损失/熵
+        power_actions = torch.where(remote_mask > 0.0, power_actions, torch.full_like(power_actions, 0.5))
+        power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
+        log_prob_power = power_dist.log_prob(power_actions) * remote_mask
         
         # 5. 联合log概率
         log_probs = log_prob_target + log_prob_power
         
-        return target_actions, power_actions.squeeze(-1), log_probs, values
+        return target_actions, power_actions, log_probs, values
     
     def evaluate_actions(self,
                         obs_list: List[Dict],
@@ -528,7 +623,11 @@ class OffloadingPolicyNetwork(nn.Module):
         )
 
         # [通用化] 根据candidate_types动态赋logit_bias（与采样时一致）
-        target_logits = self._apply_logit_bias(target_logits, inputs['candidate_types'])
+        target_logits = self._apply_logit_bias(
+            target_logits,
+            inputs['candidate_types'],
+            action_mask=inputs['action_mask'],
+        )
 
         # 应用action_mask，将无效动作的logits设为极小值
         # [P33修复] 使用统一的MASK_VALUE常量
@@ -545,10 +644,19 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_target = target_dist.log_prob(target_actions)
         entropy_target = target_dist.entropy()
         
-        # 4. Power分布评估
-        power_dist = Beta(alpha.squeeze(-1), beta.squeeze(-1))
-        log_prob_power = power_dist.log_prob(power_actions)
-        entropy_power = power_dist.entropy()
+        # 4. Power分布评估（条件于target，必须与采样路径一致）
+        power_dist = self._build_target_conditioned_power_dist(
+            alpha=alpha,
+            beta=beta,
+            resource_raw=inputs['resource_raw'],
+            candidate_types=inputs['candidate_types'],
+            target_actions=target_actions,
+        )
+        sel_type = self._gather_selected(inputs['candidate_types'], target_actions).long()
+        remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
+        power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
+        log_prob_power = power_dist.log_prob(power_actions) * remote_mask
+        entropy_power = power_dist.entropy() * remote_mask
         
         # 5. 联合log概率和熵
         log_probs = log_prob_target + log_prob_power

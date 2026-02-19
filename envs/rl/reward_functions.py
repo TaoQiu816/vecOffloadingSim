@@ -66,6 +66,10 @@ def compute_unified_step_reward(
     """
     每步奖励（不含终局和 PBRS）。
 
+    口径约定（论文固定版）:
+    - E_tx: 仅 INPUT_TX 能耗（可控）
+    - I_caused: 仅 INPUT_TX 造成干扰（可控）
+
     Returns:
         (reward_step, info_dict)
     """

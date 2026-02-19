@@ -52,6 +52,47 @@ class DAGGenerator:
         self.regular = getattr(Cfg, 'DAG_REGULAR', 0.5)
         self.ccr = getattr(Cfg, 'DAG_CCR', 0.5)
 
+    @staticmethod
+    def _mix_enabled() -> bool:
+        return bool(getattr(Cfg, "TASK_CLASS_MIX_ENABLE", False))
+
+    @staticmethod
+    def _pick_task_class() -> str:
+        p_b = float(np.clip(getattr(Cfg, "TASK_CLASS_B_PROB", 0.2), 0.0, 1.0))
+        return "B" if np.random.rand() < p_b else "A"
+
+    @staticmethod
+    def _sample_totals_by_class(task_class: str) -> tuple[float, float]:
+        if task_class == "B":
+            d_min = float(getattr(Cfg, "TASK_B_TOTAL_DATA_MIN", 1.0e7))
+            d_max = float(getattr(Cfg, "TASK_B_TOTAL_DATA_MAX", 4.0e7))
+            c_min = float(getattr(Cfg, "TASK_B_TOTAL_COMP_MIN", 1.0e9))
+            c_max = float(getattr(Cfg, "TASK_B_TOTAL_COMP_MAX", 3.0e9))
+        else:
+            d_min = float(getattr(Cfg, "TASK_A_TOTAL_DATA_MIN", 1.0e5))
+            d_max = float(getattr(Cfg, "TASK_A_TOTAL_DATA_MAX", 1.0e7))
+            c_min = float(getattr(Cfg, "TASK_A_TOTAL_COMP_MIN", 1.0e8))
+            c_max = float(getattr(Cfg, "TASK_A_TOTAL_COMP_MAX", 1.0e9))
+
+        d_min, d_max = max(d_min, 1.0), max(d_max, d_min)
+        c_min, c_max = max(c_min, 1.0), max(c_max, c_min)
+        total_data = float(np.random.uniform(d_min, d_max))
+        total_comp = float(np.random.uniform(c_min, c_max))
+        return total_data, total_comp
+
+    @staticmethod
+    def _split_total(total: float, n: int, jitter: float) -> np.ndarray:
+        if n <= 0:
+            return np.zeros(0, dtype=float)
+        jit = float(np.clip(jitter, 0.0, 0.99))
+        lo = max(1e-3, 1.0 - jit)
+        hi = 1.0 + jit
+        w = np.random.uniform(lo, hi, size=n).astype(float)
+        w_sum = float(np.sum(w))
+        if w_sum <= 0:
+            return np.full(n, float(total) / float(n), dtype=float)
+        return (float(total) * w / w_sum).astype(float)
+
     def generate(self, num_nodes, veh_f=None):
         """
         生成单个DAG任务实例
@@ -109,20 +150,39 @@ class DAGGenerator:
         # 生成节点属性
         profiles = []
         in_degrees = np.sum(adj_matrix, axis=0)
+        entry_nodes = np.where(in_degrees == 0)[0]
+        if len(entry_nodes) == 0:
+            entry_nodes = np.array([0], dtype=int)
 
-        for i in range(num_nodes):
-            comp = np.random.uniform(*self.comp_range)
-            # 只有入度为0的节点（入口节点）才有输入数据
-            is_entry = (in_degrees[i] == 0)
-            inp_d = np.random.uniform(*self.input_range) if is_entry else 0.0
+        task_class = None
+        if self._mix_enabled():
+            task_class = self._pick_task_class()
+            total_data_bits, total_comp_cycles = self._sample_totals_by_class(task_class)
+            comp_jit = float(getattr(Cfg, "TASK_COMP_SPLIT_JITTER", 0.6))
+            data_jit = float(getattr(Cfg, "TASK_DATA_SPLIT_JITTER", 0.8))
+            comp_arr = self._split_total(total_comp_cycles, num_nodes, comp_jit)
+            entry_data_arr = self._split_total(total_data_bits, len(entry_nodes), data_jit)
 
-            profiles.append({
-                'comp': comp,       # 计算量 (Cycles)
-                'input_data': inp_d # 输入数据量 (Bits)
-            })
+            entry_data_map = {int(entry_nodes[k]): float(entry_data_arr[k]) for k in range(len(entry_nodes))}
+            for i in range(num_nodes):
+                profiles.append({
+                    'comp': float(comp_arr[i]),       # 计算量 (Cycles)
+                    'input_data': float(entry_data_map.get(int(i), 0.0))  # 输入数据量 (Bits)
+                })
+        else:
+            for i in range(num_nodes):
+                comp = np.random.uniform(*self.comp_range)
+                is_entry = (in_degrees[i] == 0)  # 只有入口节点有输入数据
+                inp_d = np.random.uniform(*self.input_range) if is_entry else 0.0
+                profiles.append({
+                    'comp': comp,       # 计算量 (Cycles)
+                    'input_data': inp_d # 输入数据量 (Bits)
+                })
 
         # 计算相对截止时间
-        deadline, gamma, critical_path_cycles, base_time = self._calc_deadline(num_nodes, adj_matrix, profiles, veh_f)
+        deadline, gamma, critical_path_cycles, base_time = self._calc_deadline(
+            num_nodes, adj_matrix, profiles, veh_f, task_class=task_class
+        )
 
         extras = {
             "deadline_gamma": gamma,
@@ -130,6 +190,7 @@ class DAGGenerator:
             "deadline_base_time": base_time,
             "deadline_seconds": deadline,
             "deadline_slack": getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0),
+            "task_class": task_class or "LEGACY",
         }
 
         return adj_matrix, profiles, data_matrix, deadline, extras
@@ -263,7 +324,7 @@ class DAGGenerator:
         }
         return adj_matrix, profiles, data_matrix, deadline, extras
 
-    def _calc_deadline(self, n, adj, profiles, f_base=None):
+    def _calc_deadline(self, n, adj, profiles, f_base=None, task_class=None):
         """
         计算相对截止时间（基于关键路径）
         
@@ -291,10 +352,13 @@ class DAGGenerator:
         comp_arr = np.array([p['comp'] for p in profiles], dtype=float)
         total_cycles = np.sum(comp_arr)
         
-        # 计算关键路径长度（最长路径计算量和）
+        # 计算关键路径长度（最长路径计算量和）与关键路径深度（节点数）
         cp_cycles = self._critical_path_cycles(adj, comp_arr)
+        cp_depth = self._critical_path_depth(adj)
         if cp_cycles <= 0 or not np.isfinite(cp_cycles):
             cp_cycles = total_cycles  # fallback
+        if cp_depth <= 0 or not np.isfinite(cp_depth):
+            cp_depth = float(max(1, n))
         
         if total_cycles <= 0 or not np.isfinite(total_cycles):
             total_cycles = Cfg.MEAN_COMP_LOAD * n
@@ -306,6 +370,11 @@ class DAGGenerator:
         
         # 物理下界：即使最优调度也无法突破
         LB0 = cp_cycles / f_max
+        # Step量化保护：DT离散仿真下，至少给关键路径深度对应的步数预算
+        dt = float(max(getattr(Cfg, "DT", 0.1), 1e-6))
+        delta = float(max(getattr(Cfg, "DEADLINE_STEP_GUARD_DELTA", 1.0), 0.0))
+        LB_step = (float(cp_depth) + delta) * dt
+        LB_star = max(LB0, LB_step)
         
         # 获取deadline模式
         mode = getattr(Cfg, 'DEADLINE_MODE', 'TOTAL_MEDIAN')
@@ -320,7 +389,20 @@ class DAGGenerator:
         slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
         eps = getattr(Cfg, 'DEADLINE_LB_EPS', 0.05)  # 下界裕量
         
-        if mode == 'FIXED_RANGE':
+        if self._mix_enabled() and task_class in ("A", "B"):
+            if task_class == "B":
+                d_min = float(getattr(Cfg, "TASK_B_DEADLINE_MIN", 1.0))
+                d_max = float(getattr(Cfg, "TASK_B_DEADLINE_MAX", 2.5))
+            else:
+                d_min = float(getattr(Cfg, "TASK_A_DEADLINE_MIN", 0.4))
+                d_max = float(getattr(Cfg, "TASK_A_DEADLINE_MAX", 1.0))
+            d_min = max(0.05, d_min)
+            d_max = max(d_min, d_max)
+            deadline_raw = float(np.random.uniform(d_min, d_max))
+            base_time = LB_star
+            gamma = deadline_raw / max(base_time, 1e-9)
+
+        elif mode == 'FIXED_RANGE':
             # 模式: 固定范围直接随机
             d_min = getattr(Cfg, 'DEADLINE_FIXED_MIN', 2.0)
             d_max = getattr(Cfg, 'DEADLINE_FIXED_MAX', 5.0)
@@ -335,7 +417,7 @@ class DAGGenerator:
             alpha_min = max(1.0, alpha_min)
             alpha_max = max(alpha_min, alpha_max)
             alpha = np.random.uniform(alpha_min, alpha_max)
-            base_time = LB0
+            base_time = LB_star
             deadline_raw = alpha * LB0 + slack
             gamma = deadline_raw / max(base_time, 1e-9)
             
@@ -357,14 +439,14 @@ class DAGGenerator:
             deadline_raw = gamma * base_time + slack
         
         # 物理下界保险：确保deadline至少比LB0大(1+eps)倍
-        deadline = max(deadline_raw, (1.0 + eps) * LB0)
+        deadline = max(deadline_raw, (1.0 + eps) * LB_star)
         
         # 安全检查
         if not np.isfinite(base_time) or base_time <= 0:
             base_time = Cfg.MIN_COMP / Cfg.MIN_VEHICLE_CPU_FREQ
         
         if not np.isfinite(deadline) or deadline <= 0:
-            deadline = max(0.1, (1.0 + eps) * LB0)
+            deadline = max(0.1, (1.0 + eps) * LB_star)
         
         return float(deadline), float(gamma), float(cp_cycles), float(base_time)
 
@@ -490,4 +572,27 @@ class DAGGenerator:
                 dp[u] = comp_arr[u]
             else:
                 dp[u] = comp_arr[u] + np.max(dp[preds])
+        return float(np.max(dp))
+
+    @staticmethod
+    def _critical_path_depth(adj):
+        n = int(adj.shape[0]) if adj is not None else 0
+        if n <= 0:
+            return 0.0
+        indeg = np.sum(adj, axis=0).astype(int)
+        order = []
+        queue = [i for i in range(n) if indeg[i] == 0]
+        while queue:
+            u = queue.pop(0)
+            order.append(u)
+            for v in np.where(adj[u] == 1)[0]:
+                indeg[v] -= 1
+                if indeg[v] == 0:
+                    queue.append(int(v))
+        if len(order) != n:
+            return float(n)
+        dp = np.ones(n, dtype=float)
+        for u in order:
+            for v in np.where(adj[u] == 1)[0]:
+                dp[v] = max(dp[v], dp[u] + 1.0)
         return float(np.max(dp))

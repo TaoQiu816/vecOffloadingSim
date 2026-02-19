@@ -60,12 +60,24 @@ class TrustManager:
         reliable_prob = getattr(Cfg, 'TRUST_RELIABLE_PROB', 0.8)
         p_rel_range = getattr(Cfg, 'TRUST_P_RELIABLE_RANGE', (0.7, 1.0))
         p_unrel_range = getattr(Cfg, 'TRUST_P_UNRELIABLE_RANGE', (0.3, 0.7))
+        rsu_range = getattr(Cfg, 'TRUST_P_RSU_RANGE', None)
+        veh_range = getattr(Cfg, 'TRUST_P_VEH_RANGE', None)
 
         for key in remote_node_keys:
-            if self.rng.random() < reliable_prob:
-                p_j = self.rng.uniform(p_rel_range[0], p_rel_range[1])
-            else:
-                p_j = self.rng.uniform(p_unrel_range[0], p_unrel_range[1])
+            p_j = None
+            node_type = key[0] if isinstance(key, tuple) and len(key) >= 1 else None
+            if node_type == 'RSU' and rsu_range is not None:
+                lo, hi = float(rsu_range[0]), float(rsu_range[1])
+                p_j = self.rng.uniform(min(lo, hi), max(lo, hi))
+            elif node_type == 'VEH' and veh_range is not None:
+                lo, hi = float(veh_range[0]), float(veh_range[1])
+                p_j = self.rng.uniform(min(lo, hi), max(lo, hi))
+
+            if p_j is None:
+                if self.rng.random() < reliable_prob:
+                    p_j = self.rng.uniform(p_rel_range[0], p_rel_range[1])
+                else:
+                    p_j = self.rng.uniform(p_unrel_range[0], p_unrel_range[1])
             self.hidden_reliability[key] = float(p_j)
             self.beta_a[key] = float(prior_a)
             self.beta_b[key] = float(prior_b)

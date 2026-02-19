@@ -51,11 +51,11 @@ class TrainConfig:
                             # 推荐范围: 64-256 (64 for fast prototyping, 256 for production)
                             # Recommended range: 64-256
     USE_SUBTASK_COND_CRITIC = True  # Critic是否使用当前子任务上下文
-    USE_SIMPLIFIED_CRITIC = True    # 是否使用简化版Critic Head
+    USE_SIMPLIFIED_CRITIC = False   # 默认使用集中式Critic（CTDE）
     USE_NO_READY_EMBEDDING = True   # subtask_index<0 时使用专用嵌入（避免误用节点0）
-    COMMWAIT_DIRECT_TO_CRITIC = False  # 是否将CommWait特征直连拼接到Critic输入
+    COMMWAIT_DIRECT_TO_CRITIC = True   # 将global_state直连到Critic（Actor不使用）
     # CTDE: centralized critic global summary dim（actor不使用）
-    CTDE_GLOBAL_DIM = 12
+    CTDE_GLOBAL_DIM = 30
 
     # -------------------------------------------------------------------------
     # 算法消融开关 (Algorithm Ablation Switches)
@@ -261,13 +261,13 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 0.0    # RSU偏置默认关闭，避免策略过早塌缩到RSU
+    LOGIT_BIAS_RSU = 0.05   # RSU轻微先验（类别级）
                             # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
                             #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
                             #   需要 b = ln(5) ≈ 1.6094
                             # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 1.2  # 适度保留Local探索偏置
+    LOGIT_BIAS_LOCAL = 0.20  # 轻微Local先验，避免人为强驱动分流
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
                             #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
                             #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
@@ -292,15 +292,26 @@ class TrainConfig:
                                # 影响: LOGIT_BIAS_RSU不会低于此值，保持RSU探索
                                # Impact: LOGIT_BIAS_RSU will not go below this value, maintains RSU exploration
     
-    BIAS_MIN_LOCAL = 0.8       # Local bias最小值 - Minimum Local bias [保持探索]
+    BIAS_MIN_LOCAL = 0.0       # Local bias最小值 - Minimum Local bias
                                # 影响: LOGIT_BIAS_LOCAL不会低于此值，保持Local探索
                                # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 
     # V2V 探索 bias（确保 early training 中 V2V tx 发生，使干扰惩罚与功率可学习）
-    LOGIT_BIAS_V2V_INIT = 0.8  # V2V 初始 logit bias（点亮干扰学习信号）
-    LOGIT_BIAS_V2V_END = 0.15  # 末段保留少量V2V探索，防止完全塌缩
-    LOGIT_BIAS_V2V_ANNEAL_STEPS = 140000  # 慢退火，训练后段仍保留少量V2V探索
-    _logit_bias_v2v_current = 0.8  # 运行时动态值（由 train.py 更新）
+    LOGIT_BIAS_V2V_INIT = 0.10  # V2V 轻微探索先验
+    LOGIT_BIAS_V2V_END = 0.0    # 论文固定版：末段先验归零，避免锁死
+    LOGIT_BIAS_V2V_ANNEAL_STEPS = 0  # 由统一类别退火日程控制
+    _logit_bias_v2v_current = 0.10  # 运行时动态值（由 train.py 更新）
+
+    # 论文固定版类别退火：前期轻先验，后期全部归零（不依赖分支/模式开关）
+    LOGIT_BIAS_LOCAL_INIT = 0.20
+    LOGIT_BIAS_RSU_INIT = 0.05
+    BIAS_ANNEAL_FRAC = 0.50  # 在训练前50%步数内线性退火到0
+    LOGIT_BIAS_LOCAL_END = 0.0
+    LOGIT_BIAS_LOCAL_ANNEAL_STEPS = 0
+    LOGIT_BIAS_RSU_END = 0.0
+    LOGIT_BIAS_RSU_ANNEAL_STEPS = 0
+    # 条件功率头强度（power | o,target）；越大表示target对功率分布影响越强
+    POWER_COND_SCALE = 0.20
 
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)

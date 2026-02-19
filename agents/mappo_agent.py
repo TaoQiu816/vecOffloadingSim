@@ -31,7 +31,6 @@ from typing import List, Dict, Tuple
 from models.offloading_policy import OffloadingPolicyNetwork
 from agents.rollout_buffer import RolloutBuffer
 from configs.train_config import TrainConfig as TC
-from configs.constants import MASK_VALUE
 
 
 class MAPPOAgent:
@@ -151,60 +150,14 @@ class MAPPOAgent:
             values: 状态价值
             entropy: 熵
         """
-        # 提取target和power
         target_actions = torch.tensor([a['target'] for a in actions], dtype=torch.long, device=self.device)
         power_actions = torch.tensor([a['power'] for a in actions], dtype=torch.float32, device=self.device)
-        
-        # 准备输入
-        inputs = self.network.prepare_inputs(obs_list, self.device)
-        
-        # 前向传播
-        target_logits, alpha, beta, values = self.network.forward(
-            node_x=inputs['node_x'],
-            adj=inputs['adj'],
-            status=inputs['status'],
-            location=inputs['location'],
-            L_fwd=inputs['L_fwd'],
-            L_bwd=inputs['L_bwd'],
-            data_matrix=inputs['data_matrix'],
-            delta=inputs['delta'],
-            resource_ids=inputs['resource_ids'],
-            resource_raw=inputs['resource_raw'],
-            subtask_index=inputs['subtask_index'],
-            action_mask=inputs['action_mask'],
-            task_mask=inputs['task_mask'],
-            rate_prev=inputs.get('rate_prev'),
-            serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
-            global_state=inputs.get('global_state'),
+        log_probs, entropy, values = self.network.evaluate_actions(
+            obs_list=obs_list,
+            target_actions=target_actions,
+            power_actions=power_actions,
+            device=self.device,
         )
-        
-        # [通用化] 根据candidate_types动态赋logit_bias
-        from configs.train_config import TrainConfig as TC
-        target_logits = self.network._apply_logit_bias(target_logits, inputs['candidate_types'])
-        
-        # 应用action_mask
-        # [P33修复] 使用统一的MASK_VALUE常量
-        action_mask_tensor = inputs['action_mask']
-        masked_logits = torch.where(
-            action_mask_tensor > 0,
-            target_logits,
-            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
-        )
-        
-        target_probs = torch.softmax(masked_logits, dim=-1)
-        target_dist = torch.distributions.Categorical(target_probs)
-        log_prob_target = target_dist.log_prob(target_actions)
-        entropy_target = target_dist.entropy()
-        
-        # 计算power的log_prob和entropy
-        power_dist = torch.distributions.Beta(alpha.squeeze(-1), beta.squeeze(-1))
-        log_prob_power = power_dist.log_prob(power_actions)
-        entropy_power = power_dist.entropy()
-        
-        # 联合log_prob和entropy
-        log_probs = log_prob_target + log_prob_power
-        entropy = entropy_target + entropy_power
-        
         return log_probs, values.squeeze(-1), entropy
     
     def update(self, buffer: RolloutBuffer, batch_size: int = 64) -> float:
