@@ -11,19 +11,17 @@ ENV/
 env/
 
 # 训练输出
-# runs 默认不同步（训练/测试数据均视为非核心产物）
-runs/*
+# runs 下默认同步训练结果；仅忽略测试/临时产物
 !runs/.gitkeep
 /logs/
 # 非核心/临时仿真产物（不同步）
 runs/tmp*
+runs/test*
 runs/accept_*
-runs/smoke5_*
-runs/reg50_*
+runs/smoke*
+runs/reg*
 runs/quick_train_patch_check/
 runs/exp_contract_demo/
-runs/*.train.log
-runs/tmp_*
 
 # 模型文件（较大，不同步）
 models/*.pth

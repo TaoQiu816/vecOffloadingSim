@@ -1,0 +1,6 @@
+rl_metrics_path=/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/paper_stageB_seed42_20260217_183854/metrics/train_metrics.csv
+episodes=600
+baseline_rows=840
+baseline_statistics_basis=raw_matched_tail
+window=100
+report=/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/paper_stageB_seed42_20260217_183854/final_rigorous_cn/rigorous_report_cn.md
