@@ -114,7 +114,8 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     
     for ep in tqdm(range(num_episodes), desc=f"{policy_name}"):
         obs_list, _ = env.reset(seed=ep)
-        policy.reset()
+        if hasattr(policy, "reset") and callable(getattr(policy, "reset")):
+            policy.reset()
         
         ep_reward = 0
         ep_decisions = {'local': 0, 'rsu': 0, 'v2v': 0}

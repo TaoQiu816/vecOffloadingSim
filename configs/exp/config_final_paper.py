@@ -82,7 +82,14 @@ FINAL_ENV = {
     "R_FAIL": 20.0,
     "P_SUCC": 1.0,
     "P_FAIL": 1.0,
+    # robust scale controls for unified step terms (Fix-A)
+    "ENERGY_RATIO_CLIP_UNIFIED": 1.0,
     "INTERF_RATIO_CLIP_UNIFIED": 3.0,
+    "RISK_RATIO_CLIP_UNIFIED": 1.0,
+    "REWARD_REF_EMA_ALPHA": 0.05,
+    "REWARD_REF_ENERGY_MIN": 1e-8,
+    "REWARD_REF_RISK_MIN": 0.05,
+    "RISK_REF_UNIFIED_INIT": 0.25,
     "E_REF_UNIFIED": 2.0,
 }
 
@@ -100,19 +107,27 @@ FINAL_TRAIN = {
     "CMDP_WARMUP_EPISODES": 0,
     # category-level mild prior + group-size correction (implemented in policy)
     "USE_LOGIT_BIAS": True,
-    "LOGIT_BIAS_LOCAL_INIT": 1.30,
+    "LOGIT_BIAS_LOCAL_INIT": 0.20,
     "LOGIT_BIAS_RSU_INIT": 0.05,
     "LOGIT_BIAS_V2V_INIT": 0.05,
-    "BIAS_ANNEAL_FRAC": 0.50,
-    "LOGIT_BIAS_LOCAL_END": 0.0,
-    "LOGIT_BIAS_RSU_END": 0.0,
-    "LOGIT_BIAS_V2V_END": 0.0,
+    "BIAS_ANNEAL_FRAC": 0.65,
+    "LOGIT_BIAS_LOCAL_END": 0.00,
+    "LOGIT_BIAS_RSU_END": 0.03,
+    "LOGIT_BIAS_V2V_END": 0.03,
     "LOGIT_BIAS_LOCAL_ANNEAL_STEPS": 0,
     "LOGIT_BIAS_RSU_ANNEAL_STEPS": 0,
     "LOGIT_BIAS_V2V_ANNEAL_STEPS": 0,
+    # PPO stability tightening (Fix-A)
+    "TARGET_KL": 0.015,
+    "TARGET_KL_STOP_MULT": 1.25,
+    "PPO_EPOCH": 4,
+    "MINI_BATCH_SIZE": 512,
+    "USE_LR_DECAY": True,
+    "LR_DECAY_STEPS": 100,
+    "LR_DECAY_RATE": 0.95,
     # exploration schedule
     "ENTROPY_COEF_START": 0.0030,
-    "ENTROPY_COEF_END": 0.0012,
+    "ENTROPY_COEF_END": 0.0018,
     "ENTROPY_ANNEAL_STEPS": 120000,
 }
 

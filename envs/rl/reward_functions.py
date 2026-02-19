@@ -61,7 +61,7 @@ def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt,
 def compute_unified_step_reward(
     dt, Td, E_tx, I_caused, illegal,
     is_remote=False, rho_target=1.0,
-    E_ref=None, I_ref=None,
+    E_ref=None, I_ref=None, risk_ref=None,
 ):
     """
     每步奖励（不含终局和 PBRS）。
@@ -99,14 +99,24 @@ def compute_unified_step_reward(
     I_ref = max(I_ref, I_ref_floor, 1e-12)
 
     r_time = -w_t * (dt / Td)
-    r_energy = -w_e * (max(E_tx, 0.0) / E_ref) ** p_e
+    energy_ratio = max(E_tx, 0.0) / E_ref
+    energy_ratio_clip = float(getattr(Cfg, "ENERGY_RATIO_CLIP_UNIFIED", 3.0))
+    if energy_ratio_clip > 0.0:
+        energy_ratio = min(energy_ratio, energy_ratio_clip)
+    r_energy = -w_e * (energy_ratio ** p_e)
     interf_ratio = max(I_caused, 0.0) / I_ref
     ratio_clip = float(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 0.0))
     if ratio_clip > 0.0:
         interf_ratio = min(interf_ratio, ratio_clip)
     r_interf = -w_I * (interf_ratio ** p_I)
     rho_target = float(np.clip(rho_target, 0.0, 1.0))
-    r_risk = -w_risk * ((1.0 - rho_target) ** p_risk) if bool(is_remote) else 0.0
+    risk_gap = (1.0 - rho_target)
+    risk_ref_val = 1.0 if risk_ref is None else max(float(risk_ref), 1e-6)
+    risk_ratio = max(risk_gap, 0.0) / risk_ref_val
+    risk_ratio_clip = float(getattr(Cfg, "RISK_RATIO_CLIP_UNIFIED", 3.0))
+    if risk_ratio_clip > 0.0:
+        risk_ratio = min(risk_ratio, risk_ratio_clip)
+    r_risk = -w_risk * (risk_ratio ** p_risk) if bool(is_remote) else 0.0
     r_illegal = -w_ill * float(illegal)
 
     r_step = r_time + r_energy + r_interf + r_risk + r_illegal
@@ -117,11 +127,12 @@ def compute_unified_step_reward(
         'r_interf': float(r_interf),
         'r_risk': float(r_risk),
         'r_illegal': float(r_illegal),
-        'energy_norm': float(max(E_tx, 0.0) / E_ref),
+        'energy_norm': float(energy_ratio),
         'E_tx': float(E_tx),
         'I_caused': float(I_caused),
         'I_ref_used': float(I_ref),
         'interf_ratio': float(interf_ratio),
+        'risk_ratio': float(risk_ratio),
         'rho_target': float(rho_target),
         'is_remote': bool(is_remote),
     }

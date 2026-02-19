@@ -1,0 +1,24 @@
+{
+  "phase_summary_csv": "runs/train600_seed42_20260219_141820/audit_results/step3_phase_drift_summary.csv",
+  "reward_scale_csv": "runs/train600_seed42_20260219_141820/audit_results/step3_reward_component_scale.csv",
+  "reward_share_csv": "runs/train600_seed42_20260219_141820/audit_results/step3_reward_component_share.csv",
+  "reward_episode_csv": "runs/train600_seed42_20260219_141820/audit_results/step3_reward_decomp_episode.csv",
+  "training_health": {
+    "episodes": 600,
+    "early_stop_true_ratio": 1.0,
+    "approx_kl_p50": 0.022086077175723952,
+    "approx_kl_p95": 0.05209506843239061,
+    "entropy_p50": 1.1301696598529816,
+    "entropy_p95": 1.3009092044830322,
+    "lr_unique_count": 1,
+    "lr_first": 0.0003,
+    "lr_last": 0.0003
+  },
+  "mid_vs_last_delta": {
+    "task_success_rate_mean_delta_last_minus_mid": -0.12800000000000006,
+    "deadline_miss_rate_mean_delta_last_minus_mid": 0.1296666666666667,
+    "decision_frac_local_mean_delta_last_minus_mid": -0.2641595198867366,
+    "decision_frac_rsu_mean_delta_last_minus_mid": 0.2692289750940876,
+    "decision_frac_v2v_mean_delta_last_minus_mid": -0.005069455207350748
+  }
+}

@@ -600,11 +600,19 @@ def apply_env_overrides():
     tc_float = {
         "GAMMA": "GAMMA",
         "CLIP_PARAM": "CLIP_PARAM",
+        "TARGET_KL": "TARGET_KL",
+        "TARGET_KL_STOP_MULT": "TARGET_KL_STOP_MULT",
+        "MAX_GRAD_NORM": "MAX_GRAD_NORM",
         "ENTROPY_COEF": "ENTROPY_COEF",
         "ENTROPY_COEF_START": "ENTROPY_COEF_START",
         "ENTROPY_COEF_END": "ENTROPY_COEF_END",
         "LR_ACTOR": "LR_ACTOR",
         "LR_CRITIC": "LR_CRITIC",
+        "BIAS_ANNEAL_FRAC": "BIAS_ANNEAL_FRAC",
+        "LOGIT_BIAS_LOCAL_INIT": "LOGIT_BIAS_LOCAL_INIT",
+        "LOGIT_BIAS_LOCAL_END": "LOGIT_BIAS_LOCAL_END",
+        "LOGIT_BIAS_RSU_INIT": "LOGIT_BIAS_RSU_INIT",
+        "LOGIT_BIAS_RSU_END": "LOGIT_BIAS_RSU_END",
         "LOGIT_BIAS_LOCAL": "LOGIT_BIAS_LOCAL",
         "LOGIT_BIAS_RSU": "LOGIT_BIAS_RSU",
         "VALUE_CLIP_RANGE": "VALUE_CLIP_RANGE",
@@ -621,6 +629,7 @@ def apply_env_overrides():
         "LOGIT_BIAS_V2V_END": "LOGIT_BIAS_V2V_END",
     }
     tc_int = {
+        "PPO_EPOCH": "PPO_EPOCH",
         "MINI_BATCH_SIZE": "MINI_BATCH_SIZE",
         "MIN_ACTIVE_SAMPLES": "MIN_ACTIVE_SAMPLES",
         "LR_DECAY_STEPS": "LR_DECAY_STEPS",
@@ -641,6 +650,9 @@ def apply_env_overrides():
     use_logit_bias = _env_bool("USE_LOGIT_BIAS")
     if use_logit_bias is not None:
         TC.USE_LOGIT_BIAS = use_logit_bias
+    use_lr_decay = _env_bool("USE_LR_DECAY")
+    if use_lr_decay is not None:
+        TC.USE_LR_DECAY = use_lr_decay
     use_value_clip = _env_bool("USE_VALUE_CLIP")
     if use_value_clip is not None:
         TC.USE_VALUE_CLIP = use_value_clip
@@ -2544,18 +2556,21 @@ def main():
         # =====================================================================
         _global_train_steps += total_steps
         if TC.USE_LOGIT_BIAS:
-            # 论文固定版：类别级轻先验，在线性日程内统一退火到0，避免末段先验锁死。
+            # 类别级轻先验：按线性日程从 INIT 退火到 END（通常END=0）。
             _total_plan_steps = max(int(getattr(TC, "MAX_EPISODES", 1) * getattr(TC, "MAX_STEPS", 1)), 1)
             _anneal_frac = float(np.clip(getattr(TC, "BIAS_ANNEAL_FRAC", 0.50), 0.05, 1.0))
             _anneal_steps = max(int(_total_plan_steps * _anneal_frac), 1)
             _prog = min(_global_train_steps / float(_anneal_steps), 1.0)
-            _remain = 1.0 - _prog
             _l0 = float(getattr(TC, "LOGIT_BIAS_LOCAL_INIT", 0.2))
+            _l1 = float(getattr(TC, "LOGIT_BIAS_LOCAL_END", 0.0))
             _r0 = float(getattr(TC, "LOGIT_BIAS_RSU_INIT", 0.05))
+            _r1 = float(getattr(TC, "LOGIT_BIAS_RSU_END", 0.0))
             _v0 = float(getattr(TC, "LOGIT_BIAS_V2V_INIT", 0.10))
-            TC.LOGIT_BIAS_LOCAL = _l0 * _remain
-            TC.LOGIT_BIAS_RSU = _r0 * _remain
-            TC._logit_bias_v2v_current = _v0 * _remain
+            _v1 = float(getattr(TC, "LOGIT_BIAS_V2V_END", 0.0))
+            # 线性插值: bias = init + prog * (end - init)
+            TC.LOGIT_BIAS_LOCAL = _l0 + _prog * (_l1 - _l0)
+            TC.LOGIT_BIAS_RSU = _r0 + _prog * (_r1 - _r0)
+            TC._logit_bias_v2v_current = _v0 + _prog * (_v1 - _v0)
         else:
             TC.LOGIT_BIAS_LOCAL = 0.0
             TC.LOGIT_BIAS_RSU = 0.0

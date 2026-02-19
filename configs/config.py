@@ -33,9 +33,10 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.1 道路模型参数 (Road Model)
     # -------------------------------------------------------------------------
-    MAP_SIZE = 1000.0       # 道路长度 (m) - Road segment length
-                            # 影响: 仿真区域大小，影响车辆密度和RSU覆盖范围
-                            # Impact: Simulation area size, affects vehicle density and RSU coverage
+    MAP_SIZE = 2000.0       # 道路长度 (m) - Road segment length
+                            # 2000m + 3 RSU + RSU_RANGE=350m → d_inter=666.7m，
+                            # 边界重叠=32.8m(4.9%)，全路段覆盖，RSU_RANGE>V2V_RANGE(250m)
+                            # Impact: 2000m road with 3 RSUs at 350m range gives full coverage + minimal overlap
     
     NUM_LANES = 2           # 车道数量 - Number of lanes
                             # 影响: 车辆横向分布，减少换道干扰
@@ -48,9 +49,9 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.2 车辆参数 (Vehicle Parameters)
     # -------------------------------------------------------------------------
-    NUM_VEHICLES = 30       # 初始车辆数 - Initial number of vehicles (提高密度)
-                            # 影响: 网络负载和V2V候选数量，对齐文献参数
-                            # Impact: Network load and V2V candidates; aligned with literature
+    NUM_VEHICLES = 20       # 初始车辆数 - Initial number of vehicles
+                            # 影响: 网络负载和V2V候选数量，20辆适配1000m道路密度
+                            # Impact: Network load and V2V candidates; 20 vehicles for 1000m road
 
     V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
     # 候选集模式（锁定为ALL_FEASIBLE）
@@ -103,9 +104,9 @@ class SystemConfig:
     # 车辆生成位置范围 (相对于MAP_SIZE的比例)
     # Vehicle spawn position range (ratio of MAP_SIZE)
     VEHICLE_SPAWN_X_MIN = 0.0   # 最小X位置比例 - Min X position ratio
-    VEHICLE_SPAWN_X_MAX = 0.8   # 最大X位置比例 - Max X position ratio
-                                # 0.8确保车辆能覆盖RSU_0,1,2（覆盖[0,800]m）
-                                # 0.8 ensures vehicles can reach RSU_0,1,2 (covers [0,800]m)
+    VEHICLE_SPAWN_X_MAX = 0.85  # 最大X位置比例 - Max X position ratio
+                                # 0.85×2000m=1700m>RSU2(1666.7m)，确保车辆初始覆盖全部3个RSU区域
+                                # 0.85 ensures initial vehicles span all 3 RSU zones (up to 1700m)
     
     DT = 0.1                # 仿真时间步长 (s) - Simulation time step (文献二)
                             # 影响: 精度与计算开销权衡，0.1s降低50%开销
@@ -134,8 +135,10 @@ class SystemConfig:
                             # Impact: V2I path loss; 10m is standard height
     
     RSU_RANGE = 350.0       # RSU覆盖半径 (m) - RSU coverage radius (文献二: 500m直径)
-                            # 影响: V2I通信范围，250m半径对齐文献
-                            # Impact: V2I communication range; 250m radius aligned with literature
+                            # 几何依据: 3 RSU等间距(d=666.7m)双侧部署(h=10/17m)，
+                            # R=350m → 水平覆盖≈349.6m ≈ d/2×1.05，相邻边界重叠≈32.8m(4.9%)
+                            # RSU_RANGE(350m) > V2V_RANGE(250m)，符合文献设定
+                            # Impact: 350m radius, full 2000m coverage with ~5% boundary overlap
     
     RSU_POS = np.array([500.0, 500.0])  # 默认RSU位置（向后兼容）
                                          # Default RSU position (backward compatibility)
@@ -178,10 +181,10 @@ class SystemConfig:
     # V2I链路模型开关：
     # - SHARE: 旧模型（按RSU用户数共享带宽）
     # - RB_SINR: PRB级建模（RSU内正交 + 跨RSU同RB干扰）
-    V2I_RATE_MODEL = "SHARE"
+    V2I_RATE_MODEL = "RB_SINR"
     V2I_RB_BW_HZ = 180e3               # 单RB带宽口径（ETSI/3GPP常用）
     V2I_NUM_RB = int(round(BW_V2I / V2I_RB_BW_HZ))
-    V2I_ICI_ENABLED = False            # 跨RSU同RB干扰（Inter-Cell Interference）
+    V2I_ICI_ENABLED = True             # 跨RSU同RB干扰（Inter-Cell Interference）
     V2I_FREQ_REUSE_FACTOR = 1          # 复用因子，1=全复用
     
     # -------------------------------------------------------------------------
@@ -701,20 +704,24 @@ class SystemConfig:
     P_RISK = 1.5                    # 信誉风险惩罚指数 p_risk
     W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
     # E_ref / I_ref
-    # [N=20对比建议] 统一奖励中的能耗项当前包含了本地计算能耗分量，量级可到J~10J以上；
-    # 若仍使用0.02J会导致能耗项过强、训练退化为近单目标。取15J可保持能耗敏感且不过度主导。
-    E_REF_UNIFIED = 15.0
+    # 奖励中能耗项仅统计 INPUT_TX 发射能耗（comm_queue_service: energy = p_tx * time_used）。
+    # 实测上界: P_MAX_WATT * DT = 0.1995W * 0.1s ≈ 0.02J。将 E_REF 设为与上界同量级，
+    # 使 energy_ratio 在正常工作点附近为 O(1)，确保梯度有效传播。
+    E_REF_UNIFIED = 0.02
     I_REF_D0 = V2V_RANGE / 2.0     # I_ref 参考距离 d0
-    # 数值稳定: 防止 I_ref 过小导致 r_interf 在早期出现极端爆表值。
-    # 不改变干扰动力学，仅用于奖励归一化尺度。
-    I_REF_MIN_UNIFIED = 1e-8
+    # EMA能耗下界: 必须 >= E_REF_UNIFIED，防止policy全-Local时energy_ref漂移到1e-8，
+    # 导致任何远程发射都触发max-clip，彻底摧毁功率控制梯度。
+    REWARD_REF_ENERGY_MIN = 0.02    # = E_REF_UNIFIED，锚定物理上界（P_MAX × DT）
+    # 干扰EMA下界: RB_SINR+ICI下实测i_caused_input峰值约3.8e-7 W；
+    # 设floor=1e-7使正常工作点ratio≈1~3，保留功率控制梯度；1e-8过低导致ratio永久clip。
+    I_REF_MIN_UNIFIED = 1e-7
     # 对 I_caused/I_ref 做上界裁剪，避免单项奖励主导训练。
     INTERF_RATIO_CLIP_UNIFIED = 3.0
     REWARD_SCALE_E_RATIO_CAP = 1.5   # 训练前尺度核验用：energy_norm上界假设
     # PBRS
     PBRS_BETA = 0.1                 # PBRS 系数 beta
     PBRS_GAMMA = 0.99               # PBRS 折扣 gamma
-    PBRS_Q = 1.2                    # Phi 指数 q (>1 超线性势函数)
+    PBRS_Q = 1.0                    # Phi 指数 q=1（线性势能，简化参数；q=1.2与1.0行为接近）
     PBRS_EPS = 1e-3                 # Phi 下界 eps
     PBRS_PHI_CLIP_UNIFIED = 5.0     # Phi 裁剪
 

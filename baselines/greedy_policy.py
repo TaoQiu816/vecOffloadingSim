@@ -138,9 +138,10 @@ class GreedyPolicy:
                         q_wait = float(self.env._compute_comm_wait(vehicle.id).get("total_v2i", 0.0))
                         rate = self._estimate_rate(obs, target_idx, 2, vehicle, rsu.position, "V2I")
                         t_tx = self._tx_time_seconds(task_data, rate)
-                        rsu_q_cycles = float(self.env._get_rsu_queue_load(rsu_id))
-                        t_comp = (task_comp + rsu_q_cycles) / max(float(rsu.cpu_freq), 1e-6)
-                        score = q_wait + t_tx + t_comp
+                        # 使用最短处理器等待时间（多核正确建模），而非全量cycles之和
+                        t_rsu_wait = float(self.env._get_rsu_queue_wait_time(rsu_id))
+                        t_comp = task_comp / max(float(rsu.cpu_freq), 1e-6)
+                        score = q_wait + t_tx + t_rsu_wait + t_comp
                         # 信誉风险保守修正：rho低时放大远端代价（与环境口径一致，不改动力学）
                         rho = 1.0
                         if obs.get("resource_raw") is not None and target_idx < obs["resource_raw"].shape[0] and obs["resource_raw"].shape[1] >= 13:

@@ -211,9 +211,9 @@ class TrainConfig:
                             # Recommended range: 64-256
 
     ENTROPY_COEF = 0.001    # 当前生效熵系数（运行时可退火更新）
-    ENTROPY_COEF_START = 0.004  # 初始熵系数（增强早期探索）
+    ENTROPY_COEF_START = 0.03   # 初始熵系数（标准PPO范围0.01~0.05，防止ep50内崩溃）
     ENTROPY_COEF_END = 0.001    # 末端熵系数（与历史默认保持一致）
-    ENTROPY_ANNEAL_STEPS = 140000  # 熵退火步数（约覆盖1000ep*200steps的70%）
+    ENTROPY_ANNEAL_STEPS = 140000  # 熵退火步数：1000ep×200steps×70%=140000，前70%探索后收敛
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -267,7 +267,7 @@ class TrainConfig:
                             #   需要 b = ln(5) ≈ 1.6094
                             # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 0.20  # 轻微Local先验，避免人为强驱动分流
+    LOGIT_BIAS_LOCAL = 0.0   # 移除Local先验：实验证明0.20偏置在ep50内即可锁死策略
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
                             #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
                             #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
@@ -303,7 +303,7 @@ class TrainConfig:
     _logit_bias_v2v_current = 0.10  # 运行时动态值（由 train.py 更新）
 
     # 论文固定版类别退火：前期轻先验，后期全部归零（不依赖分支/模式开关）
-    LOGIT_BIAS_LOCAL_INIT = 0.20
+    LOGIT_BIAS_LOCAL_INIT = 0.0
     LOGIT_BIAS_RSU_INIT = 0.05
     BIAS_ANNEAL_FRAC = 0.50  # 在训练前50%步数内线性退火到0
     LOGIT_BIAS_LOCAL_END = 0.0
@@ -316,11 +316,8 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 1500      # 总训练Episodes - Total training episodes [审计调优: 增加训练量]
-                            # 影响: 足够的训练量以验证收敛性
-                            # Impact: Sufficient training for convergence verification
-                            # 验证目标: Task Success Rate > 0%, Decision分布合理, Entropy收敛
-                            # Validation goals: Task Success Rate > 0%, balanced decisions, entropy converges
+    MAX_EPISODES = 1000      # 总训练Episodes - Total training episodes
+                            # 1000ep × 200steps = 200,000 env steps
                             # 推荐范围: 500 (验证), 1000-3000 (完整训练)
                             # Recommended range: 500 (validation), 1000-3000 (full training)
     

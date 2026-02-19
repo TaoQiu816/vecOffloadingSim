@@ -60,9 +60,11 @@ class MAPPOAgent:
         
         # 学习率调度器
         if TC.USE_LR_DECAY:
+            # train.py 仅在每个 decay interval 调用一次 decay_lr()；
+            # 这里 step_size 需为 1，才能按 interval 实际衰减。
             self.scheduler = torch.optim.lr_scheduler.StepLR(
                 self.optimizer,
-                step_size=TC.LR_DECAY_STEPS,
+                step_size=1,
                 gamma=TC.LR_DECAY_RATE
             )
         else:
@@ -214,6 +216,7 @@ class MAPPOAgent:
 
         early_stop = False
         target_kl = getattr(TC, "TARGET_KL", None)
+        kl_stop_mult = float(max(getattr(TC, "TARGET_KL_STOP_MULT", 1.5), 1.0))
         for _ in range(TC.PPO_EPOCH):
             if early_stop:
                 break
@@ -322,7 +325,11 @@ class MAPPOAgent:
                     total_value_pred_mean += float(value_pred_mean.item())
                     total_value_pred_std += float(value_pred_std.item())
                     num_updates += 1
-                if target_kl is not None and target_kl > 0.0 and approx_kl.item() > target_kl:
+                if (
+                    target_kl is not None
+                    and target_kl > 0.0
+                    and approx_kl.item() > (target_kl * kl_stop_mult)
+                ):
                     early_stop = True
                     break
 

@@ -89,11 +89,7 @@ class VecOffloadingEnv(gym.Env):
             config: 配置类（可选，默认使用全局Cfg）
         """
         # 使用传入的config或全局Cfg
-        if config is not None:
-            self.config = config
-        else:
-            from configs.config import SystemConfig as Cfg
-            self.config = Cfg
+        self.config = config if config is not None else Cfg
         
         self.channel = ChannelModel()
         self.dag_gen = DAGGenerator()
@@ -161,6 +157,11 @@ class VecOffloadingEnv(gym.Env):
         self._episode_risk_penalty_values = []
         self._episode_I_total_values = []
         self._episode_I_caused_input_values = []
+        self._reward_ref_ema = {
+            "energy": float(max(getattr(self.config, "E_REF_UNIFIED", Cfg.P_MAX_WATT * self.config.DT), 1e-12)),
+            "interf": float(max(getattr(self.config, "I_REF_MIN_UNIFIED", 1e-8), 1e-12)),
+            "risk": float(max(getattr(self.config, "RISK_REF_UNIFIED_INIT", 0.25), 1e-6)),
+        }
         self._last_obs_stamp = None
         # [P2性能统计] 运行期累积器
         self._p2_active_time = 0.0
@@ -306,6 +307,7 @@ class VecOffloadingEnv(gym.Env):
             'location': gym.spaces.Box(low=0, high=max_loc_id, shape=(self.config.MAX_NODES,), dtype=np.int32),
             'priority': gym.spaces.Box(low=0.0, high=1.0, shape=(self.config.MAX_NODES,), dtype=np.float32),
             'obs_stamp': gym.spaces.Box(low=0, high=self.config.MAX_STEPS, shape=(), dtype=np.int64),
+            'global_state': gym.spaces.Box(low=0.0, high=1.0, shape=(30,), dtype=np.float32),
         })
         
         # =====================================================================
@@ -1198,53 +1200,64 @@ class VecOffloadingEnv(gym.Env):
 
         return plans
 
+    def _update_reward_ref_ema(self, key, p95_value):
+        alpha = float(np.clip(getattr(self.config, "REWARD_REF_EMA_ALPHA", 0.05), 1e-3, 1.0))
+        if key == "energy":
+            floor = float(max(getattr(self.config, "REWARD_REF_ENERGY_MIN", 1e-8), 1e-12))
+        elif key == "interf":
+            floor = float(max(getattr(self.config, "I_REF_MIN_UNIFIED", 1e-8), 1e-12))
+        else:
+            floor = float(max(getattr(self.config, "REWARD_REF_RISK_MIN", 0.05), 1e-6))
+        cap = float(max(getattr(self.config, "REWARD_REF_EMA_CAP", 1e3), floor))
+        curr = float(np.clip(np.nan_to_num(p95_value, nan=0.0, posinf=cap, neginf=0.0), floor, cap))
+        prev = float(self._reward_ref_ema.get(key, curr))
+        new_val = (1.0 - alpha) * prev + alpha * curr
+        self._reward_ref_ema[key] = float(np.clip(new_val, floor, cap))
+        return self._reward_ref_ema[key]
+
     def _init_rsus(self):
         """
-        初始化RSU实体列表（道路模型：等间距线性部署）
-        
-        RSU部署公式：
-        - Pos_RSU_j = ((j-1)*D_inter + D_inter/2, Y_RSU)
-        - Y_RSU = ROAD_WIDTH + RSU_Y_DIST
-        - D_inter = MAP_SIZE / NUM_RSU
-        - 断言：NUM_RSU * D_inter >= MAP_SIZE 以确保全覆盖
+        初始化RSU实体列表（道路模型：等间距双侧交替部署）
+
+        部署规则：
+        - RSU 均匀分布在 [0, MAP_SIZE] 上，间距 d = MAP_SIZE / NUM_RSU
+        - 偶数编号 RSU（0,2,...）位于道路右侧（+Y）：y =  road_width + RSU_Y_DIST
+        - 奇数编号 RSU（1,3,...）位于道路左侧（-Y）：y = -RSU_Y_DIST
+        - 双侧部署减少单侧遮挡，x 方向水平覆盖 ≈ d/2，相邻 RSU 仅有少量边界重叠
         """
         num_rsu = getattr(Cfg, 'NUM_RSU', 3)
         self.rsus = []
-        
-        # 计算道路宽度和RSU Y坐标
+
         road_width = getattr(Cfg, 'NUM_LANES', 3) * getattr(Cfg, 'LANE_WIDTH', 3.5)
-        rsu_y_dist = getattr(Cfg, 'RSU_Y_DIST', 20.0)
-        y_rsu = road_width + rsu_y_dist  # RSU的Y坐标（固定值）
-        
-        # 计算RSU部署间距
+        rsu_y_dist = getattr(Cfg, 'RSU_Y_DIST', 10.0)
+        y_right = road_width + rsu_y_dist   # 右侧（上方），例如 +17m
+        y_left  = -rsu_y_dist               # 左侧（下方），例如 -10m
+
         map_size = self.config.MAP_SIZE
-        d_inter = map_size / num_rsu  # 等间距部署
-        
-        # 自动计算保证全覆盖的最小RSU覆盖半径
-        # 全覆盖条件：x_coverage >= d_inter/2（相邻RSU覆盖无盲区+端点覆盖）
-        # x_coverage = sqrt(R^2 - y_rsu^2)，因此 R >= sqrt((d_inter/2)^2 + y_rsu^2)
-        min_range = np.sqrt((d_inter / 2) ** 2 + y_rsu ** 2)
-        rsu_range = max(self.config.RSU_RANGE, min_range * 1.05)  # 留5%裕量
+        d_inter = map_size / num_rsu        # 等间距
+
+        # 全覆盖校验：用两侧中较大的 h 做保守估计
+        h_max = max(abs(y_right), abs(y_left))
+        min_range = np.sqrt((d_inter / 2) ** 2 + h_max ** 2)
+        rsu_range = max(self.config.RSU_RANGE, min_range * 1.02)  # 留2%裕量
         if rsu_range > self.config.RSU_RANGE:
             self.config.RSU_RANGE = rsu_range
 
         for i in range(num_rsu):
-            # RSU位置公式：Pos_RSU_j = ((j-1)*D_inter + D_inter/2, Y_RSU)
-            # j从1开始，但索引从0开始，所以j = i+1
             x_pos = (i * d_inter) + (d_inter / 2)
-            pos = np.array([x_pos, y_rsu])
-            
+            y_pos = y_right if (i % 2 == 0) else y_left   # 偶数右侧，奇数左侧
+            pos = np.array([x_pos, y_pos])
+
             rsu = RSU(
                 rsu_id=i,
                 position=pos,
                 cpu_freq=self.config.F_RSU,
                 num_processors=getattr(Cfg, 'RSU_NUM_PROCESSORS', 6),
-                queue_limit=100,  # 默认队列任务数上限
-                coverage_range=rsu_range
+                queue_limit=100,
+                coverage_range=rsu_range,
             )
             self.rsus.append(rsu)
 
-        # 更新RSU_POS为中心RSU的位置（替代旧的硬编码[500,500]，供fallback使用）
         if self.rsus:
             mid = len(self.rsus) // 2
             self.config.RSU_POS = self.rsus[mid].position.copy()
@@ -3164,6 +3177,54 @@ class VecOffloadingEnv(gym.Env):
             step_unified_nonfinite_count = 0
             step_unified_consistency_mismatch_count = 0
             step_unified_illegal_trigger_count = 0
+            v2v_stats = getattr(self.channel, 'last_v2v_stats', {})
+            v2i_stats = getattr(self.channel, 'last_v2i_stats', {})
+            v2v_i_caused_input_dict = v2v_stats.get('i_caused_input', {})
+            v2i_i_caused_input_dict = v2i_stats.get('i_caused_input', {})
+            v2v_i_total_dict = v2v_stats.get('i_total', {})
+            v2i_i_total_dict = v2i_stats.get('i_total', {})
+
+            energy_vals = [float(max(step_energy_input_cost.get(v.id, 0.0), 0.0)) for v in self.vehicles]
+            interf_vals = [
+                float(max(
+                    float(v2v_i_caused_input_dict.get(v.id, 0.0)) + float(v2i_i_caused_input_dict.get(v.id, 0.0)),
+                    0.0,
+                ))
+                for v in self.vehicles
+            ]
+            energy_ref = self._update_reward_ref_ema(
+                "energy",
+                float(np.percentile(energy_vals, 95)) if energy_vals else 0.0,
+            )
+            interf_ref = self._update_reward_ref_ema(
+                "interf",
+                float(np.percentile(interf_vals, 95)) if interf_vals else 0.0,
+            )
+
+            trust_enabled = bool(getattr(self.config, "TRUST_ENABLED", False))
+            trust_snapshot = {}
+            risk_vals = []
+            for v in self.vehicles:
+                ctx = reward_cache.get(v.id, {})
+                target = ctx.get("target", "Local")
+                is_remote = not (target is None or target == "Local")
+                rho_target = 1.0
+                uncertainty_target = 0.0
+                if is_remote and trust_enabled and hasattr(self, "_trust_mgr"):
+                    node_key = None
+                    if isinstance(target, tuple) and len(target) > 1 and target[0] == "RSU":
+                        node_key = ("RSU", int(target[1]))
+                    elif isinstance(target, int) and not isinstance(target, bool):
+                        node_key = ("VEH", int(target))
+                    if node_key is not None:
+                        rho_target, uncertainty_target = self._trust_mgr.get_reputation(node_key)
+                trust_snapshot[v.id] = (is_remote, float(rho_target), float(uncertainty_target), target)
+                if is_remote:
+                    risk_vals.append(float(max(1.0 - float(rho_target), 0.0)))
+            risk_ref = self._update_reward_ref_ema(
+                "risk",
+                float(np.percentile(risk_vals, 95)) if risk_vals else 0.0,
+            )
             for i, v in enumerate(self.vehicles):
                 dag = v.task_dag
                 ctx = reward_cache.get(v.id, {})
@@ -3174,28 +3235,18 @@ class VecOffloadingEnv(gym.Env):
                 if illegal:
                     step_unified_illegal_trigger_count += 1
                 energy_step = step_energy_input_cost.get(v.id, 0.0)
-                v2v_stats = getattr(self.channel, 'last_v2v_stats', {})
-                v2i_stats = getattr(self.channel, 'last_v2i_stats', {})
                 # 可控干扰口径：仅统计 INPUT_TX 造成的干扰（EDGE 仅作为背景负载）
-                i_caused_input = float(v2v_stats.get('i_caused_input', {}).get(v.id, 0.0)) + float(
-                    v2i_stats.get('i_caused_input', {}).get(v.id, 0.0)
+                i_caused_input = float(v2v_i_caused_input_dict.get(v.id, 0.0)) + float(
+                    v2i_i_caused_input_dict.get(v.id, 0.0)
                 )
                 # 全量干扰口径：用于场景统计（包含 INPUT/EDGE）
-                i_total_all = float(v2v_stats.get('i_total', {}).get(v.id, 0.0)) + float(
-                    v2i_stats.get('i_total', {}).get(v.id, 0.0)
+                i_total_all = float(v2v_i_total_dict.get(v.id, 0.0)) + float(
+                    v2i_i_total_dict.get(v.id, 0.0)
                 )
-                target = ctx.get("target", "Local")
-                is_remote = not (target is None or target == "Local")
-                rho_target = 1.0
-                uncertainty_target = 0.0
-                if is_remote and getattr(self.config, "TRUST_ENABLED", False) and hasattr(self, "_trust_mgr"):
-                    node_key = None
-                    if isinstance(target, tuple) and len(target) > 1 and target[0] == "RSU":
-                        node_key = ("RSU", int(target[1]))
-                    elif isinstance(target, int) and not isinstance(target, bool):
-                        node_key = ("VEH", int(target))
-                    if node_key is not None:
-                        rho_target, uncertainty_target = self._trust_mgr.get_reputation(node_key)
+                is_remote, rho_target, uncertainty_target, target = trust_snapshot.get(
+                    v.id,
+                    (False, 1.0, 0.0, ctx.get("target", "Local")),
+                )
 
                 # [Chain] 结算风险层：只做指标统计（不改UNIFIED reward结构）
                 # 口径：每次产生交易(tx_flag=1)时，累计 deposit * (alpha_D*p95 + alpha_F*p_fail)
@@ -3212,11 +3263,14 @@ class VecOffloadingEnv(gym.Env):
                         fail_cost = alpha_f * deposit * p_fail
                         risk_cost_sum += (lock_cost + fail_cost)
 
+                # No-decision steps should not receive passive time-shaping penalty.
+                step_dt = self.config.DT if bool(decision_step_mask[i]) else 0.0
                 r_step, step_info = compute_unified_step_reward(
-                    dt=self.config.DT, Td=Td,
+                    dt=step_dt, Td=Td,
                     E_tx=energy_step, I_caused=i_caused_input,
                     illegal=illegal,
                     is_remote=is_remote, rho_target=rho_target,
+                    E_ref=energy_ref, I_ref=interf_ref, risk_ref=risk_ref,
                 )
 
                 # 终局
@@ -4415,6 +4469,44 @@ class VecOffloadingEnv(gym.Env):
         step_padded_v2v = []
         step_masked_total = []
 
+        # --- CTDE global_state（集中训练共享）---
+        # 维度布局（共30维，固定对应 CTDE_GLOBAL_DIM=30）：
+        #   [0:3]  per-RSU 计算队列等待时间（归一化）
+        #   [3:6]  per-RSU 关联车辆数占总车辆比
+        #   [6]    本episode累计Local决策占比
+        #   [7]    本episode累计RSU决策占比
+        #   [8]    本episode累计V2V决策占比
+        #   [9]    当前步归一化时间进度
+        #   [10]   全局平均RSU等待时间（归一化）
+        #   [11-29] 预留为0
+        _gs = np.zeros(30, dtype=np.float32)
+        _n_rsu = len(self.rsus)
+        for _k, _rsu in enumerate(self.rsus[:3]):
+            _gs[_k] = float(np.clip(
+                self._get_rsu_queue_wait_time(_rsu.id) * self._inv_max_wait, 0.0, 1.0
+            ))
+        _n_veh = max(len(self.vehicles), 1)
+        _veh_per_rsu = [0] * 3
+        for _v in self.vehicles:
+            _sid = getattr(_v, 'serving_rsu_id', None)
+            if _sid is not None and 0 <= _sid < 3:
+                _veh_per_rsu[_sid] += 1
+        for _k in range(3):
+            _gs[3 + _k] = float(_veh_per_rsu[_k]) / _n_veh
+        _dec_total = max(sum(getattr(self, '_decision_counts', {k: 0 for k in ('local', 'rsu', 'v2v')}).values()), 1)
+        _edc = getattr(self, '_decision_counts', {'local': 0, 'rsu': 0, 'v2v': 0})
+        _gs[6] = float(_edc.get('local', 0)) / _dec_total
+        _gs[7] = float(_edc.get('rsu', 0)) / _dec_total
+        _gs[8] = float(_edc.get('v2v', 0)) / _dec_total
+        _gs[9] = float(np.clip(self._episode_steps / max(self.config.MAX_STEPS, 1), 0.0, 1.0))
+        if _n_rsu > 0:
+            _gs[10] = float(np.clip(
+                np.mean([self._get_rsu_queue_wait_time(r.id) * self._inv_max_wait for r in self.rsus]),
+                0.0, 1.0
+            ))
+        global_state_vec = _gs
+        # --- end CTDE global_state ---
+
         for v in self.vehicles:
             v_idx = vehicle_ids.index(v.id)
             num_nodes = v.task_dag.num_subtasks
@@ -4959,6 +5051,7 @@ class VecOffloadingEnv(gym.Env):
             'location': padded_location,
             'priority': padded_priority,  # [Rank Bias用] 节点优先级（归一化，越大越重要）
             'obs_stamp': obs_stamp_obs,
+            'global_state': global_state_vec,
         })
 
         self._last_obs_stamp = int(self._episode_steps)
