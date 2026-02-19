@@ -177,12 +177,8 @@ class DataRecorder:
         if is_best:
             torch.save(save_dict, os.path.join(self.model_dir, "best_model.pth"))
 
-        # 2. 保存 Checkpoint (每 500 轮留底一个，用于回溯分析)
-        if episode > 0 and episode % 500 == 0:
-            torch.save(save_dict, os.path.join(self.model_dir, f"model_ep{episode}.pth"))
-
-        # 3. 始终更新 Latest (覆盖)，用于断点续训
-        torch.save(save_dict, os.path.join(self.model_dir, "latest_model.pth"))
+        # 2. 始终更新 Last (覆盖)，用于断点续训
+        torch.save(save_dict, os.path.join(self.model_dir, "last_model.pth"))
 
     def auto_plot(self, baseline_results=None, baseline_history=None):
         """

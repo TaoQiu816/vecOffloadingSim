@@ -10,7 +10,7 @@ MAPPO Training Script for VEC Task Offloading
 核心功能 (Core Features):
     1. 参数自检 - 启动时验证关键配置参数（RESOURCE_RAW_DIM, DEADLINE, LOGIT_BIAS等）
     2. 全指标记录 - 记录训练过程的所有关键指标到CSV（reward, success_rate, loss等）
-    3. 最佳模型保存 - 基于成功率（50-ep滑动平均）保存最佳模型
+    3. 模型保存策略 - 仅保存 best_model 与 last_model（覆盖写）
     4. 自动可视化 - 训练结束后自动调用plot_results.py生成图表
     5. Baseline对比 - 默认关闭（由独立脚本运行）
 
@@ -22,6 +22,7 @@ MAPPO Training Script for VEC Task Offloading
     - runs/run_XXX/logs/training_stats.csv - 训练指标（用于绘图）
     - runs/run_XXX/logs/metrics.csv - 详细指标（包含物理量和诊断信息）
     - runs/run_XXX/models/best_model.pth - 最佳模型（基于成功率）
+    - runs/run_XXX/models/last_model.pth - 最后模型（训练末轮）
     - runs/run_XXX/plots/*.png - 自动生成的可视化图表
 
 参考文献 (References):
@@ -3203,24 +3204,24 @@ def main():
                 recorder.log_episode(baseline_episode_dict)
 
         # =====================================================================
-        # 模型保存 (Best Model Based on Success Rate)
+        # 模型保存策略：仅保留 best_model / last_model 两个文件
         # =====================================================================
-        # 保存基于reward的最佳模型（保留原逻辑）
+        # 维护 reward 指标用于日志摘要
         if ep_reward > best_reward:
             best_reward = ep_reward
-            agent.save(os.path.join(recorder.model_dir, "best_model_reward.pth"))
-        
-        # 保存基于task_success_rate的最佳模型（新增）
+
+        # 保存基于 task_success_rate 的最佳模型（50-ep滑动平均）
         avg_recent_sr = np.mean(recent_success_rates) if recent_success_rates else 0.0
-        if avg_recent_sr > best_success_rate:
+        if episode == 1 or avg_recent_sr > best_success_rate:
             best_success_rate = avg_recent_sr
             agent.save(os.path.join(recorder.model_dir, "best_model.pth"))
             best_success_episode = int(episode)
             if episode == 1 or episode % TC.LOG_INTERVAL == 0:
                 print(f"  → Best model saved: Success Rate = {best_success_rate:.3f} (50-ep avg)")
 
+        # 周期性刷新 last_model（覆盖写，便于中途中断恢复）
         if episode % TC.SAVE_INTERVAL == 0:
-            agent.save(os.path.join(recorder.model_dir, f"model_ep{episode}.pth"))
+            agent.save(os.path.join(recorder.model_dir, "last_model.pth"))
 
     training_state["completed"] = True
     sys.excepthook = prev_excepthook
@@ -3229,12 +3230,17 @@ def main():
         f"best_reward={best_reward:.4f} best_success_rate(50ep)={best_success_rate:.4f}",
         flush=True,
     )
-    # Always save a final checkpoint, regardless of SAVE_INTERVAL.
+    # 训练结束时强制保存最后模型（覆盖 last_model）
     try:
-        agent.save(os.path.join(recorder.model_dir, "final_model.pth"))
+        agent.save(os.path.join(recorder.model_dir, "last_model.pth"))
     except Exception as e:
-        print(f"[Train] Warning: failed to save final_model.pth: {e}", flush=True)
-    print(f"[Train] key outputs: {metrics_csv_path}, {training_stats_csv}, {os.path.join(recorder.model_dir, 'best_model.pth')}", flush=True)
+        print(f"[Train] Warning: failed to save last_model.pth: {e}", flush=True)
+    print(
+        f"[Train] key outputs: {metrics_csv_path}, {training_stats_csv}, "
+        f"{os.path.join(recorder.model_dir, 'best_model.pth')}, "
+        f"{os.path.join(recorder.model_dir, 'last_model.pth')}",
+        flush=True,
+    )
 
     # =========================================================================
     # 训练结束：自动绘图 (Auto Plotting)

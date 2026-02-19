@@ -1,0 +1,10 @@
+[BaselinesParallel] run_dir=runs/formal_rerun_n20_all_seed42_latest seed=42 episodes=120 max_steps=200
+[BaselinesParallel] start policy=Random -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/Random.csv
+[BaselinesParallel] start policy=Local-Only -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/Local-Only.csv
+[BaselinesParallel] start policy=Greedy -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/Greedy.csv
+[BaselinesParallel] start policy=EFT -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/EFT.csv
+[BaselinesParallel] start policy=CP-EFT -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/CP-EFT.csv
+[BaselinesParallel] start policy=LB-Greedy -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/LB-Greedy.csv
+[BaselinesParallel] start policy=Static -> runs/formal_rerun_n20_all_seed42_latest/logs/baseline_parts/Static.csv
+✓ Merged baseline stats: /Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/formal_rerun_n20_all_seed42_latest/logs/baseline_stats.csv (rows=840)
+✓ Mirrored: /Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/formal_rerun_n20_all_seed42_latest/metrics/baseline_stats.csv

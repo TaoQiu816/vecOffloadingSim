@@ -11,17 +11,9 @@ ENV/
 env/
 
 # 训练输出
-# runs 下默认同步训练结果；仅忽略测试/临时产物
+# runs 下默认同步全部产物
 !runs/.gitkeep
 /logs/
-# 非核心/临时仿真产物（不同步）
-runs/tmp*
-runs/test*
-runs/accept_*
-runs/smoke*
-runs/reg*
-runs/quick_train_patch_check/
-runs/exp_contract_demo/
 
 # 模型文件（较大，不同步）
 models/*.pth
@@ -31,8 +23,6 @@ models/*.pth
 *.safetensors
 *.onnx
 *.bin
-runs/**/*.pth
-runs/**/checkpoints/
 .cursor/
 .claude/
 .cursorrules
@@ -104,3 +94,9 @@ tests/
 # 文档（不同步到git）
 docs/
 notes/
+
+# runs 全同步；训练模型仅保留 best/last 两个文件
+!runs/**
+runs/**/models/*.pth
+!runs/**/models/best_model.pth
+!runs/**/models/last_model.pth
