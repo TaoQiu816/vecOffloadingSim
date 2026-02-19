@@ -1,0 +1,22 @@
+[2026-02-09 21:19:46] Abnormal termination
+run_id=run1000_n20_topk8_20260209_211735
+run_dir=/root/vecOffloadingSim/runs/run1000_n20_topk8_20260209_211735
+episode=6
+step=56
+exception=KeyboardInterrupt: 
+traceback:
+Traceback (most recent call last):
+  File "/root/vecOffloadingSim/train.py", line 2350, in <module>
+    main()
+  File "/root/vecOffloadingSim/train.py", line 1291, in main
+    next_obs_list, rewards, terminated, truncated, info = env.step(actions)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 3038, in step
+    cft_curr_abs = self._compute_mean_cft_pi0(
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 1749, in _compute_mean_cft_pi0
+    _, _, cft = calculate_est_ct(
+  File "/root/vecOffloadingSim/envs/modules/time_calculator.py", line 120, in calculate_est_ct
+    preds = np.where(dag.adj[:, i] == 1)[0]
+  File "/root/miniconda3/lib/python3.10/site-packages/numpy/core/multiarray.py", line 346, in where
+    @array_function_from_c_func_and_dispatcher(_multiarray_umath.where)
+KeyboardInterrupt
+

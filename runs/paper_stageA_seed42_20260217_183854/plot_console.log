@@ -1,0 +1,16 @@
+[STAGE-A-PLOT] ✓ Loaded 600 episodes from runs/paper_stageA_seed42_20260217_183854/episode_log.csv
+[STAGE-A-PLOT] ✓ MAPPO episodes: 600
+[STAGE-A-PLOT] ✓ Output directory: runs/paper_stageA_seed42_20260217_183854/plots
+[STAGE-A-PLOT] 
+[STAGE-A-PLOT] [Generating Comprehensive Plots]
+[STAGE-A-PLOT] ✓ Saved: fig_training_overview.png
+[STAGE-A-PLOT] ✓ Saved: fig_success_rate_analysis.png
+[STAGE-A-PLOT] ✓ Saved: fig_decision_distribution.png
+[STAGE-A-PLOT] ✓ Saved: fig_reward_analysis.png
+[STAGE-A-PLOT] ✓ Saved: fig_multi_agent_metrics.png
+[STAGE-A-PLOT] ✓ Saved: fig_system_metrics.png
+[STAGE-A-PLOT] ✓ Saved: fig_convergence_analysis.png
+[STAGE-A-PLOT] ⚠ No baseline data found, skipping baseline comparison plot
+[STAGE-A-PLOT] 
+[STAGE-A-PLOT] ✓ All plots saved to: runs/paper_stageA_seed42_20260217_183854/plots
+[STAGE-A-PLOT]   Total plots: 8
