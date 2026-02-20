@@ -1,0 +1,2 @@
+run_id,episode,scheme,passed,reason,decision_offload_frac,r_base_nonzero,r_shape_nonzero,r_lat_nonzero,r_lat_abs_mean,comm_lb_nonzero,queue_lb_nonzero,r_energy_nonzero,r_power_nonzero,energy_lambda_effective_name,energy_lambda_effective_value,unified_nonfinite_count,unified_consistency_mismatch_count,unified_illegal_count
+run_20260220_013024,1,UNIFIED,yes,,0.5955056179775281,0,0,0,0.0,0,0,48,0,DELTA_CFT_ENERGY_WEIGHT,0.2,0,0,0
