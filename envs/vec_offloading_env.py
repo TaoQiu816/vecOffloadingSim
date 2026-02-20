@@ -3383,6 +3383,7 @@ class VecOffloadingEnv(gym.Env):
                         risk_penalty = -float(step_info.get("r_risk", 0.0))
                         self._reward_stats.add_metric("risk_penalty", float(max(risk_penalty, 0.0)))
                 self._episode_energy_norm_values.append(step_info.get("energy_norm", 0.0))
+                self._episode_t_tx_values.append(float(ctx.get("t_tx", 0.0)))
                 self._episode_I_total_values.append(float(i_total_all))
                 self._episode_I_caused_input_values.append(float(i_caused_input))
                 if is_remote:

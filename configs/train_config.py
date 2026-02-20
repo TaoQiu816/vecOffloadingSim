@@ -137,13 +137,12 @@ class TrainConfig:
                             # 推荐范围: 50-100 (短期), 100-200 (长期)
                             # Recommended range: 50-100 (short-term), 100-200 (long-term)
     
-    LR_DECAY_RATE = 0.92    # 学习率衰减率 - Learning rate decay rate
+    LR_DECAY_RATE = 0.95    # 学习率衰减率 - Learning rate decay rate
                             # 影响: 指数衰减系数 (new_lr = lr * decay_rate)
-                            #       - 0.9: 快速衰减，适合短期训练
-                            #       - 0.95: 慢速衰减，适合长期训练
+                            # 0.92适合1000ep（ep3000时LR=1.6e-5过小）；
+                            # 0.95适合3000ep（ep3000时LR=4.3e-5，仍有效）
+                            # ep1000: 1.2e-4; ep2000: 7.2e-5; ep3000: 4.3e-5
                             # Impact: Exponential decay coefficient (new_lr = lr * decay_rate)
-                            #       - 0.9: Fast decay, suits short-term training
-                            #       - 0.95: Slow decay, suits long-term training
                             # 推荐范围: 0.90-0.95
                             # Recommended range: 0.90-0.95
 
@@ -213,7 +212,8 @@ class TrainConfig:
     ENTROPY_COEF = 0.001    # 当前生效熵系数（运行时可退火更新）
     ENTROPY_COEF_START = 0.03   # 初始熵系数（标准PPO范围0.01~0.05，防止ep50内崩溃）
     ENTROPY_COEF_END = 0.001    # 末端熵系数（与历史默认保持一致）
-    ENTROPY_ANNEAL_STEPS = 140000  # 熵退火步数：1000ep×200steps×70%=140000，前70%探索后收敛
+    ENTROPY_ANNEAL_STEPS = 420000  # 熵退火步数：3000ep×200steps×70%=420000，前70%探索后收敛
+                            # 原值140000面向1000ep；3000ep时在ep700(step140000)就完成退火，后2300ep熵固定在END值
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
                             #       - 过小: 策略过早收敛到局部最优
@@ -241,9 +241,9 @@ class TrainConfig:
 
     MIN_ACTIVE_SAMPLES = 64  # active样本低于阈值时跳过更新（防止过高方差）
     
-    TARGET_KL = 0.02        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
-                            # 影响: 如果KL散度超过此值，提前停止policy update（若实现）
-                            # Impact: If KL divergence exceeds this, early stop policy update (if implemented)
+    TARGET_KL = 0.03        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
+                            # 原值0.02导致break_thresh=0.03，466个有效ep中95.5%触发early_stop，实际epoch≈1/5
+                            # 调整为0.03（break_thresh=TARGET_KL*STOP_MULT=0.03*1.5=0.045），减少过度截断
                             # 推荐范围: 0.01-0.05
                             # Recommended range: 0.01-0.05
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重
@@ -259,8 +259,8 @@ class TrainConfig:
     LATE_GUARD_START_EP = 180
     LATE_GUARD_WINDOW = 50
     LATE_GUARD_REL_DROP = 0.10
-    LATE_GUARD_PATIENCE = 5
-    LATE_GUARD_FREEZE_AFTER_RESTORE = True
+    LATE_GUARD_PATIENCE = 10  # 原值5在task_sr高方差(std=0.114)场景下易误触发；3000ep长训练建议加倍
+    LATE_GUARD_FREEZE_AFTER_RESTORE = False  # True会在首次rollback后永久冻结更新（空转），改为只回滚不冻结
 
     # -------------------------------------------------------------------------
     # Logit Bias (用于解决动作空间不平衡问题)
@@ -327,8 +327,9 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 1000      # 总训练Episodes - Total training episodes
-                            # 1000ep × 200steps = 200,000 env steps
+    MAX_EPISODES = 3000      # 总训练Episodes - Total training episodes
+                            # 3000ep × 200steps = 600,000 env steps
+                            # 前466ep因LateGuard冻结实际无效，修复后需延长至3000ep保证充分收敛
                             # 推荐范围: 500 (验证), 1000-3000 (完整训练)
                             # Recommended range: 500 (validation), 1000-3000 (full training)
     

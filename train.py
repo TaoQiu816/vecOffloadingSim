@@ -2902,7 +2902,10 @@ def main():
         # 写入 training_stats.csv (用于 plot_results.py)
         # 【关键】确保字段与控制台打印一致，便于对照检查
         # =====================================================================
-        update_stats = getattr(agent, "last_update_stats", {}) or {}
+        # 当 late_guard_frozen 时，update_stats 已在 line2561 处设为零值 dict；
+        # 不得用 agent.last_update_stats 覆盖（否则会 carry-forward 上一次缓存值）。
+        if not late_guard_frozen:
+            update_stats = getattr(agent, "last_update_stats", {}) or {}
 
         # 获取环境统计数据
         deadline_misses = env_stats.get('audit_deadline_misses', 0) if env_stats else 0
