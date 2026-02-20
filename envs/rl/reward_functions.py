@@ -62,6 +62,7 @@ def compute_unified_step_reward(
     dt, Td, E_tx, I_caused, illegal,
     is_remote=False, rho_target=1.0,
     E_ref=None, I_ref=None, risk_ref=None,
+    r_prog=0.0,
 ):
     """
     每步奖励（不含终局和 PBRS）。
@@ -98,7 +99,9 @@ def compute_unified_step_reward(
     I_ref_floor = float(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-12))
     I_ref = max(I_ref, I_ref_floor, 1e-12)
 
-    r_time = -w_t * (dt / Td)
+    dt_used = float(max(float(np.nan_to_num(dt, nan=0.0, posinf=0.0, neginf=0.0)), 0.0))
+    r_time = -w_t * (dt_used / Td)
+    r_prog = float(np.nan_to_num(r_prog, nan=0.0, posinf=0.0, neginf=0.0))
     energy_ratio = max(E_tx, 0.0) / E_ref
     energy_ratio_clip = float(getattr(Cfg, "ENERGY_RATIO_CLIP_UNIFIED", 3.0))
     if energy_ratio_clip > 0.0:
@@ -119,14 +122,16 @@ def compute_unified_step_reward(
     r_risk = -w_risk * (risk_ratio ** p_risk) if bool(is_remote) else 0.0
     r_illegal = -w_ill * float(illegal)
 
-    r_step = r_time + r_energy + r_interf + r_risk + r_illegal
+    r_step = r_time + r_prog + r_energy + r_interf + r_risk + r_illegal
 
     return float(r_step), {
         'r_time': float(r_time),
+        'r_prog': float(r_prog),
         'r_energy': float(r_energy),
         'r_interf': float(r_interf),
         'r_risk': float(r_risk),
         'r_illegal': float(r_illegal),
+        'dt_used': float(dt_used),
         'energy_norm': float(energy_ratio),
         'E_tx': float(E_tx),
         'I_caused': float(I_caused),

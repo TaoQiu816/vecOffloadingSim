@@ -174,7 +174,7 @@ class SystemConfig:
                             # 影响: V2I最大速率上限，20MHz对齐文献实际吞吐
                             # Impact: V2I max rate limit; 20 MHz aligned with literature throughput
 
-    BW_V2V = 10e6           # V2V带宽 (Hz) - V2V bandwidth (10 MHz) [文献二]
+    BW_V2V = 12e6           # V2V带宽 (Hz) - V2V bandwidth (12 MHz, 轻度增强协同可竞争性)
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
                             # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
 
@@ -229,7 +229,7 @@ class SystemConfig:
                             # Impact: V2I attenuation rate; 2.5 is standard for LOS
     
     PL_ALPHA_V2V = 28.0     # V2V参考路损 (dB) - V2V reference path loss
-    PL_BETA_V2V = 3.5       # V2V路损指数 - V2V path loss exponent (NLOS, high attenuation)
+    PL_BETA_V2V = 3.3       # V2V路损指数 - V2V path loss exponent (仍高于V2I=2.5，保持更差链路)
                             # 影响: V2V衰减速率，3.5模拟NLOS遮挡/干扰
                             # Impact: V2V attenuation rate; 3.5 models NLOS obstruction/interference
     
@@ -278,6 +278,20 @@ class SystemConfig:
     CHAIN_TRUST_DELAY_BASE_STEPS = 0
     CHAIN_TRUST_DELAY_MIN_STEPS = 0
     CHAIN_TRUST_DELAY_MAX_STEPS = 50
+
+    # [恶意车辆比例 + 信誉分布 + 风险影响] p_m=0 时行为与原版完全一致
+    MALICIOUS_RATIO = 0.0              # 恶意车辆比例 p_m，[0,1]
+    REP_INIT_MODE = "beta"             # "beta"=Beta分布采样 | "uniform"=保持原Uniform行为
+    REP_HONEST_BETA = (18, 4)          # 诚实节点 Beta(a,b)，均值≈0.818
+    REP_MAL_BETA = (4, 18)             # 恶意节点 Beta(a,b)，均值≈0.182
+    REP_OVERLAP = 0.05                 # 轻微重叠扰动（加性高斯 std），clip[0,1]
+    RSU_REPUTATION = 0.95              # RSU 固定隐藏可靠性（p_j）
+    RHO_MAP_MODE = "sigmoid"           # "identity" | "sigmoid"（当前reward使用identity通路）
+    RHO_SIGMOID_K = 8.0                # sigmoid 斜率
+    RHO_SIGMOID_TAU = 0.5              # sigmoid 中心点
+    TRUST_OUTCOME_MODE = "prob_fail"   # 失败注入模式（当前已是 Bernoulli(p_j) 机制）
+    TRUST_FAIL_SCOPE = "v2v_only"      # "v2v_only"=RSU不受失败注入 | "all"=全部节点
+    TRUST_FAIL_COST_MODE = "no_progress"  # 失败时子任务回 READY（现有行为）
 
     # -------------------------------------------------------------------------
     # 2.6 域随机化 (Domain Randomization)
@@ -488,8 +502,9 @@ class SystemConfig:
                                         # 目标: 保持样本多样性与可学习性
     # 可选模式：deadline = alpha * Tmin + slack
     # 其中 Tmin = CP_total / f_max（物理下界）
-    DEADLINE_ALPHA_MIN = 2.0
-    DEADLINE_ALPHA_MAX = 4.0
+    # 在保持均值3.0不变的前提下收窄方差，降低episode间任务难度波动（场景更均衡）
+    DEADLINE_ALPHA_MIN = 2.2
+    DEADLINE_ALPHA_MAX = 3.8
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -696,6 +711,10 @@ class SystemConfig:
     P_FAIL = 1.0                    # 失败惩罚指数 p_f
     # 每步 Step-wise
     W_TIME = 0.35                   # 时间推进惩罚权重 w_t（成功率/时延优先）
+    DT_IDLE = 0.01                  # 时间项最小步长，dt_used=max(dt,DT_IDLE) 防止dt=0套利
+    W_PROGRESS = 0.10               # 事后进度差分奖励权重（低幅度，避免单路径快速塌缩）
+    PROGRESS_REWARD_MODE = "DELTA_CFT_ABS"  # DELTA_CFT_ABS / DELTA_SLACK
+    PROGRESS_REF_SECONDS = 0.30     # 进度差分归一化尺度（秒，按|ΔCFT_abs|统计p90标定）
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I
@@ -712,14 +731,21 @@ class SystemConfig:
     # EMA能耗下界: 必须 >= E_REF_UNIFIED，防止policy全-Local时energy_ref漂移到1e-8，
     # 导致任何远程发射都触发max-clip，彻底摧毁功率控制梯度。
     REWARD_REF_ENERGY_MIN = 0.02    # = E_REF_UNIFIED，锚定物理上界（P_MAX × DT）
-    # 干扰EMA下界: RB_SINR+ICI下实测i_caused_input峰值约3.8e-7 W；
-    # 设floor=1e-7使正常工作点ratio≈1~3，保留功率控制梯度；1e-8过低导致ratio永久clip。
-    I_REF_MIN_UNIFIED = 1e-7
+    REWARD_REF_RISK_MIN = 0.05      # 风险参考尺度下界
+    RISK_REF_UNIFIED_INIT = 0.25    # 风险参考尺度初值（warmup起点）
+    REWARD_REF_EMA_ALPHA = 0.05     # 奖励参考尺度EMA平滑系数
+    REWARD_REF_EMA_CAP = 1e3        # 奖励参考尺度EMA上界
+    REWARD_REF_WARMUP_EPISODES = 200  # 前N个episode更新EMA，之后冻结
+    REWARD_REF_FREEZE_AFTER_WARMUP = True
+    # 干扰EMA下界按当前日志口径重标定: i_caused_input典型量级在1e-10~1e-9 W，
+    # floor过高会把I_caused/I_ref压到近0，导致r_interf长期失活。
+    I_REF_MIN_UNIFIED = 3e-9
     # 对 I_caused/I_ref 做上界裁剪，避免单项奖励主导训练。
     INTERF_RATIO_CLIP_UNIFIED = 3.0
     REWARD_SCALE_E_RATIO_CAP = 1.5   # 训练前尺度核验用：energy_norm上界假设
     # PBRS
-    PBRS_BETA = 0.1                 # PBRS 系数 beta
+    ENABLE_PBRS = False             # 默认关闭PBRS，避免LB势函数导致Local即时偏置
+    PBRS_BETA = 0.02                # PBRS 系数 beta（仅ENABLE_PBRS=True时生效）
     PBRS_GAMMA = 0.99               # PBRS 折扣 gamma
     PBRS_Q = 1.0                    # Phi 指数 q=1（线性势能，简化参数；q=1.2与1.0行为接近）
     PBRS_EPS = 1e-3                 # Phi 下界 eps

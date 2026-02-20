@@ -224,7 +224,7 @@ class RolloutBuffer:
             self.returns_buffer[t] = self.advantages_buffer[t][:min_N] + self.values_buffer[t][:min_N]
             self.advantages_buffer[t] = self.advantages_buffer[t][:min_N]
     
-    def get_batches(self, batch_size: int) -> Generator[Dict, None, None]:
+    def get_batches(self, batch_size: int, active_only: bool = False) -> Generator[Dict, None, None]:
         """
         生成mini-batch用于训练
         
@@ -279,11 +279,17 @@ class RolloutBuffer:
         if adv_std > 1e-8:
             flat_advantages = (flat_advantages - adv_mean) / (adv_std + 1e-8)
         
-        # 随机打乱
-        indices = np.random.permutation(total_samples)
+        # 训练采样索引：可选仅采 active 样本，避免 idle/no-task 样本污染更新
+        if active_only:
+            candidate_idx = np.where(flat_active_masks > 0.0)[0]
+            if candidate_idx.size == 0:
+                return
+            indices = np.random.permutation(candidate_idx)
+        else:
+            indices = np.random.permutation(total_samples)
         
         # 生成batches
-        num_batches = max(1, total_samples // batch_size)
+        num_batches = max(1, len(indices) // batch_size)
         
         for i in range(num_batches):
             start_idx = i * batch_size

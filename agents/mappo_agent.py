@@ -185,6 +185,8 @@ class MAPPOAgent:
         total_value_target_std = 0.0
         total_value_pred_mean = 0.0
         total_value_pred_std = 0.0
+        total_mask_active = 0.0
+        total_mask_count = 0.0
         num_updates = 0
         active_samples, total_samples = buffer.get_active_stats()
         adv_mean, adv_std = buffer.get_adv_stats()
@@ -203,6 +205,7 @@ class MAPPOAgent:
                 "active_samples": int(active_samples),
                 "total_samples": int(total_samples),
                 "active_ratio": (float(active_samples) / float(total_samples)) if total_samples > 0 else 0.0,
+                "actor_update_active_frac": 0.0,
                 "adv_mean": float(adv_mean),
                 "adv_std": float(adv_std),
                 "value_target_mean": 0.0,
@@ -220,7 +223,8 @@ class MAPPOAgent:
         for _ in range(TC.PPO_EPOCH):
             if early_stop:
                 break
-            for batch in buffer.get_batches(batch_size):
+            # 固化: mini-batch 包含 all-steps；actor/critic 再用各自mask计算
+            for batch in buffer.get_batches(batch_size, active_only=False):
                 # 提取batch数据
                 obs_list = batch['obs_list']
                 actions = batch['actions']
@@ -229,6 +233,8 @@ class MAPPOAgent:
                 returns = torch.tensor(batch['returns'], dtype=torch.float32, device=self.device)
                 active_masks = torch.tensor(batch['active_masks'], dtype=torch.float32, device=self.device)
                 old_values = torch.tensor(batch['old_values'], dtype=torch.float32, device=self.device)
+                actor_masks = active_masks
+                critic_masks = torch.ones_like(active_masks)
                 
                 # 重新评估动作
                 log_probs, values, entropy = self.evaluate_actions(obs_list, actions)
@@ -237,15 +243,22 @@ class MAPPOAgent:
                 ratio = torch.exp(log_probs - old_log_probs)
                 surr1 = ratio * advantages
                 surr2 = torch.clamp(ratio, 1.0 - TC.CLIP_PARAM, 1.0 + TC.CLIP_PARAM) * advantages
-                mask_sum = active_masks.sum()
-                if mask_sum.item() < 1.0:
+                actor_mask_sum = actor_masks.sum()
+                critic_mask_sum = critic_masks.sum()
+                total_mask_active += float(actor_mask_sum.item())
+                total_mask_count += float(actor_masks.numel())
+                if critic_mask_sum.item() < 1e-6:
                     continue
-                policy_loss = -(torch.min(surr1, surr2) * active_masks).sum() / mask_sum
+                if actor_mask_sum.item() < 1.0:
+                    policy_loss = torch.tensor(0.0, device=self.device)
+                else:
+                    policy_loss = -(torch.min(surr1, surr2) * actor_masks).sum() / actor_mask_sum
                 
                 # Value Loss（归一化处理，解决梯度主导问题）
-                masked_returns = returns[active_masks > 0.0]
-                masked_values = values[active_masks > 0.0]
-                masked_old_values = old_values[active_masks > 0.0]
+                critic_idx = critic_masks > 0.0
+                masked_returns = returns[critic_idx]
+                masked_values = values[critic_idx]
+                masked_old_values = old_values[critic_idx]
 
                 value_target_mean = masked_returns.mean() if masked_returns.numel() > 0 else torch.tensor(0.0, device=self.device)
                 value_target_std = masked_returns.std(unbiased=False) if masked_returns.numel() > 0 else torch.tensor(0.0, device=self.device)
@@ -273,21 +286,27 @@ class MAPPOAgent:
                 value_loss_raw = (values_used - returns_used) ** 2
                 value_loss_clip = (value_pred_clipped - returns_used) ** 2
                 value_loss_max = torch.max(value_loss_raw, value_loss_clip) if TC.USE_VALUE_CLIP else value_loss_raw
-                value_loss_raw_mean = (value_loss_max * active_masks).sum() / mask_sum
+                value_loss_raw_mean = (value_loss_max * critic_masks).sum() / critic_mask_sum
                 # 将Value Loss归一化到与Policy Loss相近的量级
                 # 使用动态归一化：除以returns的方差
-                masked_returns_used = returns_used[active_masks > 0.0]
+                masked_returns_used = returns_used[critic_idx]
                 returns_var = masked_returns_used.var(unbiased=False) + 1e-8 if masked_returns_used.numel() > 0 else torch.tensor(1.0, device=self.device)
                 value_loss = value_loss_raw_mean / returns_var
                 
                 # Entropy Loss
-                entropy_mean = (entropy * active_masks).sum() / mask_sum
-                entropy_loss = -entropy_mean
-                approx_kl = ((old_log_probs - log_probs) * active_masks).sum() / mask_sum
-                clip_frac = ((torch.abs(ratio - 1.0) > TC.CLIP_PARAM).float() * active_masks).sum() / mask_sum
+                if actor_mask_sum.item() < 1.0:
+                    entropy_mean = torch.tensor(0.0, device=self.device)
+                    entropy_loss = torch.tensor(0.0, device=self.device)
+                    approx_kl = torch.tensor(0.0, device=self.device)
+                    clip_frac = torch.tensor(0.0, device=self.device)
+                else:
+                    entropy_mean = (entropy * actor_masks).sum() / actor_mask_sum
+                    entropy_loss = -entropy_mean
+                    approx_kl = ((old_log_probs - log_probs) * actor_masks).sum() / actor_mask_sum
+                    clip_frac = ((torch.abs(ratio - 1.0) > TC.CLIP_PARAM).float() * actor_masks).sum() / actor_mask_sum
                 value_clip_frac = (
-                    (torch.abs(values_used - old_values_used) > TC.VALUE_CLIP_RANGE).float() * active_masks
-                ).sum() / mask_sum if TC.USE_VALUE_CLIP else torch.tensor(0.0, device=self.device)
+                    (torch.abs(values_used - old_values_used) > TC.VALUE_CLIP_RANGE).float() * critic_masks
+                ).sum() / critic_mask_sum if TC.USE_VALUE_CLIP else torch.tensor(0.0, device=self.device)
                 
                 # Total Loss
                 loss = policy_loss + TC.VF_COEF * value_loss + TC.ENTROPY_COEF * entropy_loss
@@ -353,6 +372,7 @@ class MAPPOAgent:
                 "active_samples": int(active_samples),
                 "total_samples": int(total_samples),
                 "active_ratio": (float(active_samples) / float(total_samples)) if total_samples > 0 else 0.0,
+                "actor_update_active_frac": (total_mask_active / total_mask_count) if total_mask_count > 0 else 0.0,
                 "adv_mean": float(adv_mean),
                 "adv_std": float(adv_std),
                 "value_target_mean": total_value_target_mean / num_updates,
@@ -378,6 +398,7 @@ class MAPPOAgent:
                 "active_samples": int(active_samples),
                 "total_samples": int(total_samples),
                 "active_ratio": (float(active_samples) / float(total_samples)) if total_samples > 0 else 0.0,
+                "actor_update_active_frac": (total_mask_active / total_mask_count) if total_mask_count > 0 else 0.0,
                 "adv_mean": float(adv_mean),
                 "adv_std": float(adv_std),
                 "value_target_mean": 0.0,

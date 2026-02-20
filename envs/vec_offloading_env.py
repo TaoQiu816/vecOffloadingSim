@@ -1210,6 +1210,14 @@ class VecOffloadingEnv(gym.Env):
             floor = float(max(getattr(self.config, "REWARD_REF_RISK_MIN", 0.05), 1e-6))
         cap = float(max(getattr(self.config, "REWARD_REF_EMA_CAP", 1e3), floor))
         curr = float(np.clip(np.nan_to_num(p95_value, nan=0.0, posinf=cap, neginf=0.0), floor, cap))
+        warmup_eps = int(max(getattr(self.config, "REWARD_REF_WARMUP_EPISODES", 0), 0))
+        freeze_after = bool(getattr(self.config, "REWARD_REF_FREEZE_AFTER_WARMUP", True))
+        episode_idx = int(getattr(self, "episode_count", 0))
+        if freeze_after and warmup_eps > 0 and episode_idx > warmup_eps:
+            frozen = float(self._reward_ref_ema.get(key, curr))
+            frozen = float(np.clip(np.nan_to_num(frozen, nan=curr, posinf=cap, neginf=floor), floor, cap))
+            self._reward_ref_ema[key] = frozen
+            return frozen
         prev = float(self._reward_ref_ema.get(key, curr))
         new_val = (1.0 - alpha) * prev + alpha * curr
         self._reward_ref_ema[key] = float(np.clip(new_val, floor, cap))
@@ -2745,10 +2753,13 @@ class VecOffloadingEnv(gym.Env):
 
         scheme = getattr(self.config, "REWARD_SCHEME", "LEGACY_CFT")
         use_pbrs = scheme != "LEGACY_CFT"
+        unified_enable_pbrs = bool(getattr(self.config, "ENABLE_PBRS", False)) and (
+            float(getattr(self.config, "PBRS_BETA", 0.0)) > 0.0
+        )
         pbrs_phi_mode = getattr(self.config, "PBRS_PHI_MODE", "STATE_ONLY")
         phi_prev_cache = {}
         phi_prev_debug_cache = {}
-        if use_pbrs and pbrs_phi_mode == "STATE_ONLY":
+        if use_pbrs and scheme != "UNIFIED" and pbrs_phi_mode == "STATE_ONLY":
             if getattr(self.config, "PBRS_PHI_ACTION_INVARIANT_CHECK", False):
                 self._assert_phi_action_invariant(scheme)
             phi_prev_cache, phi_prev_debug_cache = self._compute_phi_state_only_batch(scheme)
@@ -2769,9 +2780,12 @@ class VecOffloadingEnv(gym.Env):
             idx = plan.get("index")
             if idx is None or idx < 0 or idx >= num_agents:
                 continue
-            is_decision = plan.get("subtask_idx") is not None
+            has_subtask = plan.get("subtask_idx") is not None
+            has_valid_action = plan.get("illegal_reason") is None
+            is_decision = bool(has_subtask)
+            is_active = bool(has_subtask and has_valid_action)
             decision_step_mask[idx] = bool(is_decision)
-            active_agent_mask[idx] = 1 if is_decision else 0
+            active_agent_mask[idx] = 1 if is_active else 0
             no_task_step_mask[idx] = bool(plan.get("is_no_task_available", False))
             reason = plan.get("illegal_reason")
             if plan.get("is_no_task_available", False):
@@ -2902,11 +2916,15 @@ class VecOffloadingEnv(gym.Env):
                     power_ratio_for_est
                 )
             if scheme == "UNIFIED":
-                # UNIFIED: phi = -(eps + LB/Td)^q
-                LB_prev = self._compute_lb_snapshot(v)
-                Td_u = dag.deadline if dag.deadline > 0 else (self.config.MAX_STEPS * self.config.DT)
-                phi_prev = compute_phi_lb(LB_prev, Td_u)
-                phi_debug = {"lb": LB_prev, "Td": Td_u}
+                if unified_enable_pbrs:
+                    # UNIFIED PBRS: phi = -(eps + LB/Td)^q
+                    LB_prev = self._compute_lb_snapshot(v)
+                    Td_u = dag.deadline if dag.deadline > 0 else (self.config.MAX_STEPS * self.config.DT)
+                    phi_prev = compute_phi_lb(LB_prev, Td_u)
+                    phi_debug = {"lb": LB_prev, "Td": Td_u}
+                else:
+                    phi_prev = 0.0
+                    phi_debug = {}
             elif use_pbrs and pbrs_phi_mode == "STATE_ONLY":
                 if scheme == "PBRS_KP_V2":
                     phi_prev = phi_prev_cache.get(v.id, 0.0)
@@ -3143,7 +3161,7 @@ class VecOffloadingEnv(gym.Env):
 
         phi_next_cache = {}
         phi_next_debug_cache = {}
-        if use_pbrs and pbrs_phi_mode == "STATE_ONLY":
+        if use_pbrs and scheme != "UNIFIED" and pbrs_phi_mode == "STATE_ONLY":
             phi_next_cache, phi_next_debug_cache = self._compute_phi_state_only_batch(scheme)
 
         rewards = []
@@ -3225,6 +3243,12 @@ class VecOffloadingEnv(gym.Env):
                 "risk",
                 float(np.percentile(risk_vals, 95)) if risk_vals else 0.0,
             )
+            dt_total = float(self.config.DT)
+            dt_idle = float(max(getattr(self.config, "DT_IDLE", 0.0), 0.0))
+            dt_used = float(max(dt_total, dt_idle))
+            progress_mode = str(getattr(self.config, "PROGRESS_REWARD_MODE", "DELTA_CFT_ABS")).upper()
+            progress_ref = float(max(getattr(self.config, "PROGRESS_REF_SECONDS", max(dt_total, 1e-3)), 1e-6))
+            w_progress = float(getattr(self.config, "W_PROGRESS", 0.0))
             for i, v in enumerate(self.vehicles):
                 dag = v.task_dag
                 ctx = reward_cache.get(v.id, {})
@@ -3263,14 +3287,34 @@ class VecOffloadingEnv(gym.Env):
                         fail_cost = alpha_f * deposit * p_fail
                         risk_cost_sum += (lock_cost + fail_cost)
 
-                # No-decision steps should not receive passive time-shaping penalty.
-                step_dt = self.config.DT if bool(decision_step_mask[i]) else 0.0
+                cft_prev_v = vehicle_cfts_prev[i] if i < len(vehicle_cfts_prev) else np.nan
+                cft_curr_v = vehicle_cfts[i] if i < len(vehicle_cfts) else np.nan
+                prev_rem_v = 0.0
+                curr_rem_v = 0.0
+                delta_cft_rem_v = 0.0
+                delta_prog = 0.0
+                if np.isfinite(cft_prev_v) and np.isfinite(cft_curr_v):
+                    prev_rem_v = max(float(cft_prev_v) - t_prev, 0.0)
+                    curr_rem_v = max(float(cft_curr_v) - t_curr, 0.0)
+                    delta_cft_rem_v = prev_rem_v - curr_rem_v
+                    if progress_mode == "DELTA_SLACK":
+                        slack_prev = float(Td) - prev_rem_v
+                        slack_curr = float(Td) - curr_rem_v
+                        delta_prog = slack_curr - slack_prev
+                    else:
+                        delta_prog = float(cft_prev_v) - float(cft_curr_v)
+                r_prog = w_progress * float(np.clip(delta_prog / progress_ref, -1.0, 1.0))
+                if not np.isfinite(r_prog):
+                    r_prog = 0.0
+
+                step_dt = dt_used
                 r_step, step_info = compute_unified_step_reward(
                     dt=step_dt, Td=Td,
                     E_tx=energy_step, I_caused=i_caused_input,
                     illegal=illegal,
                     is_remote=is_remote, rho_target=rho_target,
                     E_ref=energy_ref, I_ref=interf_ref, risk_ref=risk_ref,
+                    r_prog=r_prog,
                 )
 
                 # 终局
@@ -3286,7 +3330,7 @@ class VecOffloadingEnv(gym.Env):
 
                 # PBRS
                 r_pbrs = 0.0
-                use_pbrs_u = getattr(self.config, 'PBRS_BETA', 0.1) > 0
+                use_pbrs_u = unified_enable_pbrs
                 if use_pbrs_u:
                     phi_prev = ctx.get("phi_prev", 0.0)
                     # 计算 phi_next（基于下界快照）
@@ -3313,13 +3357,21 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("r_term", r_term)
                     self._reward_stats.add_metric("r_pbrs", r_pbrs)
                     # UNIFIED step components (mean + abs for dominance checks)
-                    for k in ("r_time", "r_energy", "r_interf", "r_risk", "r_illegal"):
+                    for k in ("r_time", "r_prog", "r_energy", "r_interf", "r_risk", "r_illegal"):
                         val = float(step_info.get(k, 0.0))
                         self._reward_stats.add_metric(k, val)
                         self._reward_stats.add_metric(f"{k}_abs", abs(val))
                     self._reward_stats.add_metric("r_term_abs", abs(float(r_term)))
                     self._reward_stats.add_metric("r_pbrs_abs", abs(float(r_pbrs)))
                     self._reward_stats.add_metric("r_step_abs", abs(float(r_step)))
+                    self._reward_stats.add_metric("dt_used", step_dt)
+                    self._reward_stats.add_metric("implied_dt", step_info.get("dt_used", step_dt))
+                    self._reward_stats.add_metric("delta_cft", delta_cft_rem_v)
+                    self._reward_stats.add_metric("delta_cft_abs", delta_prog)
+                    self._reward_stats.add_metric("delta_cft_rem", delta_cft_rem_v)
+                    self._reward_stats.add_metric("cft_prev_rem", prev_rem_v)
+                    self._reward_stats.add_metric("cft_curr_rem", curr_rem_v)
+                    self._reward_stats.add_metric("dT_eff", delta_cft_rem_v - step_dt)
                     self._reward_stats.add_metric("energy_norm", step_info.get("energy_norm", 0.0))
                     # Interference externality (per decision-step)
                     self._reward_stats.add_metric("I_total", float(i_total_all))
@@ -3998,6 +4050,7 @@ class VecOffloadingEnv(gym.Env):
             info['trust_failures'] = trust_stats['trust_failures']
             info['trust_failure_rate'] = trust_stats['trust_failure_rate']
             info['trust_retry_count'] = trust_stats['trust_retry_count']
+            info['malicious_count'] = trust_stats.get('malicious_count', 0)
 
         # 终局汇总指标
         if terminated or truncated:
@@ -7122,6 +7175,7 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics["trust_failures"] = int(trust_stats.get("trust_failures", 0))
             episode_metrics["trust_failure_rate"] = float(trust_stats.get("trust_failure_rate", 0.0))
             episode_metrics["trust_retry_count"] = int(trust_stats.get("trust_retry_count", 0))
+            episode_metrics["malicious_count"] = int(trust_stats.get("malicious_count", 0))
         if getattr(self.config, "EDGE_RATE_RECOMPUTE_AUDIT", False):
             counts = getattr(self, "_edge_rate_recompute_counts", [])
             deltas = getattr(self, "_edge_rate_delta_records", [])
@@ -7334,7 +7388,44 @@ class VecOffloadingEnv(gym.Env):
                     "count": 0,
                     "nonzero_count": 0,
                 }
-        
+
+        # 补齐训练端常用时间/进度字段，避免env_stats存在但字段缺失时回退失败。
+        def _metric_mean(name, default=0.0):
+            stat = metrics_dict.get(name)
+            if not isinstance(stat, dict):
+                return default
+            val = stat.get("mean")
+            return float(val) if val is not None else default
+
+        def _metric_p95(name, default=0.0):
+            stat = metrics_dict.get(name)
+            if not isinstance(stat, dict):
+                return default
+            val = stat.get("p95")
+            return float(val) if val is not None else default
+
+        episode_metrics["dT_mean"] = _metric_mean("delta_cft", 0.0)
+        episode_metrics["cft_prev_rem_mean"] = _metric_mean("cft_prev_rem", 0.0)
+        episode_metrics["cft_curr_rem_mean"] = _metric_mean("cft_curr_rem", 0.0)
+        episode_metrics["dt_used_mean"] = _metric_mean("dt_used", 0.0)
+        episode_metrics["implied_dt_mean"] = _metric_mean("implied_dt", episode_metrics["dt_used_mean"])
+        episode_metrics["dCFT_abs_mean"] = _metric_mean("delta_cft_abs", 0.0)
+        episode_metrics["dCFT_abs_p95"] = _metric_p95("delta_cft_abs", 0.0)
+        episode_metrics["dCFT_rem_mean"] = _metric_mean("delta_cft_rem", 0.0)
+        episode_metrics["dCFT_rem_p95"] = _metric_p95("delta_cft_rem", 0.0)
+        episode_metrics["reward_step_p95"] = _metric_p95("r_step", _metric_p95("reward_step", 0.0))
+        # dT_eff 优先沿用episode聚合，缺失时回退到reward_stats
+        if (not np.isfinite(episode_metrics.get("dT_eff_mean", np.nan))) or (
+            abs(float(episode_metrics.get("dT_eff_mean", 0.0))) < 1e-12
+            and metrics_dict.get("dT_eff", {}).get("count", 0) > 0
+        ):
+            episode_metrics["dT_eff_mean"] = _metric_mean("dT_eff", 0.0)
+        if (not np.isfinite(episode_metrics.get("dT_eff_p95", np.nan))) or (
+            abs(float(episode_metrics.get("dT_eff_p95", 0.0))) < 1e-12
+            and metrics_dict.get("dT_eff", {}).get("count", 0) > 0
+        ):
+            episode_metrics["dT_eff_p95"] = _metric_p95("dT_eff", 0.0)
+
         # 保存到实例变量（供train.py使用）
         self._last_episode_metrics = episode_metrics.copy()
         

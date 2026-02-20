@@ -111,7 +111,7 @@ class TrainConfig:
     # =========================================================================
     # 2. 优化器参数 (Optimizer Parameters)
     # =========================================================================
-    LR_ACTOR = 3e-4         # Actor学习率 - Actor learning rate [P14: 对齐Critic比例]
+    LR_ACTOR = 2e-4         # Actor学习率（最小稳定性修复：抑制后段policy过冲）
                             # 影响: 控制策略网络的更新速度
                             #       - 过大: 训练不稳定，策略震荡
                             #       - 过小: 收敛慢，需要更多训练时间
@@ -251,6 +251,17 @@ class TrainConfig:
                             # 推荐范围: 0.5-1.0 (0.5 is standard)
                             # Recommended range: 0.5-1.0
     
+    # -------------------------------------------------------------------------
+    # Late Degradation Guard（后期退化保护）
+    # 基于50-episode任务成功率窗口监控：若持续显著低于历史最佳，回滚到best模型并冻结更新。
+    # -------------------------------------------------------------------------
+    LATE_GUARD_ENABLE = True
+    LATE_GUARD_START_EP = 180
+    LATE_GUARD_WINDOW = 50
+    LATE_GUARD_REL_DROP = 0.10
+    LATE_GUARD_PATIENCE = 5
+    LATE_GUARD_FREEZE_AFTER_RESTORE = True
+
     # -------------------------------------------------------------------------
     # Logit Bias (用于解决动作空间不平衡问题)
     # Logit Bias (Addresses action space imbalance caused by V2V numerical advantage)

@@ -90,7 +90,7 @@ TRAINING_STATS_FIELDS = [
     "time_limit_rate", "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate",
     "unified_illegal_trigger_rate", "hard_trigger_rate",
     "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
-    "grad_norm", "active_ratio", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
+    "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
     "bias_rsu", "bias_local",
 ]
 
@@ -625,6 +625,7 @@ def apply_env_overrides():
         "CMDP_BUDGET_ENERGY": "CMDP_BUDGET_ENERGY",
         "CMDP_BUDGET_INTERF": "CMDP_BUDGET_INTERF",
         "CMDP_BUDGET_RISK": "CMDP_BUDGET_RISK",
+        "LATE_GUARD_REL_DROP": "LATE_GUARD_REL_DROP",
         "LOGIT_BIAS_V2V_INIT": "LOGIT_BIAS_V2V_INIT",
         "LOGIT_BIAS_V2V_END": "LOGIT_BIAS_V2V_END",
     }
@@ -638,6 +639,9 @@ def apply_env_overrides():
         "CTDE_GLOBAL_DIM": "CTDE_GLOBAL_DIM",
         "LOGIT_BIAS_V2V_ANNEAL_STEPS": "LOGIT_BIAS_V2V_ANNEAL_STEPS",
         "CMDP_WARMUP_EPISODES": "CMDP_WARMUP_EPISODES",
+        "LATE_GUARD_START_EP": "LATE_GUARD_START_EP",
+        "LATE_GUARD_WINDOW": "LATE_GUARD_WINDOW",
+        "LATE_GUARD_PATIENCE": "LATE_GUARD_PATIENCE",
     }
     for env_key, attr in tc_float.items():
         val = _env_float(env_key)
@@ -679,6 +683,12 @@ def apply_env_overrides():
     use_cmdp = _env_bool("CMDP_ENABLE")
     if use_cmdp is not None:
         TC.CMDP_ENABLE = use_cmdp
+    late_guard_enable = _env_bool("LATE_GUARD_ENABLE")
+    if late_guard_enable is not None:
+        TC.LATE_GUARD_ENABLE = late_guard_enable
+    late_guard_freeze = _env_bool("LATE_GUARD_FREEZE_AFTER_RESTORE")
+    if late_guard_freeze is not None:
+        TC.LATE_GUARD_FREEZE_AFTER_RESTORE = late_guard_freeze
     # Ablation: Transformer layers
     num_layers = _env_int("NUM_LAYERS")
     if num_layers is not None:
@@ -1747,6 +1757,15 @@ def main():
     best_success_rate = 0.0  # 用于保存最佳模型
     recent_success_rates = deque(maxlen=50)  # 最近50轮的成功率
     best_success_episode = 0
+    best_model_path = os.path.join(recorder.model_dir, "best_model.pth")
+    late_guard_enable = bool(getattr(TC, "LATE_GUARD_ENABLE", False))
+    late_guard_start_ep = int(max(getattr(TC, "LATE_GUARD_START_EP", 180), 1))
+    late_guard_window = int(max(getattr(TC, "LATE_GUARD_WINDOW", 50), 1))
+    late_guard_rel_drop = float(np.clip(getattr(TC, "LATE_GUARD_REL_DROP", 0.10), 0.01, 0.5))
+    late_guard_patience = int(max(getattr(TC, "LATE_GUARD_PATIENCE", 5), 1))
+    late_guard_freeze_after_restore = bool(getattr(TC, "LATE_GUARD_FREEZE_AFTER_RESTORE", True))
+    late_guard_streak = 0
+    late_guard_frozen = False
     
     # Baseline策略列表
     baseline_policies = list(BASELINE_POLICIES)
@@ -1895,6 +1914,7 @@ def main():
         "policy_entropy",
         "entropy_loss",
         "active_ratio",
+        "actor_update_active_frac",
         "active_samples",
         "total_samples",
         "adv_mean",
@@ -2323,26 +2343,33 @@ def main():
             delta_cft_rem_mean = env_metrics.get("delta_cft.mean")
         if delta_cft_rem_p95 is None:
             delta_cft_rem_p95 = env_metrics.get("delta_cft.p95")
-        dT_mean = env_stats.get("dT_mean") if env_stats else env_metrics.get("delta_cft.mean")
-        cft_prev_rem_mean = env_stats.get("cft_prev_rem_mean") if env_stats else env_metrics.get("cft_prev_rem.mean")
-        cft_curr_rem_mean = env_stats.get("cft_curr_rem_mean") if env_stats else env_metrics.get("cft_curr_rem.mean")
-        dT_eff_mean = env_stats.get("dT_eff_mean") if env_stats else env_metrics.get("dT_eff.mean")
-        dT_eff_p95 = env_stats.get("dT_eff_p95") if env_stats else env_metrics.get("dT_eff.p95")
-        energy_norm_mean = env_stats.get("energy_norm_mean") if env_stats else env_metrics.get("energy_norm.mean")
-        energy_norm_p95 = env_stats.get("energy_norm_p95") if env_stats else env_metrics.get("energy_norm.p95")
+        def _pick_stat(env_key: str, metric_key: str):
+            if env_stats:
+                val = env_stats.get(env_key)
+                if val is not None:
+                    return val
+            return env_metrics.get(metric_key)
+
+        dT_mean = _pick_stat("dT_mean", "delta_cft.mean")
+        cft_prev_rem_mean = _pick_stat("cft_prev_rem_mean", "cft_prev_rem.mean")
+        cft_curr_rem_mean = _pick_stat("cft_curr_rem_mean", "cft_curr_rem.mean")
+        dT_eff_mean = _pick_stat("dT_eff_mean", "dT_eff.mean")
+        dT_eff_p95 = _pick_stat("dT_eff_p95", "dT_eff.p95")
+        energy_norm_mean = _pick_stat("energy_norm_mean", "energy_norm.mean")
+        energy_norm_p95 = _pick_stat("energy_norm_p95", "energy_norm.p95")
         
         # [新增] 真实任务完成时间（物理指标，给人类看的）
         task_duration_mean = env_stats.get("task_duration_mean") if env_stats else 0.0
         task_duration_p95 = env_stats.get("task_duration_p95") if env_stats else 0.0
         completed_tasks_count = env_stats.get("completed_tasks_count") if env_stats else 0
-        t_tx_mean = env_stats.get("t_tx_mean") if env_stats else env_metrics.get("t_tx.mean")
-        dt_used_mean = env_stats.get("dt_used_mean") if env_stats else env_metrics.get("dt_used.mean")
-        implied_dt_mean = env_stats.get("implied_dt_mean")
-        dCFT_abs_mean = env_stats.get("dCFT_abs_mean") if env_stats else env_metrics.get("delta_cft_abs.mean")
-        dCFT_abs_p95 = env_stats.get("dCFT_abs_p95") if env_stats else env_metrics.get("delta_cft_abs.p95")
-        dCFT_rem_mean = env_stats.get("dCFT_rem_mean") if env_stats else env_metrics.get("delta_cft_rem.mean")
-        dCFT_rem_p95 = env_stats.get("dCFT_rem_p95") if env_stats else env_metrics.get("delta_cft_rem.p95")
-        reward_step_p95 = env_stats.get("reward_step_p95") if env_stats else env_metrics.get("reward_step.p95")
+        t_tx_mean = _pick_stat("t_tx_mean", "t_tx.mean")
+        dt_used_mean = _pick_stat("dt_used_mean", "dt_used.mean")
+        implied_dt_mean = _pick_stat("implied_dt_mean", "implied_dt.mean")
+        dCFT_abs_mean = _pick_stat("dCFT_abs_mean", "delta_cft_abs.mean")
+        dCFT_abs_p95 = _pick_stat("dCFT_abs_p95", "delta_cft_abs.p95")
+        dCFT_rem_mean = _pick_stat("dCFT_rem_mean", "delta_cft_rem.mean")
+        dCFT_rem_p95 = _pick_stat("dCFT_rem_p95", "delta_cft_rem.p95")
+        reward_step_p95 = _pick_stat("reward_step_p95", "reward_step.p95")
         episode_time_seconds = env_stats.get("episode_time_seconds") if env_stats else (env.time if env else None)
         mean_cft_est = env_stats.get("mean_cft_est") if env_stats else None
         mean_cft_completed = env_stats.get("mean_cft_completed") if env_stats else None
@@ -2531,14 +2558,32 @@ def main():
         else:
             TC.ENTROPY_COEF = ent_end
 
-        _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
-        last_value = agent.get_value(obs_list)
-        buffer.compute_returns_and_advantages(last_value)
-        update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
-        buffer.clear()
+        if late_guard_frozen:
+            update_loss = 0.0
+            buffer.clear()
+            update_stats = {
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy": 0.0,
+                "approx_kl": 0.0,
+                "clip_fraction": 0.0,
+                "grad_norm": 0.0,
+                "active_ratio": 0.0,
+                "value_clip_fraction": 0.0,
+                "skipped_update_count": 1,
+                "early_stop": False,
+                "policy_entropy": 0.0,
+                "entropy_loss": 0.0,
+            }
+        else:
+            _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
+            last_value = agent.get_value(obs_list)
+            buffer.compute_returns_and_advantages(last_value)
+            update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
+            buffer.clear()
+            update_stats = getattr(agent, "last_update_stats", {}) or {}
         ep_cost_mean = {k: (ep_cost_sum[k] / max(ep_cost_steps, 1)) for k in ep_cost_sum.keys()}
         lagrange_state = lagrange.update_episode(ep_cost_mean, episode)
-        update_stats = getattr(agent, "last_update_stats", {}) or {}
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
         if policy_entropy_val is None:
             policy_entropy_val = 0.0
@@ -2769,6 +2814,7 @@ def main():
             "policy_entropy": policy_entropy_val,
             "entropy_loss": entropy_loss_val,
             "active_ratio": (stats["active_sum"] / stats["active_total"]) if stats["active_total"] > 0 else 0.0,
+            "actor_update_active_frac": update_stats.get("actor_update_active_frac"),
             "active_samples": update_stats.get("active_samples"),
             "total_samples": update_stats.get("total_samples"),
             "adv_mean": update_stats.get("adv_mean"),
@@ -2936,6 +2982,7 @@ def main():
             "clip_frac": update_stats.get("clip_fraction"),
             "grad_norm": update_stats.get("grad_norm"),
             "active_ratio": update_stats.get("active_ratio"),
+            "actor_update_active_frac": update_stats.get("actor_update_active_frac"),
             "value_clip_fraction": update_stats.get("value_clip_fraction"),
             "skipped_update_count": update_stats.get("skipped_update_count"),
             "early_stop": update_stats.get("early_stop"),
@@ -3229,10 +3276,36 @@ def main():
         avg_recent_sr = np.mean(recent_success_rates) if recent_success_rates else 0.0
         if episode == 1 or avg_recent_sr > best_success_rate:
             best_success_rate = avg_recent_sr
-            agent.save(os.path.join(recorder.model_dir, "best_model.pth"))
+            agent.save(best_model_path)
             best_success_episode = int(episode)
             if episode == 1 or episode % TC.LOG_INTERVAL == 0:
                 print(f"  → Best model saved: Success Rate = {best_success_rate:.3f} (50-ep avg)")
+
+        # 后期退化保护：持续低于历史最佳窗口时，回滚到best并可冻结更新，抑制后段漂移
+        if (
+            late_guard_enable
+            and (not late_guard_frozen)
+            and episode >= late_guard_start_ep
+            and len(recent_success_rates) >= max(1, late_guard_window)
+            and best_success_rate > 1e-9
+        ):
+            rel_drop = float((best_success_rate - avg_recent_sr) / max(best_success_rate, 1e-9))
+            if rel_drop > late_guard_rel_drop:
+                late_guard_streak += 1
+            else:
+                late_guard_streak = 0
+            if late_guard_streak >= late_guard_patience and os.path.exists(best_model_path):
+                try:
+                    agent.load(best_model_path)
+                    late_guard_streak = 0
+                    if late_guard_freeze_after_restore:
+                        late_guard_frozen = True
+                    print(
+                        f"  [LateGuard] restore best_model at ep{episode} "
+                        f"(drop={rel_drop:.3f}, freeze={late_guard_frozen})"
+                    )
+                except Exception as e:
+                    print(f"  [LateGuard] restore failed at ep{episode}: {e}")
 
         # 周期性刷新 last_model（覆盖写，便于中途中断恢复）
         if episode % TC.SAVE_INTERVAL == 0:
