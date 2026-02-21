@@ -713,13 +713,13 @@ class SystemConfig:
     W_TIME = 0.35                   # 时间推进惩罚权重 w_t（成功率/时延优先）
     DT_IDLE = 0.01                  # 时间项最小步长，dt_used=max(dt,DT_IDLE) 防止dt=0套利
     W_PROGRESS = 0.10               # 事后进度差分奖励权重（低幅度，避免单路径快速塌缩）
-    PROGRESS_REWARD_MODE = "DELTA_CFT_ABS"  # DELTA_CFT_ABS / DELTA_SLACK
-    PROGRESS_REF_SECONDS = 0.30     # 进度差分归一化尺度（秒，按|ΔCFT_abs|统计p90标定）
+    PROGRESS_REWARD_MODE = "DELTA_SLACK"  # DELTA_CFT_ABS(长期为负,口径错误) / DELTA_SLACK(=dCFT_rem,正值正确)
+    PROGRESS_REF_SECONDS = 0.30     # 进度差分归一化尺度（秒，按dCFT_rem p95≈0.333标定）
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I
     P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
-    W_RISK = 0.04                   # 信誉风险惩罚权重 w_risk
+    W_RISK = 0.01                   # 信誉风险惩罚权重 w_risk (0.04→0.01: risk/r_time比从7.9x降至2x)
     P_RISK = 1.5                    # 信誉风险惩罚指数 p_risk
     W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
     # E_ref / I_ref

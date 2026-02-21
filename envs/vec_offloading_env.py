@@ -3292,17 +3292,19 @@ class VecOffloadingEnv(gym.Env):
                 prev_rem_v = 0.0
                 curr_rem_v = 0.0
                 delta_cft_rem_v = 0.0
+                delta_cft_abs_true = 0.0  # 真实绝对CFT差（恒等于cft_prev-cft_curr，与mode无关）
                 delta_prog = 0.0
                 if np.isfinite(cft_prev_v) and np.isfinite(cft_curr_v):
                     prev_rem_v = max(float(cft_prev_v) - t_prev, 0.0)
                     curr_rem_v = max(float(cft_curr_v) - t_curr, 0.0)
                     delta_cft_rem_v = prev_rem_v - curr_rem_v
+                    delta_cft_abs_true = float(cft_prev_v) - float(cft_curr_v)
                     if progress_mode == "DELTA_SLACK":
                         slack_prev = float(Td) - prev_rem_v
                         slack_curr = float(Td) - curr_rem_v
                         delta_prog = slack_curr - slack_prev
                     else:
-                        delta_prog = float(cft_prev_v) - float(cft_curr_v)
+                        delta_prog = delta_cft_abs_true
                 r_prog = w_progress * float(np.clip(delta_prog / progress_ref, -1.0, 1.0))
                 if not np.isfinite(r_prog):
                     r_prog = 0.0
@@ -3367,8 +3369,9 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("dt_used", step_dt)
                     self._reward_stats.add_metric("implied_dt", step_info.get("dt_used", step_dt))
                     self._reward_stats.add_metric("delta_cft", delta_cft_rem_v)
-                    self._reward_stats.add_metric("delta_cft_abs", delta_prog)
-                    self._reward_stats.add_metric("delta_cft_rem", delta_cft_rem_v)
+                    self._reward_stats.add_metric("delta_cft_abs", delta_cft_abs_true)  # 真实绝对差，恒≈-DT（队列不变时）
+                    self._reward_stats.add_metric("delta_cft_rem", delta_cft_rem_v)     # 剩余差，恒≈+DT
+                    self._reward_stats.add_metric("delta_cft_prog", delta_prog)         # 用于r_prog的mode相关信号
                     self._reward_stats.add_metric("cft_prev_rem", prev_rem_v)
                     self._reward_stats.add_metric("cft_curr_rem", curr_rem_v)
                     self._reward_stats.add_metric("dT_eff", delta_cft_rem_v - step_dt)
@@ -7410,10 +7413,13 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics["cft_curr_rem_mean"] = _metric_mean("cft_curr_rem", 0.0)
         episode_metrics["dt_used_mean"] = _metric_mean("dt_used", 0.0)
         episode_metrics["implied_dt_mean"] = _metric_mean("implied_dt", episode_metrics["dt_used_mean"])
-        episode_metrics["dCFT_abs_mean"] = _metric_mean("delta_cft_abs", 0.0)
+        episode_metrics["dCFT_abs_mean"] = _metric_mean("delta_cft_abs", 0.0)   # 真实绝对CFT差≈-DT
         episode_metrics["dCFT_abs_p95"] = _metric_p95("delta_cft_abs", 0.0)
-        episode_metrics["dCFT_rem_mean"] = _metric_mean("delta_cft_rem", 0.0)
+        episode_metrics["dCFT_rem_mean"] = _metric_mean("delta_cft_rem", 0.0)   # 剩余CFT差≈+DT
         episode_metrics["dCFT_rem_p95"] = _metric_p95("delta_cft_rem", 0.0)
+        episode_metrics["dCFT_prog_mean"] = _metric_mean("delta_cft_prog", 0.0) # r_prog使用的信号
+        episode_metrics["dCFT_prog_p95"] = _metric_p95("delta_cft_prog", 0.0)
+        episode_metrics["r_prog_mean"] = _metric_mean("r_prog", 0.0)
         episode_metrics["reward_step_p95"] = _metric_p95("r_step", _metric_p95("reward_step", 0.0))
         # dT_eff 优先沿用episode聚合，缺失时回退到reward_stats
         if (not np.isfinite(episode_metrics.get("dT_eff_mean", np.nan))) or (

@@ -35,7 +35,7 @@ def _parse_args():
     parser.add_argument("--seeds", type=str, default="42", help="Comma-separated seed list")
     parser.add_argument("--episodes", type=int, default=10, help="Episodes per seed")
     parser.add_argument("--policy", type=str, default="random",
-                        choices=["random", "local", "eft", "mappo"],
+                        choices=["random", "local", "eft", "cp_eft", "greedy", "lb_greedy", "oracle_min", "static", "mappo"],
                         help="Evaluation policy")
     parser.add_argument("--dag-source", type=str, default="synthetic_small",
                         choices=["synthetic_small", "synthetic_large", "workflow_json"])
@@ -117,6 +117,11 @@ def _summarize_records(records: List[Dict], seed: int = None) -> Dict:
         values = [r[field] for r in records]
         summary[f"{field}_mean"] = float(np.mean(values)) if values else 0.0
         summary[f"{field}_std"] = float(np.std(values)) if values else 0.0
+    # 条件时延：仅对 completed_tasks>0 的 episode 求均值，避免零值污染
+    cond_values = [r["latency_mean_cond_success"] for r in records
+                   if not np.isnan(r.get("latency_mean_cond_success", float("nan")))]
+    summary["latency_mean_cond_success"] = float(np.mean(cond_values)) if cond_values else float("nan")
+    summary["latency_valid_n"] = len(cond_values)
     return summary
 
 
@@ -151,8 +156,23 @@ def run_eval(args):
             from baselines import LocalOnlyPolicy
             policy = LocalOnlyPolicy()
         elif args.policy == "eft":
-            from baselines import EFTPPolicy
-            policy = EFTPPolicy(env)
+            from baselines import EFTPolicy
+            policy = EFTPolicy(env)
+        elif args.policy == "cp_eft":
+            from baselines.cp_first_eft_policy import CPFirstEFTPolicy
+            policy = CPFirstEFTPolicy(env)
+        elif args.policy == "greedy":
+            from baselines import GreedyPolicy
+            policy = GreedyPolicy(env)
+        elif args.policy == "lb_greedy":
+            from baselines import LBGreedyPolicy
+            policy = LBGreedyPolicy(env)
+        elif args.policy == "oracle_min":
+            from baselines import OracleMinPolicy
+            policy = OracleMinPolicy(env)
+        elif args.policy == "static":
+            from baselines import StaticPolicy
+            policy = StaticPolicy()
         else:
             policy = RandomPolicy(seed=seed)
 
@@ -180,17 +200,23 @@ def run_eval(args):
             vehicle_counts = [v.task_dag.num_subtasks for v in env.vehicles]
             avg_nodes = float(np.mean(vehicle_counts)) if vehicle_counts else 0.0
 
+            # latency_mean 仅在有完成任务时有物理意义；completed_tasks=0 时存 NaN，避免混入跨策略均值
+            latency_raw = float(metrics.get("task_duration_mean", 0.0))
+            latency_cond = latency_raw if completed_tasks > 0 else float("nan")
             record = {
                 "seed": seed,
                 "episode": ep + 1,
                 "policy": args.policy,
+                "model_tag": "checkpoint" if use_checkpoint else "baseline",
+                "policy_mode": "stochastic" if getattr(args, "stochastic", False) else "deterministic",
                 "dag_source": args.dag_source,
                 "avg_dag_nodes": avg_nodes,
                 "terminated": bool(metrics.get("terminated", terminated)),
                 "truncated": bool(metrics.get("truncated", truncated)),
                 "success_rate": float(metrics.get("task_success_rate", 0.0)),
                 "deadline_miss_rate": float(metrics.get("deadline_miss_rate", 0.0)),
-                "latency_mean": float(metrics.get("task_duration_mean", 0.0)),
+                "latency_mean": latency_raw,
+                "latency_mean_cond_success": latency_cond,
                 "latency_p95": float(metrics.get("task_duration_p95", 0.0)),
                 "energy_norm_mean": float(metrics.get("energy_norm_mean", 0.0)),
                 "throughput": float(throughput),

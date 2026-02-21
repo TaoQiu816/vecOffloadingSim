@@ -424,8 +424,13 @@ class MAPPOAgent:
             'optimizer_state_dict': self.optimizer.state_dict(),
         }, path)
     
-    def load(self, path: str):
-        """加载模型"""
+    def load(self, path: str, restore_optimizer: bool = True, restore_scheduler: bool = True):
+        """加载模型。
+        restore_optimizer=False 时只恢复网络参数，保留当前 optimizer/scheduler 状态，
+        用于 LateGuard rollback（只回滚网络权重，LR 轨迹不被重置）。
+        resume 断点续训时保持默认 True 以完整恢复训练状态。
+        """
         checkpoint = torch.load(path, map_location=self.device)
         self.network.load_state_dict(checkpoint['network_state_dict'], strict=False)
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if restore_optimizer and 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

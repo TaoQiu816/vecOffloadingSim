@@ -3299,7 +3299,7 @@ def main():
                 late_guard_streak = 0
             if late_guard_streak >= late_guard_patience and os.path.exists(best_model_path):
                 try:
-                    agent.load(best_model_path)
+                    agent.load(best_model_path, restore_optimizer=False, restore_scheduler=False)
                     late_guard_streak = 0
                     if late_guard_freeze_after_restore:
                         late_guard_frozen = True

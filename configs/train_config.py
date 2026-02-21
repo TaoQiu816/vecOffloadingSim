@@ -258,8 +258,8 @@ class TrainConfig:
     LATE_GUARD_ENABLE = True
     LATE_GUARD_START_EP = 180
     LATE_GUARD_WINDOW = 50
-    LATE_GUARD_REL_DROP = 0.10
-    LATE_GUARD_PATIENCE = 10  # 原值5在task_sr高方差(std=0.114)场景下易误触发；3000ep长训练建议加倍
+    LATE_GUARD_REL_DROP = 0.15  # 原0.10对应3.2σ(recent50_std=0.017)，实测94次rollback/3000ep；0.15≈4.8σ大幅降低误触发
+    LATE_GUARD_PATIENCE = 15   # 与REL_DROP联调，避免在P0修复后仍出现极短间隔连触
     LATE_GUARD_FREEZE_AFTER_RESTORE = False  # True会在首次rollback后永久冻结更新（空转），改为只回滚不冻结
 
     # -------------------------------------------------------------------------

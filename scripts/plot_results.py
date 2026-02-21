@@ -59,6 +59,34 @@ def rolling_mean(data, window=50):
     return data.rolling(window=window, min_periods=1).mean()
 
 
+def _plot_baseline_hlines(ax, df_baseline, col, scale=1.0, n_ep_label=None):
+    """
+    P2 统一口径：baseline 策略以水平线绘制，避免 10ep 压缩在 3000ep x 轴左侧造成误导。
+    scale: 乘以 100 用于百分比指标。
+    n_ep_label: 用于图例后缀，如 "10-ep mean"。
+    """
+    if df_baseline is None or col not in df_baseline.columns:
+        return
+    n_ep = n_ep_label or f"{int(df_baseline['episode'].max())}-ep mean"
+    _BL_COLORS = [
+        '#dc2626', '#16a34a', '#d97706', '#7c3aed',
+        '#0891b2', '#be185d', '#475569', '#ca8a04',
+    ]
+    for i, policy in enumerate(sorted(df_baseline['policy'].unique())):
+        pdata = df_baseline[df_baseline['policy'] == policy]
+        if pdata.empty or col not in pdata.columns:
+            continue
+        val = float(pdata[col].dropna().mean()) * scale
+        ax.axhline(
+            y=val,
+            linestyle='--',
+            linewidth=1.8,
+            color=_BL_COLORS[i % len(_BL_COLORS)],
+            alpha=0.85,
+            label=f'{policy} ({n_ep})',
+        )
+
+
 def load_baseline_data(training_csv, max_episode=None):
     """
     加载baseline数据（从同目录的baseline_stats.csv）并扩展为完整曲线
@@ -105,15 +133,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
             color=COLORS['primary'], linewidth=2.5, label='MAPPO')
     
-    if df_baseline is not None:
-        for policy in sorted(df_baseline['policy'].unique()):
-            policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
-            if not policy_data.empty:
-                # 使用平滑曲线绘制baseline，与MAPPO风格一致
-                y_smooth = rolling_mean(policy_data['reward_mean'], 50)
-                ax.plot(policy_data['episode'], y_smooth,
-                       color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, label=f'{policy}', alpha=0.85)
+    _plot_baseline_hlines(ax, df_baseline, 'reward_mean')
     
     ax.set_xlabel('Episode')
     ax.set_ylabel('Reward (per step)')
@@ -127,15 +147,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     ax.plot(df['episode'], rolling_mean(df['task_sr'], 50) * 100, 
             color=COLORS['secondary'], linewidth=2.5, label='MAPPO')
     
-    if df_baseline is not None:
-        for policy in sorted(df_baseline['policy'].unique()):
-            policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
-            if not policy_data.empty and 'task_sr' in policy_data.columns:
-                # 使用平滑曲线绘制baseline，与MAPPO风格一致
-                y_smooth = rolling_mean(policy_data['task_sr'], 50) * 100
-                ax.plot(policy_data['episode'], y_smooth,
-                       color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, label=f'{policy}', alpha=0.85)
+    _plot_baseline_hlines(ax, df_baseline, 'task_sr', scale=100.0)
     
     ax.set_xlabel('Episode')
     ax.set_ylabel('Task Success Rate (%)')
@@ -372,13 +384,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.plot(df['episode'], df['reward_mean'], alpha=0.15, color=COLORS['primary'])
     ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
             color=COLORS['primary'], linewidth=3, label='MAPPO')
-    if df_baseline is not None:
-        for policy in sorted(df_baseline['policy'].unique()):
-            policy_data = df_baseline[df_baseline['policy'] == policy]
-            if not policy_data.empty:
-                ax.plot(policy_data['episode'], policy_data['reward_mean'],
-                       color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, marker='s', markersize=5, label=policy, alpha=0.8)
+    _plot_baseline_hlines(ax, df_baseline, 'reward_mean')
     ax.set_title('Reward Convergence', fontweight='bold', fontsize=14)
     ax.set_xlabel('Episode')
     ax.set_ylabel('Reward/Step')
@@ -389,13 +395,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax = fig.add_subplot(gs[0, 2:])
     ax.plot(df['episode'], rolling_mean(df['task_sr'], 50) * 100, 
             color=COLORS['secondary'], linewidth=3, label='MAPPO T_SR')
-    if df_baseline is not None:
-        for policy in sorted(df_baseline['policy'].unique()):
-            policy_data = df_baseline[df_baseline['policy'] == policy]
-            if not policy_data.empty and 'task_sr' in policy_data.columns:
-                ax.plot(policy_data['episode'], policy_data['task_sr'] * 100,
-                       color=COLORS.get(policy, 'gray'), linestyle='--',
-                       linewidth=2, marker='s', markersize=5, label=policy, alpha=0.8)
+    _plot_baseline_hlines(ax, df_baseline, 'task_sr', scale=100.0)
     ax.axhline(y=80, color=COLORS['danger'], linestyle='--', linewidth=2, alpha=0.7)
     ax.set_title('Task Success Rate', fontweight='bold', fontsize=14)
     ax.set_xlabel('Episode')
@@ -520,12 +520,7 @@ def plot_latency_with_baseline(df, df_baseline, output_dir):
     # 1) Primary latency
     ax = axes[0, 0]
     ax.plot(df["episode"], rolling_mean(df[col], 50), color=COLORS["primary"], linewidth=2.5, label="MAPPO")
-    if df_baseline is not None and col in df_baseline.columns:
-        for policy in sorted(df_baseline["policy"].unique()):
-            pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
-            if pdata.empty:
-                continue
-            ax.plot(pdata["episode"], rolling_mean(pdata[col], 50), color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+    _plot_baseline_hlines(ax, df_baseline, col)
     ax.set_title(title, fontweight="bold")
     ax.set_xlabel("Episode")
     ax.set_ylabel("Seconds")
@@ -535,12 +530,7 @@ def plot_latency_with_baseline(df, df_baseline, output_dir):
     ax = axes[0, 1]
     if "deadline_miss_rate" in df.columns:
         ax.plot(df["episode"], rolling_mean(df["deadline_miss_rate"], 50) * 100, color=COLORS["danger"], linewidth=2.5, label="MAPPO")
-        if df_baseline is not None and "deadline_miss_rate" in df_baseline.columns:
-            for policy in sorted(df_baseline["policy"].unique()):
-                pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
-                if pdata.empty:
-                    continue
-                ax.plot(pdata["episode"], rolling_mean(pdata["deadline_miss_rate"], 50) * 100, color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        _plot_baseline_hlines(ax, df_baseline, "deadline_miss_rate", scale=100.0)
         ax.set_title("Deadline Miss Rate (%)", fontweight="bold")
         ax.set_xlabel("Episode")
         ax.set_ylabel("%")
@@ -550,12 +540,7 @@ def plot_latency_with_baseline(df, df_baseline, output_dir):
     ax = axes[1, 0]
     if "time_limit_rate" in df.columns:
         ax.plot(df["episode"], rolling_mean(df["time_limit_rate"], 50) * 100, color=COLORS["accent"], linewidth=2.5, label="MAPPO")
-        if df_baseline is not None and "time_limit_rate" in df_baseline.columns:
-            for policy in sorted(df_baseline["policy"].unique()):
-                pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
-                if pdata.empty:
-                    continue
-                ax.plot(pdata["episode"], rolling_mean(pdata["time_limit_rate"], 50) * 100, color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        _plot_baseline_hlines(ax, df_baseline, "time_limit_rate", scale=100.0)
         ax.set_title("Time Limit Rate (%)", fontweight="bold")
         ax.set_xlabel("Episode")
         ax.set_ylabel("%")
@@ -570,14 +555,8 @@ def plot_latency_with_baseline(df, df_baseline, output_dir):
             break
     if power_col is not None:
         ax.plot(df["episode"], rolling_mean(df[power_col], 50), color=COLORS["muted"], linewidth=2.5, label="MAPPO")
-        if df_baseline is not None:
-            base_power_col = "power_ratio_mean" if "power_ratio_mean" in df_baseline.columns else "avg_power"
-            if base_power_col in df_baseline.columns:
-                for policy in sorted(df_baseline["policy"].unique()):
-                    pdata = df_baseline[df_baseline["policy"] == policy].sort_values("episode")
-                    if pdata.empty:
-                        continue
-                    ax.plot(pdata["episode"], rolling_mean(pdata[base_power_col], 50), color=COLORS.get(policy, "gray"), linestyle="--", linewidth=2, alpha=0.85, label=policy)
+        base_power_col = "power_ratio_mean" if df_baseline is not None and "power_ratio_mean" in df_baseline.columns else "avg_power"
+        _plot_baseline_hlines(ax, df_baseline, base_power_col)
         ax.set_title("Power Ratio (mean)", fontweight="bold")
         ax.set_xlabel("Episode")
         ax.set_ylabel("a_power in [0,1]")
