@@ -1,0 +1,567 @@
+source,metric,mean
+Ours (MAPPO),steps,63.48133333333333
+Ours (MAPPO),elapsed_sec,4.3994225096702575
+Ours (MAPPO),seed,42.0
+Ours (MAPPO),terminated,0.9586666666666667
+Ours (MAPPO),truncated,0.04133333333333333
+Ours (MAPPO),time_limit_rate,0.04133333333333333
+Ours (MAPPO),episode_time_seconds,6.348133333333331
+Ours (MAPPO),mean_cft_est,7.064355336233773
+Ours (MAPPO),mean_cft_completed,3.010470501628003
+Ours (MAPPO),vehicle_cft_count,20.0
+Ours (MAPPO),cft_est_valid,1.0
+Ours (MAPPO),deadline_gamma,3.148906170628388
+Ours (MAPPO),deadline_seconds,3.5110902573620835
+Ours (MAPPO),critical_path_cycles,13242316514.481375
+Ours (MAPPO),r_time,-0.010766534188702928
+Ours (MAPPO),r_interf,-0.0007674695263616441
+Ours (MAPPO),r_risk,-0.0047507527885993295
+Ours (MAPPO),r_illegal,-0.000361737310066792
+Ours (MAPPO),r_pbrs,0.0
+Ours (MAPPO),r_term,0.08934281605544774
+Ours (MAPPO),r_step,-0.005150004489547508
+Ours (MAPPO),r_total,0.08425390371526749
+Ours (MAPPO),abs_ratio_r_time,0.10187845227770798
+Ours (MAPPO),abs_ratio_r_energy,0.010255902080910663
+Ours (MAPPO),abs_ratio_r_interf,0.006337909663048315
+Ours (MAPPO),abs_ratio_r_risk,0.03972582800041707
+Ours (MAPPO),abs_ratio_r_illegal,0.002689075955640052
+Ours (MAPPO),abs_ratio_r_pbrs,0.0
+Ours (MAPPO),abs_ratio_r_term,0.8391128320222757
+Ours (MAPPO),I_total_mean,3.3380508191888553e-10
+Ours (MAPPO),I_total_p50,0.0
+Ours (MAPPO),I_total_p95,6.92935276057356e-10
+Ours (MAPPO),I_caused_mean,1.674016319614761e-10
+Ours (MAPPO),I_caused_p95,6.947388756203485e-10
+Ours (MAPPO),rho_selected_mean,0.8023078356186549
+Ours (MAPPO),rho_selected_p10,0.5
+Ours (MAPPO),uncertainty_selected_mean,0.19417685130238532
+Ours (MAPPO),uncertainty_selected_p90,0.5
+Ours (MAPPO),rho_selected_p50,0.9003959705829621
+Ours (MAPPO),rho_selected_p95,0.9813035879472891
+Ours (MAPPO),rho_selected_lt_0p6_rate,0.24979251499129232
+Ours (MAPPO),rho_selected_lt_0p7_rate,0.3091643465841291
+Ours (MAPPO),risk_penalty_mean,0.026433000719795575
+Ours (MAPPO),chain_tx_total,200.22
+Ours (MAPPO),chain_p95_mean,0.0
+Ours (MAPPO),chain_pfail_mean,0.0
+Ours (MAPPO),chain_risk_cost_total,0.0
+Ours (MAPPO),trust_attempts,189.20066666666668
+Ours (MAPPO),trust_failures,4.828666666666667
+Ours (MAPPO),trust_failure_rate,0.025839530631468544
+Ours (MAPPO),trust_retry_count,4.828666666666667
+Ours (MAPPO),episode_vehicle_count,20.0
+Ours (MAPPO),episode_task_count,20.0
+Ours (MAPPO),total_subtasks,239.65066666666667
+Ours (MAPPO),reward_mean,0.08425390359433364
+Ours (MAPPO),reward_p50,-0.005222372596887568
+Ours (MAPPO),reward_p95,0.6536459819743639
+Ours (MAPPO),reward_min,-0.144678244382143
+Ours (MAPPO),reward_max,1.4158885515332222
+Ours (MAPPO),reward_abs_mean,0.11258102033908164
+Ours (MAPPO),dT_mean,0.04277746850483544
+Ours (MAPPO),cft_prev_rem_mean,1.6066256314057445
+Ours (MAPPO),cft_curr_rem_mean,1.5638481629009087
+Ours (MAPPO),dCFT_abs_mean,-0.05722253149516525
+Ours (MAPPO),dCFT_abs_p95,0.2027629911422729
+Ours (MAPPO),dCFT_rem_mean,0.04277746850483544
+Ours (MAPPO),dCFT_rem_p95,0.3027629911422729
+Ours (MAPPO),dt_used_mean,0.09999999999999869
+Ours (MAPPO),implied_dt_mean,0.09999999999999869
+Ours (MAPPO),dT_eff_mean,-0.057222531495165235
+Ours (MAPPO),dT_eff_p95,0.20276299114227284
+Ours (MAPPO),energy_norm_mean,0.033024308527263325
+Ours (MAPPO),energy_norm_p95,0.2940498069126112
+Ours (MAPPO),t_tx_mean,0.009524620839798022
+Ours (MAPPO),reward_step_p95,0.06820373034037701
+Ours (MAPPO),mean_cft,7.064355336233773
+Ours (MAPPO),delta_cft_rem_mean,0.04277746850483544
+Ours (MAPPO),delta_cft_rem_p95,0.3027629911422729
+Ours (MAPPO),mean_cft_rem,0.7162220029004432
+Ours (MAPPO),success_rate_end,0.4541333333333334
+Ours (MAPPO),task_success_rate,0.4541333333333334
+Ours (MAPPO),subtask_success_rate,0.8406151861191359
+Ours (MAPPO),deadline_miss_rate,0.5455666666666666
+Ours (MAPPO),illegal_action_rate,1.2057910335559265e-05
+Ours (MAPPO),top_illegal_reason_count,0.014666666666666666
+Ours (MAPPO),no_task_rate,0.7997378452573943
+Ours (MAPPO),on_task_rate,0.20026215474260553
+Ours (MAPPO),has_task_available_rate,0.20026215474260553
+Ours (MAPPO),unified_illegal_trigger_rate,1.2057910335559265e-05
+Ours (MAPPO),hard_trigger_rate,1.2057910335559265e-05
+Ours (MAPPO),decision_local_frac,0.09462171257637904
+Ours (MAPPO),decision_rsu_frac,0.7817774328967956
+Ours (MAPPO),decision_v2v_frac,0.12360085452682518
+Ours (MAPPO),decision_frac_local,0.09462171257637904
+Ours (MAPPO),decision_frac_rsu,0.7817774328967956
+Ours (MAPPO),decision_frac_v2v,0.12360085452682518
+Ours (MAPPO),power_ratio_mean,0.5376027560473121
+Ours (MAPPO),power_ratio_p95,0.8988367204268773
+Ours (MAPPO),entropy,0.6410524102517289
+Ours (MAPPO),approx_kl,0.021807293359656806
+Ours (MAPPO),clip_frac,0.08457579647875951
+Ours (MAPPO),policy_loss,0.0023233709272384054
+Ours (MAPPO),value_loss,0.3644666152568023
+Ours (MAPPO),total_loss,0.16731815756891982
+Ours (MAPPO),grad_norm,1.7941425094645995
+Ours (MAPPO),policy_entropy,0.6410524102517289
+Ours (MAPPO),entropy_loss,-0.6410524102517289
+Ours (MAPPO),active_ratio,0.20025009683227
+Ours (MAPPO),actor_update_active_frac,0.19995098976299208
+Ours (MAPPO),active_samples,220.96666666666667
+Ours (MAPPO),total_samples,1269.6266666666668
+Ours (MAPPO),adv_mean,0.38267295774025845
+Ours (MAPPO),adv_std,4.078108700394631
+Ours (MAPPO),value_target_mean,1.9381357891716164
+Ours (MAPPO),value_target_std,4.546139709953842
+Ours (MAPPO),value_pred_mean,1.8635493784226222
+Ours (MAPPO),value_pred_std,3.6448081683286127
+Ours (MAPPO),value_clip_fraction,0.13625609360914953
+Ours (MAPPO),skipped_update_count,0.0
+Ours (MAPPO),avail_L,1.0
+Ours (MAPPO),avail_R,1.0
+Ours (MAPPO),avail_V,0.2712967632525918
+Ours (MAPPO),neighbor_count_mean,5.154638501799244
+Ours (MAPPO),best_v2v_rate_mean,34939457.157944426
+Ours (MAPPO),best_v2v_valid_rate,0.9952470217272446
+Ours (MAPPO),v2v_beats_rsu_rate,0.2019576109305625
+Ours (MAPPO),mean_cost_gap_v2v_minus_rsu,0.09080487486471425
+Ours (MAPPO),mean_cost_rsu,0.2597774775773627
+Ours (MAPPO),mean_cost_v2v,0.3505823524420769
+Ours (MAPPO),t_L,0.0
+Ours (MAPPO),t_R,0.0
+Ours (MAPPO),t_V,0.0
+Ours (MAPPO),t_a,0.0
+Ours (MAPPO),t_alt,0.0
+Ours (MAPPO),A_t,0.0
+Ours (MAPPO),r_lat,0.0
+Ours (MAPPO),cp_rem,0.0
+Ours (MAPPO),f_max,0.0
+Ours (MAPPO),d_cp_lb,0.0
+Ours (MAPPO),rate_best,0.0
+Ours (MAPPO),comm_lb,0.0
+Ours (MAPPO),queue_lb,0.0
+Ours (MAPPO),lb,0.0
+Ours (MAPPO),phi,0.0
+Ours (MAPPO),delta_phi,0.0
+Ours (MAPPO),r_shape,0.0
+Ours (MAPPO),overtime_ratio,0.0
+Ours (MAPPO),r_timeout,0.0
+Ours (MAPPO),e_tx,0.0
+Ours (MAPPO),r_energy,-0.0012250954463446915
+Ours (MAPPO),r_power,0.0
+Ours (MAPPO),avg_power,0.5324846164085333
+Ours (MAPPO),avg_rsu_queue,12.283896521480251
+Ours (MAPPO),rsu_queue_p95,31.236566666666665
+Ours (MAPPO),time_limit_penalty_applied,0.04133333333333333
+Ours (MAPPO),time_limit_penalty_value,-0.04133333333333333
+Ours (MAPPO),remaining_time_seconds_used,0.04640113990141552
+Ours (MAPPO),remaining_ratio_used,0.0
+CP-EFT,reward_mean,0.007667476258159729
+EFT,reward_mean,-0.0060296692386231695
+Greedy,reward_mean,0.18169124942223025
+LB-Greedy,reward_mean,0.0014618279291175207
+Local-Only,reward_mean,0.01129681793143498
+Oracle-Min,reward_mean,-0.01258020544897814
+Random,reward_mean,-0.01592803717626897
+Static,reward_mean,0.08153123397506519
+CP-EFT,reward_total,0.8839992087028454
+EFT,reward_total,-1.227161776734468
+Greedy,reward_total,7.162528676048543
+LB-Greedy,reward_total,-0.12213484200525507
+Local-Only,reward_total,0.6747279382153379
+Oracle-Min,reward_total,-2.2452623218195034
+Random,reward_total,-2.7364203168024006
+Static,reward_total,3.8893119111249796
+CP-EFT,vehicle_sr,0.335
+EFT,vehicle_sr,0.295
+Greedy,vehicle_sr,0.675
+LB-Greedy,vehicle_sr,0.33999999999999997
+Local-Only,vehicle_sr,0.23500000000000001
+Oracle-Min,vehicle_sr,0.22999999999999998
+Random,vehicle_sr,0.015000000000000003
+Static,vehicle_sr,0.41
+CP-EFT,task_sr,0.335
+EFT,task_sr,0.295
+Greedy,task_sr,0.675
+LB-Greedy,task_sr,0.33999999999999997
+Local-Only,task_sr,0.23500000000000001
+Oracle-Min,task_sr,0.22999999999999998
+Random,task_sr,0.015000000000000003
+Static,task_sr,0.41
+CP-EFT,subtask_sr,0.7533620593481742
+EFT,subtask_sr,0.7813895212928191
+Greedy,subtask_sr,0.9537031751587695
+LB-Greedy,subtask_sr,0.7867620710180802
+Local-Only,subtask_sr,0.6691255127779648
+Oracle-Min,subtask_sr,0.7139632945637561
+Random,subtask_sr,0.40426416660980086
+Static,subtask_sr,0.7968248444741592
+CP-EFT,v2v_subtask_sr,0.7636713204898079
+EFT,v2v_subtask_sr,0.833792650189739
+Greedy,v2v_subtask_sr,0.7
+LB-Greedy,v2v_subtask_sr,0.8430306402072862
+Local-Only,v2v_subtask_sr,0.0
+Oracle-Min,v2v_subtask_sr,0.7624626934558584
+Random,v2v_subtask_sr,0.5866759631610485
+Static,v2v_subtask_sr,0.0
+CP-EFT,ratio_local,0.9468286826146267
+EFT,ratio_local,0.9327324961004558
+Greedy,ratio_local,0.8141095867417516
+LB-Greedy,ratio_local,0.9050792426214876
+Local-Only,ratio_local,1.0
+Oracle-Min,ratio_local,0.9541072414118208
+Random,ratio_local,0.15636388699059414
+Static,ratio_local,0.04199206607090446
+CP-EFT,ratio_rsu,0.024938511945497982
+EFT,ratio_rsu,0.03124467303014878
+Greedy,ratio_rsu,0.18404650939073425
+LB-Greedy,ratio_rsu,0.04197409307050485
+Local-Only,ratio_rsu,0.0
+Oracle-Min,ratio_rsu,0.02110498349130117
+Random,ratio_rsu,0.1634143411939386
+Static,ratio_rsu,0.9580079339290956
+CP-EFT,ratio_v2v,0.028232805439875303
+EFT,ratio_v2v,0.036022830869395325
+Greedy,ratio_v2v,0.0018439038675141697
+LB-Greedy,ratio_v2v,0.05294666430800752
+Local-Only,ratio_v2v,0.0
+Oracle-Min,ratio_v2v,0.02478777509687796
+Random,ratio_v2v,0.6802217718154673
+Static,ratio_v2v,0.0
+CP-EFT,decision_frac_local,0.9468286826146267
+EFT,decision_frac_local,0.9327324961004558
+Greedy,decision_frac_local,0.8141095867417516
+LB-Greedy,decision_frac_local,0.9050792426214876
+Local-Only,decision_frac_local,1.0
+Oracle-Min,decision_frac_local,0.9541072414118208
+Random,decision_frac_local,0.15636388699059414
+Static,decision_frac_local,0.04199206607090446
+CP-EFT,decision_frac_rsu,0.024938511945497982
+EFT,decision_frac_rsu,0.03124467303014878
+Greedy,decision_frac_rsu,0.18404650939073425
+LB-Greedy,decision_frac_rsu,0.04197409307050485
+Local-Only,decision_frac_rsu,0.0
+Oracle-Min,decision_frac_rsu,0.02110498349130117
+Random,decision_frac_rsu,0.1634143411939386
+Static,decision_frac_rsu,0.9580079339290956
+CP-EFT,decision_frac_v2v,0.028232805439875303
+EFT,decision_frac_v2v,0.036022830869395325
+Greedy,decision_frac_v2v,0.0018439038675141697
+LB-Greedy,decision_frac_v2v,0.05294666430800752
+Local-Only,decision_frac_v2v,0.0
+Oracle-Min,decision_frac_v2v,0.02478777509687796
+Random,decision_frac_v2v,0.6802217718154673
+Static,decision_frac_v2v,0.0
+CP-EFT,avg_power,0.00215603797755709
+EFT,avg_power,0.0029626174409709905
+Greedy,avg_power,1.0
+LB-Greedy,avg_power,0.00449119144234098
+Local-Only,avg_power,1.0
+Oracle-Min,avg_power,0.045892758588179136
+Random,avg_power,0.662294814579595
+Static,avg_power,1.0
+CP-EFT,power_ratio_mean,0.042239513220940286
+EFT,power_ratio_mean,0.04479473791421365
+Greedy,power_ratio_mean,1.0
+LB-Greedy,power_ratio_mean,0.047405100829643984
+Local-Only,power_ratio_mean,0.0
+Oracle-Min,power_ratio_mean,1.0
+Random,power_ratio_mean,0.599707025873277
+Static,power_ratio_mean,1.0
+CP-EFT,power_ratio_p95,0.3879583640148216
+EFT,power_ratio_p95,0.3940197572555703
+Greedy,power_ratio_p95,1.0
+LB-Greedy,power_ratio_p95,0.38706743422814927
+Local-Only,power_ratio_p95,0.0
+Oracle-Min,power_ratio_p95,1.0
+Random,power_ratio_p95,0.9597499289163828
+Static,power_ratio_p95,1.0
+CP-EFT,episode_time_seconds,15.369999999999994
+EFT,episode_time_seconds,17.21
+Greedy,episode_time_seconds,3.9700000000000015
+LB-Greedy,episode_time_seconds,12.099999999999982
+Local-Only,episode_time_seconds,7.30999999999999
+Oracle-Min,episode_time_seconds,19.25000000000001
+Random,episode_time_seconds,17.28000000000001
+Static,episode_time_seconds,4.899999999999999
+CP-EFT,mean_cft_est,16.409409651279447
+EFT,mean_cft_est,18.316884341716765
+Greedy,mean_cft_est,4.115168136596681
+LB-Greedy,mean_cft_est,13.062054984092708
+Local-Only,mean_cft_est,8.57241643285751
+Oracle-Min,mean_cft_est,20.388832653045657
+Random,mean_cft_est,19.96139489173889
+Static,mean_cft_est,5.405324166297912
+CP-EFT,mean_cft_completed,3.190642857142858
+EFT,mean_cft_completed,3.296269841269843
+Greedy,mean_cft_completed,2.9464482600732613
+LB-Greedy,mean_cft_completed,3.212317460317462
+Local-Only,mean_cft_completed,3.4993888888888898
+Oracle-Min,mean_cft_completed,3.2601190476190487
+Random,mean_cft_completed,1.0750000000000004
+Static,mean_cft_completed,3.119019841269842
+CP-EFT,task_duration_mean,3.190642857142858
+EFT,task_duration_mean,3.296269841269843
+Greedy,task_duration_mean,2.9464482600732613
+LB-Greedy,task_duration_mean,3.212317460317462
+Local-Only,task_duration_mean,3.4993888888888898
+Oracle-Min,task_duration_mean,3.2601190476190487
+Random,task_duration_mean,1.0750000000000004
+Static,task_duration_mean,3.119019841269842
+CP-EFT,task_duration_p95,4.117500000000001
+EFT,task_duration_p95,4.044000000000001
+Greedy,task_duration_p95,3.7300000000000018
+LB-Greedy,task_duration_p95,4.056500000000001
+Local-Only,task_duration_p95,4.624999999999998
+Oracle-Min,task_duration_p95,3.9805000000000006
+Random,task_duration_p95,1.1155000000000004
+Static,task_duration_p95,4.4315
+CP-EFT,deadline_miss_rate,0.6599999999999999
+EFT,deadline_miss_rate,0.7
+Greedy,deadline_miss_rate,0.325
+LB-Greedy,deadline_miss_rate,0.6599999999999999
+Local-Only,deadline_miss_rate,0.765
+Oracle-Min,deadline_miss_rate,0.76
+Random,deadline_miss_rate,0.975
+Static,deadline_miss_rate,0.5900000000000001
+CP-EFT,time_limit_rate,0.4
+EFT,time_limit_rate,0.6
+Greedy,time_limit_rate,0.0
+LB-Greedy,time_limit_rate,0.1
+Local-Only,time_limit_rate,0.0
+Oracle-Min,time_limit_rate,0.7
+Random,time_limit_rate,0.6
+Static,time_limit_rate,0.0
+CP-EFT,illegal_action_rate,0.00028174962292608
+EFT,illegal_action_rate,0.0005726399231323501
+Greedy,illegal_action_rate,0.0
+LB-Greedy,illegal_action_rate,0.0006872645896303
+Local-Only,illegal_action_rate,0.0
+Oracle-Min,illegal_action_rate,0.00041893295698116
+Random,illegal_action_rate,5.090673575129e-05
+Static,illegal_action_rate,0.0
+CP-EFT,no_task_rate,0.9234280041084656
+EFT,no_task_rate,0.9212326046069004
+Greedy,no_task_rate,0.7119019837964147
+LB-Greedy,no_task_rate,0.8885727662196808
+Local-Only,no_task_rate,0.8654519335208029
+Oracle-Min,no_task_rate,0.9444451611041202
+Random,no_task_rate,0.9498971668563299
+Static,no_task_rate,0.7884903178943435
+CP-EFT,on_task_rate,0.0765719958915344
+EFT,on_task_rate,0.07876739539309953
+Greedy,on_task_rate,0.2880980162035853
+LB-Greedy,on_task_rate,0.11142723378031909
+Local-Only,on_task_rate,0.13454806647919715
+Oracle-Min,on_task_rate,0.05555483889587971
+Random,on_task_rate,0.050102833143670214
+Static,on_task_rate,0.2115096821056564
+CP-EFT,has_task_available_rate,0.0765719958915344
+EFT,has_task_available_rate,0.07876739539309953
+Greedy,has_task_available_rate,0.2880980162035853
+LB-Greedy,has_task_available_rate,0.11142723378031909
+Local-Only,has_task_available_rate,0.13454806647919715
+Oracle-Min,has_task_available_rate,0.05555483889587971
+Random,has_task_available_rate,0.050102833143670214
+Static,has_task_available_rate,0.2115096821056564
+CP-EFT,unified_illegal_trigger_rate,0.00028174962292608
+EFT,unified_illegal_trigger_rate,0.0005726399231323501
+Greedy,unified_illegal_trigger_rate,0.0
+LB-Greedy,unified_illegal_trigger_rate,0.0006872645896303
+Local-Only,unified_illegal_trigger_rate,0.0
+Oracle-Min,unified_illegal_trigger_rate,0.00041893295698116
+Random,unified_illegal_trigger_rate,5.090673575129e-05
+Static,unified_illegal_trigger_rate,0.0
+CP-EFT,I_total_mean,6.350877050816106e-12
+EFT,I_total_mean,2.1696982953020062e-08
+Greedy,I_total_mean,3.4007995031171134e-10
+LB-Greedy,I_total_mean,2.1079947089578873e-08
+Local-Only,I_total_mean,0.0
+Oracle-Min,I_total_mean,2.502002460682412e-08
+Random,I_total_mean,4.601330114671621e-09
+Static,I_total_mean,3.6217563254004047e-10
+CP-EFT,I_total_p50,0.0
+EFT,I_total_p50,0.0
+Greedy,I_total_p50,0.0
+LB-Greedy,I_total_p50,0.0
+Local-Only,I_total_p50,0.0
+Oracle-Min,I_total_p50,0.0
+Random,I_total_p50,0.0
+Static,I_total_p50,0.0
+CP-EFT,I_total_p95,5.652989358627229e-12
+EFT,I_total_p95,1.6322606435822385e-11
+Greedy,I_total_p95,2.2218459849732138e-09
+LB-Greedy,I_total_p95,3.0686779177701564e-11
+Local-Only,I_total_p95,0.0
+Oracle-Min,I_total_p95,5.2500199229209985e-12
+Random,I_total_p95,9.499396517133525e-12
+Static,I_total_p95,1.971785301702056e-09
+CP-EFT,I_caused_mean,3.3146157910404763e-12
+EFT,I_caused_mean,4.918741130545412e-12
+Greedy,I_caused_mean,3.2267076233161164e-10
+LB-Greedy,I_caused_mean,6.122482817147272e-09
+Local-Only,I_caused_mean,0.0
+Oracle-Min,I_caused_mean,3.2017689541308234e-11
+Random,I_caused_mean,4.591823627082305e-09
+Static,I_caused_mean,3.6217561866225266e-10
+CP-EFT,I_caused_p95,3.4639422118843505e-15
+EFT,I_caused_p95,9.43046024571518e-12
+Greedy,I_caused_p95,2.2270625565923296e-09
+LB-Greedy,I_caused_p95,1.784897201522991e-11
+Local-Only,I_caused_p95,0.0
+Oracle-Min,I_caused_p95,0.0
+Random,I_caused_p95,2.5437231817749386e-13
+Static,I_caused_p95,2.0547464840703356e-09
+CP-EFT,rho_selected_mean,0.6711643457412719
+EFT,rho_selected_mean,0.6712303936481476
+Greedy,rho_selected_mean,0.8565315425395965
+LB-Greedy,rho_selected_mean,0.673340505361557
+Local-Only,rho_selected_mean,0.0
+Oracle-Min,rho_selected_mean,0.6643036842346192
+Random,rho_selected_mean,0.5977944672107697
+Static,rho_selected_mean,0.8534935116767883
+CP-EFT,rho_selected_p10,0.5
+EFT,rho_selected_p10,0.5
+Greedy,rho_selected_p10,0.5166666686534882
+LB-Greedy,rho_selected_p10,0.5
+Local-Only,rho_selected_p10,0.0
+Oracle-Min,rho_selected_p10,0.49899999499320985
+Random,rho_selected_p10,0.4766666740179062
+Static,rho_selected_p10,0.5
+CP-EFT,risk_penalty_mean,0.02263965746387834
+EFT,risk_penalty_mean,0.02233968805521721
+Greedy,risk_penalty_mean,0.011165760550647939
+LB-Greedy,risk_penalty_mean,0.02232804838567966
+Local-Only,risk_penalty_mean,0.0
+Oracle-Min,risk_penalty_mean,0.02107920683920378
+Random,risk_penalty_mean,0.02478471854701634
+Static,risk_penalty_mean,0.01165968971326943
+CP-EFT,rho_selected_p50,
+EFT,rho_selected_p50,
+Greedy,rho_selected_p50,
+LB-Greedy,rho_selected_p50,
+Local-Only,rho_selected_p50,
+Oracle-Min,rho_selected_p50,
+Random,rho_selected_p50,
+Static,rho_selected_p50,
+CP-EFT,rho_selected_p95,
+EFT,rho_selected_p95,
+Greedy,rho_selected_p95,
+LB-Greedy,rho_selected_p95,
+Local-Only,rho_selected_p95,
+Oracle-Min,rho_selected_p95,
+Random,rho_selected_p95,
+Static,rho_selected_p95,
+CP-EFT,rho_selected_lt_0p6_rate,
+EFT,rho_selected_lt_0p6_rate,
+Greedy,rho_selected_lt_0p6_rate,
+LB-Greedy,rho_selected_lt_0p6_rate,
+Local-Only,rho_selected_lt_0p6_rate,
+Oracle-Min,rho_selected_lt_0p6_rate,
+Random,rho_selected_lt_0p6_rate,
+Static,rho_selected_lt_0p6_rate,
+CP-EFT,rho_selected_lt_0p7_rate,
+EFT,rho_selected_lt_0p7_rate,
+Greedy,rho_selected_lt_0p7_rate,
+LB-Greedy,rho_selected_lt_0p7_rate,
+Local-Only,rho_selected_lt_0p7_rate,
+Oracle-Min,rho_selected_lt_0p7_rate,
+Random,rho_selected_lt_0p7_rate,
+Static,rho_selected_lt_0p7_rate,
+CP-EFT,uncertainty_selected_mean,0.3098666906356812
+EFT,uncertainty_selected_mean,0.2912618041038513
+Greedy,uncertainty_selected_mean,0.14346846640110014
+LB-Greedy,uncertainty_selected_mean,0.2957186758518219
+Local-Only,uncertainty_selected_mean,0.0
+Oracle-Min,uncertainty_selected_mean,0.3019120544195175
+Random,uncertainty_selected_mean,0.36162872612476343
+Static,uncertainty_selected_mean,0.14650650620460506
+CP-EFT,uncertainty_selected_p90,0.5
+EFT,uncertainty_selected_p90,0.5
+Greedy,uncertainty_selected_p90,0.4833333343267441
+LB-Greedy,uncertainty_selected_p90,0.5
+Local-Only,uncertainty_selected_p90,0.0
+Oracle-Min,uncertainty_selected_p90,0.5
+Random,uncertainty_selected_p90,0.5
+Static,uncertainty_selected_p90,0.5
+CP-EFT,chain_tx_total,144.7
+EFT,chain_tx_total,188.7
+Greedy,chain_tx_total,147.5
+LB-Greedy,chain_tx_total,186.5
+Local-Only,chain_tx_total,0.0
+Oracle-Min,chain_tx_total,173.6
+Random,chain_tx_total,125.8
+Static,chain_tx_total,200.0
+CP-EFT,chain_p95_mean,0.0
+EFT,chain_p95_mean,0.0
+Greedy,chain_p95_mean,0.0
+LB-Greedy,chain_p95_mean,0.0
+Local-Only,chain_p95_mean,0.0
+Oracle-Min,chain_p95_mean,0.0
+Random,chain_p95_mean,0.0
+Static,chain_p95_mean,0.0
+CP-EFT,chain_pfail_mean,0.0
+EFT,chain_pfail_mean,0.0
+Greedy,chain_pfail_mean,0.0
+LB-Greedy,chain_pfail_mean,0.0
+Local-Only,chain_pfail_mean,0.0
+Oracle-Min,chain_pfail_mean,0.0
+Random,chain_pfail_mean,0.0
+Static,chain_pfail_mean,0.0
+CP-EFT,chain_risk_cost_total,0.0
+EFT,chain_risk_cost_total,0.0
+Greedy,chain_risk_cost_total,0.0
+LB-Greedy,chain_risk_cost_total,0.0
+Local-Only,chain_risk_cost_total,0.0
+Oracle-Min,chain_risk_cost_total,0.0
+Random,chain_risk_cost_total,0.0
+Static,chain_risk_cost_total,0.0
+CP-EFT,trust_attempts,127.4
+EFT,trust_attempts,172.2
+Greedy,trust_attempts,143.3
+LB-Greedy,trust_attempts,170.6
+Local-Only,trust_attempts,0.0
+Oracle-Min,trust_attempts,154.7
+Random,trust_attempts,91.3
+Static,trust_attempts,181.5
+CP-EFT,trust_failures,13.4
+EFT,trust_failures,22.4
+Greedy,trust_failures,0.3
+LB-Greedy,trust_failures,18.9
+Local-Only,trust_failures,0.0
+Oracle-Min,trust_failures,19.3
+Random,trust_failures,13.6
+Static,trust_failures,0.0
+CP-EFT,trust_failure_rate,0.10425984010599107
+EFT,trust_failure_rate,0.12915349473438753
+Greedy,trust_failure_rate,0.00192189044390301
+LB-Greedy,trust_failure_rate,0.11066105680477564
+Local-Only,trust_failure_rate,0.0
+Oracle-Min,trust_failure_rate,0.12284737941480368
+Random,trust_failure_rate,0.15191202028783343
+Static,trust_failure_rate,0.0
+CP-EFT,trust_retry_count,13.4
+EFT,trust_retry_count,22.4
+Greedy,trust_retry_count,0.3
+LB-Greedy,trust_retry_count,18.9
+Local-Only,trust_retry_count,0.0
+Oracle-Min,trust_retry_count,19.3
+Random,trust_retry_count,13.6
+Static,trust_retry_count,0.0
+CP-EFT,avg_queue_len,0.19456810922020296
+EFT,avg_queue_len,0.20720288512906535
+Greedy,avg_queue_len,0.5211669190240293
+LB-Greedy,avg_queue_len,0.2970910834270953
+Local-Only,avg_queue_len,1.2668681995771227
+Oracle-Min,avg_queue_len,0.12826539243755364
+Random,avg_queue_len,0.2528889248165854
+Static,avg_queue_len,0.032611510748276465
+CP-EFT,avg_rsu_queue,1.3280020934142147
+EFT,avg_rsu_queue,1.6779771769390313
+Greedy,avg_rsu_queue,10.629886411222127
+LB-Greedy,avg_rsu_queue,2.2951363437528967
+Local-Only,avg_rsu_queue,0.0
+Oracle-Min,avg_rsu_queue,1.101165244763587
+Random,avg_rsu_queue,0.290489783857152
+Static,avg_rsu_queue,21.918272273498957

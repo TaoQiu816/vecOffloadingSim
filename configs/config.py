@@ -259,15 +259,15 @@ class SystemConfig:
     # 2.5.3 信誉外生过程 (Reputation / Trust External Process)
     # -------------------------------------------------------------------------
     TRUST_ENABLED = True            # 是否启用信誉外生过程
-    TRUST_P_RELIABLE_RANGE = (0.7, 1.0)   # 可靠节点 p_j 范围
-    TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围
+    TRUST_P_RELIABLE_RANGE = (0.90, 1.0)  # 可靠节点 p_j 范围（无恶意场景：高可靠性）
+    TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围（RELIABLE_PROB=1.0时不生效）
     # [类型化可靠性覆盖] 若非None，则按节点类型覆盖上面的混合分布采样：
     # RSU: TRUST_P_RSU_RANGE, VEH: TRUST_P_VEH_RANGE
     TRUST_P_RSU_RANGE = None      # e.g. (0.95, 0.995)
     TRUST_P_VEH_RANGE = None      # e.g. (0.60, 0.95)
-    TRUST_RELIABLE_PROB = 0.8       # 节点为可靠类型的先验概率
-    TRUST_PRIOR_A = 1.0             # Beta 先验 a
-    TRUST_PRIOR_B = 1.0             # Beta 先验 b
+    TRUST_RELIABLE_PROB = 1.0       # 无恶意场景：100%节点均为可靠节点（消除unreliable采样路径）
+    TRUST_PRIOR_A = 4.0             # Beta 先验 a：初始hat_rho=4/5=0.8，与高信任场景一致
+    TRUST_PRIOR_B = 1.0             # Beta 先验 b（uncertainty=1/5=0.2，随证据快速收敛）
     TRUST_DELAY_STEPS = 3           # 证据延迟步数 tau_rep_steps
     TRUST_RESET_PER_EPISODE = True  # 每 episode 重采样隐藏可靠性
 
@@ -714,7 +714,7 @@ class SystemConfig:
     DT_IDLE = 0.01                  # 时间项最小步长，dt_used=max(dt,DT_IDLE) 防止dt=0套利
     W_PROGRESS = 0.10               # 事后进度差分奖励权重（低幅度，避免单路径快速塌缩）
     PROGRESS_REWARD_MODE = "DELTA_SLACK"  # DELTA_CFT_ABS(长期为负,口径错误) / DELTA_SLACK(=dCFT_rem,正值正确)
-    PROGRESS_REF_SECONDS = 0.30     # 进度差分归一化尺度（秒，按dCFT_rem p95≈0.333标定）
+    PROGRESS_REF_SECONDS = 0.20     # 进度差分归一化尺度（秒）; 0.30→0.20: discrimination 1.5x↑, r_prog/ep≈4.2<r_term=4.55
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I

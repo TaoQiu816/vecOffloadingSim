@@ -159,7 +159,7 @@ class TrainConfig:
     # =========================================================================
     # 3. PPO 算法参数 (PPO Algorithm Parameters)
     # =========================================================================
-    GAMMA = 0.99            # 折扣因子 - Discount factor for future rewards
+    GAMMA = 0.995           # 折扣因子 - Discount factor; 0.99→0.995: r_term@200步保留 0.134→0.367(2.7x), credit assignment改善
                             # 影响: 控制对未来奖励的重视程度
                             #       - 接近1: 重视长期回报，适合长期规划任务
                             #       - 接近0: 重视即时回报，适合短期决策任务
@@ -209,10 +209,10 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.001    # 当前生效熵系数（运行时可退火更新）
-    ENTROPY_COEF_START = 0.03   # 初始熵系数（标准PPO范围0.01~0.05，防止ep50内崩溃）
-    ENTROPY_COEF_END = 0.001    # 末端熵系数（与历史默认保持一致）
-    ENTROPY_ANNEAL_STEPS = 420000  # 熵退火步数：3000ep×200steps×70%=420000，前70%探索后收敛
+    ENTROPY_COEF = 0.005    # 当前生效熵系数（固定值，退火关闭后使用此值）
+    ENTROPY_COEF_START = 0.005   # 与END相同 → 等价于关闭退火
+    ENTROPY_COEF_END = 0.005    # 固定熵系数：0.005 在探索与收敛间取平衡（退火start=0.03时ep1500≈0.009）
+    ENTROPY_ANNEAL_STEPS = 0    # =0 → 禁用退火，全程使用ENTROPY_COEF_END固定值
                             # 原值140000面向1000ep；3000ep时在ep700(step140000)就完成退火，后2300ep熵固定在END值
                             # 影响: 增加动作探索性，应对动态环境
                             #       - 过大: 策略过于随机，难以收敛（当前问题）
