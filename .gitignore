@@ -100,3 +100,4 @@ notes/
 runs/**/models/*.pth
 !runs/**/models/best_model.pth
 !runs/**/models/last_model.pth
+**/audit_results/
