@@ -209,9 +209,9 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.005    # 当前生效熵系数（固定值，退火关闭后使用此值）
-    ENTROPY_COEF_START = 0.005   # 与END相同 → 等价于关闭退火
-    ENTROPY_COEF_END = 0.005    # 固定熵系数：0.005 在探索与收敛间取平衡（退火start=0.03时ep1500≈0.009）
+    ENTROPY_COEF = 0.02     # 当前生效熵系数（固定值，退火关闭）; 0.005→0.02: 数学验证需COEF≥0.021防止崩溃
+    ENTROPY_COEF_START = 0.02    # 与END相同 → 等价于关闭退火
+    ENTROPY_COEF_END = 0.02     # 固定熵系数：0.02 满足 COEF×grad(H)@p_rsu=0.9 > actor_loss均值
     ENTROPY_ANNEAL_STEPS = 0    # =0 → 禁用退火，全程使用ENTROPY_COEF_END固定值
                             # 原值140000面向1000ep；3000ep时在ep700(step140000)就完成退火，后2300ep熵固定在END值
                             # 影响: 增加动作探索性，应对动态环境
@@ -272,13 +272,13 @@ class TrainConfig:
                             # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
                             #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
     
-    LOGIT_BIAS_RSU = 0.05   # RSU轻微先验（类别级）
+    LOGIT_BIAS_RSU = 0.0    # RSU先验: 0.05→0.0, 不再人为强化RSU（方向与减少过载目标相悖）
                             # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
                             #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
                             #   需要 b = ln(5) ≈ 1.6094
                             # Impact: Adapted for new action space with 5 V2V options
     
-    LOGIT_BIAS_LOCAL = 0.0   # 移除Local先验：实验证明0.20偏置在ep50内即可锁死策略
+    LOGIT_BIAS_LOCAL = 0.10  # Local先验: 0.0→0.10, 早期激励Local探索，与V2V对等; 原0.0导致Local始终无正向激励
                             # 数学推导: 与RSU相同，确保初始状态三类动作均衡
                             #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
                             #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
@@ -314,8 +314,8 @@ class TrainConfig:
     _logit_bias_v2v_current = 0.10  # 运行时动态值（由 train.py 更新）
 
     # 论文固定版类别退火：前期轻先验，后期全部归零（不依赖分支/模式开关）
-    LOGIT_BIAS_LOCAL_INIT = 0.0
-    LOGIT_BIAS_RSU_INIT = 0.05
+    LOGIT_BIAS_LOCAL_INIT = 0.10  # 0.0→0.10，与V2V_INIT对等，激励Local早期探索
+    LOGIT_BIAS_RSU_INIT = 0.0    # 0.05→0.0，去掉对RSU的先验强化
     BIAS_ANNEAL_FRAC = 0.50  # 在训练前50%步数内线性退火到0
     LOGIT_BIAS_LOCAL_END = 0.0
     LOGIT_BIAS_LOCAL_ANNEAL_STEPS = 0
