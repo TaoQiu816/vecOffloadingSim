@@ -503,6 +503,7 @@ def _parse_args():
     parser.add_argument("--eval-interval", type=int, default=None)
     parser.add_argument("--save-interval", type=int, default=None)
     parser.add_argument("--cfg-profile", type=str, default=None, help="[DEPRECATED] Config profiles removed")
+    parser.add_argument("--exp-dynamic", action="store_true", default=False, help="Apply exp_dynamic_config (static vehicles + task respawn) before training.")
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument(
@@ -1435,6 +1436,10 @@ def main():
 
     # Env/train overrides from environment variables (after profile/reward selection)
     apply_env_overrides()
+    if getattr(args, "exp_dynamic", False):
+        from configs.exp_dynamic_config import apply_exp_dynamic_config
+        _info = apply_exp_dynamic_config(Cfg, TC)
+        print("[exp_dynamic] applied:", _info, flush=True)
 
     if Cfg.REWARD_SCHEME in ("PBRS_KP", "PBRS_KP_V2"):
         print(f"[PBRS] reward_gamma={Cfg.REWARD_GAMMA} train_gamma={TC.GAMMA}")
