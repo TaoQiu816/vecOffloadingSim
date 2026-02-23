@@ -76,21 +76,25 @@ def apply_exp_dynamic_config(Cfg, TC):
     Cfg.RSU_QUEUE_CYCLES_LIMIT = 60e9
 
     # ------------------------------------------------------------------
-    # DAG 工作负载（中等难度，打破零正反馈）
+    # DAG 工作负载（与 DT=0.1s 时隙匹配，不修改 DT）
+    # 原则：单次计算/传输事件时长 ≈ 0.5*DT ~ 2*DT（约 0.05s–0.2s），避免与时隙量级差过大
+    # 依据：T_exec = C/f（PHYSICAL_MODELS.md 2.3），T_tx = D/R（Shannon）
     # ------------------------------------------------------------------
     Cfg.DAG_SOURCE = "synthetic_small"
     Cfg.MIN_NODES = 6
-    Cfg.MAX_NODES = 15             # 从 24 降至 15，缩短关键路径，使 200 步内可完成
-    Cfg.MIN_VEHICLE_CPU_FREQ = 0.5e9
-    Cfg.MAX_VEHICLE_CPU_FREQ = 1.5e9
+    Cfg.MAX_NODES = 15
+    # 车辆算力差距拉大，增强 V2V 优势：弱车卸到强邻车收益明显（5 倍差距）
+    Cfg.MIN_VEHICLE_CPU_FREQ = 0.4e9   # 0.4 GHz，弱车
+    Cfg.MAX_VEHICLE_CPU_FREQ = 2.0e9   # 2.0 GHz，强车
     Cfg.F_RSU = 20.0e9
-    Cfg.MIN_COMP = 1.0e8           # 0.1 Gcycles
-    Cfg.MAX_COMP = 1.0e9           # 1.0 Gcycles（绝对不能是 4.0e9）
-    Cfg.MIN_DATA = 8.0e5           # 100 KB
-    Cfg.MAX_DATA = 8.0e6           # 1 MB
+    # 计算量：T_exec = C/f，仍落在约 0.5*DT~4*DT（弱车@0.4GHz 单子任务约 0.375s）
+    Cfg.MIN_COMP = 5.0e7           # 本地@2GHz≈0.025s，@0.4GHz≈0.125s
+    Cfg.MAX_COMP = 1.5e8            # 本地@2GHz≈0.075s，@0.4GHz≈0.375s≈3.75*DT；RSU≈0.0075s
+    # 数据量：使典型传输 T_tx ≈ 0.05–0.2s（BW=10MHz、5 RB、典型速率量级约数 Mbps → D≈1e5–5e5 bits）
+    Cfg.MIN_DATA = 1.0e5           # 12.5 KB
+    Cfg.MAX_DATA = 5.0e5           # 62.5 KB
     Cfg.DOMAIN_RANDOMIZATION = True
     Cfg.DEADLINE_MODE = "LB_ALPHA"
-    # 适度放宽 deadline，给智能体足够试错空间同时保持区分度
     Cfg.DEADLINE_ALPHA_MIN = 1.8
     Cfg.DEADLINE_ALPHA_MAX = 2.5
     Cfg.DEADLINE_SLACK_SECONDS = 0.10

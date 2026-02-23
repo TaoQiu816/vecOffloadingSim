@@ -1969,6 +1969,10 @@ class VecOffloadingEnv(gym.Env):
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
         self._episode_task_durations = []
+        # 任务重生场景：本 episode 内成功/完成/超时失败 DAG 计数（用于 T_SR、deadline_miss_rate）
+        self._episode_task_success_count = 0
+        self._episode_task_completion_count = 0
+        self._episode_task_deadline_fail_count = 0
         self._episode_rho_selected_values = []
         self._episode_uncertainty_selected_values = []
         self._episode_risk_penalty_values = []
@@ -4038,6 +4042,15 @@ class VecOffloadingEnv(gym.Env):
             )
             self._p2_zero_delta_steps = 0  # 重置计数，避免重复警告
 
+        # 任务重生场景：截断/终止时把本步已完成(未respawn)的 DAG 计入 episode 成功/完成/超时数，保证 T_SR、deadline_miss 含最后一步
+        if (terminated or truncated) and getattr(self.config, 'TASK_RESPAWN_ON_COMPLETION', False):
+            for v in self.vehicles:
+                if v.task_dag.is_finished or v.task_dag.is_failed:
+                    if v.task_dag.is_finished and not v.task_dag.is_failed:
+                        self._episode_task_success_count = getattr(self, '_episode_task_success_count', 0) + 1
+                    if v.task_dag.is_failed and getattr(v.task_dag, 'fail_reason', None) == 'deadline':
+                        self._episode_task_deadline_fail_count = getattr(self, '_episode_task_deadline_fail_count', 0) + 1
+                    self._episode_task_completion_count = getattr(self, '_episode_task_completion_count', 0) + 1
         # [记录episode统计] 每步都记录，但只在episode结束时写入文件
         self._log_episode_stats(terminated, truncated)
         
@@ -4132,8 +4145,14 @@ class VecOffloadingEnv(gym.Env):
                     finish_times.append(dag.completion_time)
             success_count = sum(1 for v in self.vehicles if v.task_dag.is_finished and not v.task_dag.is_failed)
             total_count = len(self.vehicles)
-            info['ep_success_rate'] = float(success_count / max(total_count, 1))
-            info['ep_success_count'] = int(success_count)
+            # 任务重生场景：用本 episode 累计成功完成数/完成数，否则用截断瞬间的当前 DAG 成功数
+            if getattr(self.config, 'TASK_RESPAWN_ON_COMPLETION', False):
+                comp = max(getattr(self, '_episode_task_completion_count', 0), 1)
+                info['ep_success_rate'] = float(getattr(self, '_episode_task_success_count', 0) / comp)
+                info['ep_success_count'] = int(getattr(self, '_episode_task_success_count', 0))
+            else:
+                info['ep_success_rate'] = float(success_count / max(total_count, 1))
+                info['ep_success_count'] = int(success_count)
 
             if finish_times:
                 ft = np.array(finish_times)
@@ -4283,6 +4302,11 @@ class VecOffloadingEnv(gym.Env):
             for v in self.vehicles:
                 if (v.task_dag.is_finished or v.task_dag.is_failed):
                     if not self._vehicle_has_active_jobs(v.id):
+                        if v.task_dag.is_finished and not v.task_dag.is_failed:
+                            self._episode_task_success_count = getattr(self, '_episode_task_success_count', 0) + 1
+                        if v.task_dag.is_failed and getattr(v.task_dag, 'fail_reason', None) == 'deadline':
+                            self._episode_task_deadline_fail_count = getattr(self, '_episode_task_deadline_fail_count', 0) + 1
+                        self._episode_task_completion_count = getattr(self, '_episode_task_completion_count', 0) + 1
                         self._assign_new_dag_to_vehicle(v)
                         task_respawn_count += 1
         info['task_respawn_count'] = int(task_respawn_count)
@@ -7100,18 +7124,23 @@ class VecOffloadingEnv(gym.Env):
         
         # 成功率统计
         episode_vehicle_count = len(self.vehicles)
-        # [关键修复] 成功 = 完成且未超时失败
         success_count = sum([1 for v in self.vehicles 
                              if v.task_dag.is_finished and not v.task_dag.is_failed])
         episode_metrics['episode_vehicle_count'] = episode_vehicle_count
+        # success_rate_end = 截断/终止瞬间「当前 DAG 已成功」的车辆占比（快照，非累计）
         episode_metrics['success_rate_end'] = success_count / max(episode_vehicle_count, 1)
-        episode_metrics['task_success_rate'] = success_count / max(episode_vehicle_count, 1)
-        episode_metrics['vehicle_success_rate'] = success_count / max(episode_vehicle_count, 1)
+        # 任务重生场景：T_SR / V_SR = 本 episode 内成功完成 DAG 数 / 本 episode 内完成 DAG 总数（累计）
+        if getattr(self.config, 'TASK_RESPAWN_ON_COMPLETION', False) and getattr(self, '_episode_task_completion_count', 0) > 0:
+            comp = max(getattr(self, '_episode_task_completion_count', 0), 1)
+            episode_metrics['task_success_count'] = int(getattr(self, '_episode_task_success_count', 0))
+            episode_metrics['task_completion_count'] = int(getattr(self, '_episode_task_completion_count', 0))
+            episode_metrics['task_success_rate'] = getattr(self, '_episode_task_success_count', 0) / comp
+            episode_metrics['vehicle_success_rate'] = episode_metrics['task_success_rate']
+        else:
+            episode_metrics['task_success_rate'] = success_count / max(episode_vehicle_count, 1)
+            episode_metrics['vehicle_success_rate'] = episode_metrics['task_success_rate']
         
-        # 子任务成功率
-        # [语义说明] Subtask SR = 完成的subtask数 / 总subtask数
-        # 注意：即使任务超时，完成的subtask也计入（反映实际执行进度）
-        # Task SR反映deadline约束，Subtask SR反映执行完整性
+        # 子任务成功率：当前所有车辆当前 DAG 的「已完成子任务数/子任务总数」（快照）
         total_subtasks = 0
         completed_subtasks = 0
         for v in self.vehicles:
@@ -7120,12 +7149,18 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics['total_subtasks'] = total_subtasks
         episode_metrics['subtask_success_rate'] = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
         
-        # Deadline miss率
-        # [关键修复] 使用is_failed标志而不是不存在的deadline_missed属性
-        deadline_miss_count = sum([1 for v in self.vehicles 
-                                   if v.task_dag.is_failed and v.task_dag.fail_reason == 'deadline'])
-        episode_metrics['deadline_miss_rate'] = deadline_miss_count / max(episode_vehicle_count, 1)
-        episode_metrics['audit_deadline_misses'] = deadline_miss_count
+        # Deadline miss 率
+        # 非重生：截断瞬间当前 DAG 因 deadline 失败车辆数/车辆数
+        # 任务重生：本 episode 内因 deadline 失败的 DAG 数 / 本 episode 内完成的 DAG 总数
+        if getattr(self.config, 'TASK_RESPAWN_ON_COMPLETION', False) and getattr(self, '_episode_task_completion_count', 0) > 0:
+            comp = max(getattr(self, '_episode_task_completion_count', 0), 1)
+            episode_metrics['deadline_miss_rate'] = getattr(self, '_episode_task_deadline_fail_count', 0) / comp
+            episode_metrics['audit_deadline_misses'] = int(getattr(self, '_episode_task_deadline_fail_count', 0))
+        else:
+            deadline_miss_count = sum([1 for v in self.vehicles 
+                                       if v.task_dag.is_failed and getattr(v.task_dag, 'fail_reason', None) == 'deadline'])
+            episode_metrics['deadline_miss_rate'] = deadline_miss_count / max(episode_vehicle_count, 1)
+            episode_metrics['audit_deadline_misses'] = deadline_miss_count
         
         # 决策分布
         total_decisions = 0
