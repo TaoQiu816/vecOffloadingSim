@@ -41,7 +41,8 @@ class TransferJob:
     """
 
     def __init__(self, kind, src_node, dst_node, owner_vehicle_id, subtask_id,
-                 rem_bytes, tx_power_dbm, link_type, enqueue_time, parent_task_id=None):
+                 rem_bytes, tx_power_dbm, link_type, enqueue_time, parent_task_id=None,
+                 dag_uid=None):
         """
         初始化传输作业
 
@@ -66,6 +67,7 @@ class TransferJob:
         self.rem_bytes = rem_bytes
         self.tx_power_dbm = tx_power_dbm
         self.link_type = link_type
+        self.dag_uid = dag_uid
 
         # 时间戳
         self.enqueue_time = enqueue_time
@@ -113,7 +115,7 @@ class ComputeJob:
     """
 
     def __init__(self, owner_vehicle_id, subtask_id, rem_cycles, exec_node,
-                 processor_id, enqueue_time):
+                 processor_id, enqueue_time, dag_uid=None):
         """
         初始化计算作业
 
@@ -130,6 +132,7 @@ class ComputeJob:
         self.rem_cycles = rem_cycles
         self.exec_node = exec_node
         self.processor_id = processor_id
+        self.dag_uid = dag_uid
 
         # 时间戳
         self.enqueue_time = enqueue_time

@@ -270,6 +270,27 @@ class ActorHead(nn.Module):
         return target_logits, alpha, beta
 
 
+class SubtaskHead(nn.Module):
+    """
+    子任务选择头（离散）
+
+    输入 DAG 节点特征 [B, N, d_model]，输出每个节点一个logit [B, N]。
+    掩码在策略层执行（便于统一处理全0 mask 的保底逻辑）。
+    """
+
+    def __init__(self, d_model: int = 128):
+        super().__init__()
+        hidden = max(d_model // 2, 16)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, dag_features: torch.Tensor) -> torch.Tensor:
+        return self.mlp(dag_features).squeeze(-1)
+
+
 class CriticHead(nn.Module):
     """
     Critic输出头（原版 - 基于DAG全局池化）
@@ -310,13 +331,15 @@ class CriticHead(nn.Module):
                 dag_features: torch.Tensor,
                 subtask_index: Optional[torch.Tensor] = None,
                 commwait_extra: Optional[torch.Tensor] = None,
-                task_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                task_mask: Optional[torch.Tensor] = None,
+                ready_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             dag_features: [Batch, MAX_NODES, d_model], DAG节点特征
-            subtask_index: [Batch], 当前子任务索引
+            subtask_index: [Batch], 当前子任务索引（兼容旧接口；新路径不使用）
             commwait_extra: [Batch, commwait_dim], 额外的CommWait特征（直连）
             task_mask: [Batch, MAX_NODES], 有效节点mask
+            ready_mask: [Batch, MAX_NODES], READY且未分配子任务mask（状态语义）
         
         Returns:
             value: [Batch, 1], 状态价值估计
@@ -338,7 +361,21 @@ class CriticHead(nn.Module):
         # 2. 加权池化
         global_feature = torch.sum(dag_features * attn_weights, dim=1)  # [B, d_model]
 
-        if self.use_subtask_cond and subtask_index is not None:
+        if self.use_subtask_cond and ready_mask is not None:
+            ready_mask = ready_mask.bool()
+            if task_mask is not None:
+                ready_mask = ready_mask & task_mask.bool()
+            ready_mask_f = ready_mask.unsqueeze(-1).to(dag_features.dtype)
+            ready_count = ready_mask_f.sum(dim=1).clamp(min=1.0)
+            ready_feature = (dag_features * ready_mask_f).sum(dim=1) / ready_count
+            no_ready = ~(ready_mask.any(dim=1))
+            if torch.any(no_ready):
+                if self.use_no_ready_embed:
+                    ready_feature = ready_feature.clone()
+                    n_no_ready = int(no_ready.sum().item())
+                    ready_feature[no_ready] = self.no_ready_embed.unsqueeze(0).expand(n_no_ready, -1)
+            critic_input = torch.cat([global_feature, ready_feature], dim=-1)
+        elif self.use_subtask_cond and subtask_index is not None:
             batch_size = dag_features.shape[0]
             max_nodes = dag_features.shape[1]
             if (subtask_index >= max_nodes).any():
@@ -414,15 +451,17 @@ class SimplifiedCriticHead(nn.Module):
                 task_mask: Optional[torch.Tensor] = None,
                 subtask_index: Optional[torch.Tensor] = None,
                 resource_mask: Optional[torch.Tensor] = None,
-                commwait_extra: Optional[torch.Tensor] = None) -> torch.Tensor:
+                commwait_extra: Optional[torch.Tensor] = None,
+                ready_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             dag_features: [Batch, MAX_NODES, d_model], DAG节点特征
             resource_features: [Batch, N_res, d_model], 资源节点特征
             task_mask: [Batch, MAX_NODES], DAG有效节点mask
-            subtask_index: [Batch], 当前子任务索引
+            subtask_index: [Batch], 当前子任务索引（兼容旧接口；新路径不使用）
             resource_mask: [Batch, N_res], 资源有效节点mask
             commwait_extra: [Batch, commwait_dim], 直连的CommWait特征
+            ready_mask: [Batch, MAX_NODES], READY且未分配子任务mask（状态语义）
         
         Returns:
             value: [Batch, 1], 状态价值估计
@@ -460,7 +499,20 @@ class SimplifiedCriticHead(nn.Module):
         rsu_feat = resource_features[:, 1, :]  # [B, d]
         
         # 4. 当前子任务特征（可选）
-        if self.use_subtask_cond and subtask_index is not None:
+        if self.use_subtask_cond and ready_mask is not None:
+            ready_mask = ready_mask.bool()
+            if task_mask is not None:
+                ready_mask = ready_mask & task_mask.bool()
+            ready_mask_expanded = ready_mask.unsqueeze(-1).to(dag_features.dtype)
+            ready_count = ready_mask_expanded.sum(dim=1).clamp(min=1.0)
+            h_cur = torch.sum(dag_features * ready_mask_expanded, dim=1) / ready_count
+            no_ready = ~(ready_mask.any(dim=1))
+            if torch.any(no_ready) and self.use_no_ready_embed:
+                h_cur = h_cur.clone()
+                n_no_ready = int(no_ready.sum().item())
+                h_cur[no_ready] = self.no_ready_embed.unsqueeze(0).expand(n_no_ready, -1)
+            critic_input = torch.cat([dag_global, neighbor_avg, rsu_feat, h_cur], dim=-1)  # [B, 4*d]
+        elif self.use_subtask_cond and subtask_index is not None:
             max_nodes = dag_features.shape[1]
             if (subtask_index >= max_nodes).any():
                 bad = subtask_index[subtask_index >= max_nodes]
@@ -531,6 +583,7 @@ class ActorCriticNetwork(nn.Module):
         self.cross_attention = CrossAttentionWithPhysicsBias(d_model, num_heads, dropout)
         
         # Actor头（成对拼接版）
+        self.subtask_head = SubtaskHead(d_model)
         self.actor_head = ActorHead(d_model)
         
         # Critic头（根据配置选择）
@@ -612,10 +665,23 @@ class ActorCriticNetwork(nn.Module):
         )
         
         return target_logits, alpha, beta
+
+    def forward_subtask(self,
+                        dag_features: torch.Tensor) -> torch.Tensor:
+        """
+        Subtask头前向（不做mask，mask在策略层统一处理）
+
+        Args:
+            dag_features: [Batch, MAX_NODES, d_model]
+        Returns:
+            subtask_logits: [Batch, MAX_NODES]
+        """
+        return self.subtask_head(dag_features)
     
     def forward_critic(self,
                       dag_features: torch.Tensor,
                       subtask_index: Optional[torch.Tensor] = None,
+                      subtask_mask: Optional[torch.Tensor] = None,
                       commwait_extra: Optional[torch.Tensor] = None,
                       resource_features: Optional[torch.Tensor] = None,
                       task_mask: Optional[torch.Tensor] = None,
@@ -635,10 +701,24 @@ class ActorCriticNetwork(nn.Module):
         if self.use_simplified_critic:
             # 简化版Critic需要资源特征
             assert resource_features is not None, "Simplified critic requires resource_features"
-            value = self.critic_head(dag_features, resource_features, task_mask, subtask_index, resource_mask, commwait_extra)
+            value = self.critic_head(
+                dag_features,
+                resource_features,
+                task_mask=task_mask,
+                subtask_index=None,
+                resource_mask=resource_mask,
+                commwait_extra=commwait_extra,
+                ready_mask=subtask_mask,
+            )
         else:
             # 原版Critic只需要DAG特征
-            value = self.critic_head(dag_features, subtask_index, commwait_extra, task_mask)
+            value = self.critic_head(
+                dag_features,
+                subtask_index=None,
+                commwait_extra=commwait_extra,
+                task_mask=task_mask,
+                ready_mask=subtask_mask,
+            )
         
         return value
     
@@ -648,9 +728,10 @@ class ActorCriticNetwork(nn.Module):
                 resource_raw: torch.Tensor,
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
+                subtask_mask: Optional[torch.Tensor] = None,
                 task_mask: Optional[torch.Tensor] = None,
                 resource_padding_mask: Optional[torch.Tensor] = None,
-                commwait_extra: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                commwait_extra: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（同时计算Actor和Critic）（Beta分布版）
         
@@ -664,11 +745,15 @@ class ActorCriticNetwork(nn.Module):
             resource_padding_mask: [Batch, N_res], 资源Padding掩码
         
         Returns:
+            subtask_logits: [Batch, MAX_NODES]
             target_logits: [Batch, N_res]
             alpha: [Batch, 1], Beta分布参数
             beta: [Batch, 1], Beta分布参数
             value: [Batch, 1]
         """
+        # Subtask head（用于自回归采样/评估）
+        subtask_logits = self.forward_subtask(dag_features)
+
         # Actor
         target_logits, alpha, beta = self.forward_actor(
             dag_features, resource_encoded, resource_raw,
@@ -677,7 +762,7 @@ class ActorCriticNetwork(nn.Module):
         
         # Critic
         value = self.forward_critic(
-            dag_features, subtask_index, commwait_extra, resource_encoded, task_mask, resource_padding_mask
+            dag_features, subtask_index, subtask_mask, commwait_extra, resource_encoded, task_mask, resource_padding_mask
         )
         
-        return target_logits, alpha, beta, value
+        return subtask_logits, target_logits, alpha, beta, value

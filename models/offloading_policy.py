@@ -66,7 +66,6 @@ from models.edge_enhanced_transformer import EdgeEnhancedTransformer
 from models.resource_features import ResourceFeatureEncoder
 from models.actor_critic import ActorCriticNetwork
 from configs.config import SystemConfig as Cfg
-from configs.constants import MASK_VALUE
 from configs.train_config import TrainConfig as TC
 
 
@@ -240,6 +239,40 @@ class OffloadingPolicyNetwork(nn.Module):
         beta_cond = torch.clamp(base_beta * torch.exp(delta[:, 1]), min=1.001, max=100.0)
         return Beta(alpha_cond, beta_cond)
 
+    @staticmethod
+    def _masked_subtask_logits(
+        subtask_logits: torch.Tensor,
+        subtask_mask: torch.Tensor,
+        node_valid_mask: Optional[torch.Tensor] = None,
+        fallback_index: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        为 subtask logits 应用掩码，并处理全0 mask 的保底逻辑。
+        """
+        mask = (subtask_mask > 0).bool()
+        if mask.ndim != 2:
+            raise ValueError(f"subtask_mask dim must be 2, got {mask.shape}")
+        if node_valid_mask is not None:
+            mask = mask & node_valid_mask.bool()
+
+        no_valid = ~mask.any(dim=-1)
+        if torch.any(no_valid):
+            mask = mask.clone()
+            if fallback_index is not None:
+                safe_fb = torch.clamp(fallback_index.long(), min=0, max=mask.shape[-1] - 1)
+                row_idx = torch.nonzero(no_valid, as_tuple=False).squeeze(-1)
+                mask[row_idx, safe_fb[row_idx]] = True
+            else:
+                mask[no_valid, 0] = True
+            # 若fallback位置无效，再兜底开第一个有效节点
+            if node_valid_mask is not None:
+                still_invalid = ~mask.any(dim=-1)
+                if torch.any(still_invalid):
+                    row_idx = torch.nonzero(still_invalid, as_tuple=False).squeeze(-1)
+                    first_valid = torch.argmax(node_valid_mask[row_idx].long(), dim=-1)
+                    mask[row_idx, first_valid] = True
+        return subtask_logits.masked_fill(~mask, -1e9)
+
     def prepare_inputs(self, obs_list: List[Dict], device='cpu') -> Dict[str, torch.Tensor]:
         """
         从环境观测中准备网络输入
@@ -257,6 +290,8 @@ class OffloadingPolicyNetwork(nn.Module):
         node_x_list = []
         adj_list = []
         task_mask_list = []
+        subtask_mask_list = []
+        node_valid_mask_list = []
         action_mask_list = []
         subtask_index_list = []
         resource_ids_list = []
@@ -278,7 +313,10 @@ class OffloadingPolicyNetwork(nn.Module):
         for obs in obs_list:
             node_x_list.append(obs['node_x'])
             adj_list.append(obs['adj'])
-            task_mask_list.append(obs['task_mask'])
+            # 语义解绑：task_mask(旧)可能是可调度掩码；新字段优先
+            subtask_mask_list.append(obs.get('subtask_mask', obs.get('task_mask')))
+            node_valid_mask_list.append(obs.get('node_valid_mask', obs.get('task_mask')))
+            task_mask_list.append(obs.get('node_valid_mask', obs.get('task_mask')))
             action_mask_list.append(obs['action_mask'])
             subtask_index_list.append(obs['subtask_index'])
             resource_ids_list.append(obs['resource_ids'])
@@ -329,7 +367,9 @@ class OffloadingPolicyNetwork(nn.Module):
         inputs = {
             'node_x': torch.from_numpy(np.stack(node_x_list)).float().to(device),
             'adj': torch.from_numpy(np.stack(adj_list)).float().to(device),
-            'task_mask': torch.from_numpy(np.stack(task_mask_list)).bool().to(device),
+            'task_mask': torch.from_numpy(np.stack(task_mask_list)).bool().to(device),  # alias: DAG有效节点mask
+            'subtask_mask': torch.from_numpy(np.stack(subtask_mask_list)).bool().to(device),
+            'node_valid_mask': torch.from_numpy(np.stack(node_valid_mask_list)).bool().to(device),
             'action_mask': torch.from_numpy(np.stack(action_mask_list)).bool().to(device),
             'subtask_index': torch.from_numpy(np.array(subtask_index_list, dtype=np.int64)).long().to(device),
             'resource_ids': torch.from_numpy(np.stack(resource_ids_list)).long().to(device),
@@ -362,12 +402,14 @@ class OffloadingPolicyNetwork(nn.Module):
                 resource_raw: torch.Tensor,
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
+                subtask_mask: Optional[torch.Tensor] = None,
+                node_valid_mask: Optional[torch.Tensor] = None,
                 task_mask: Optional[torch.Tensor] = None,
                 priority: Optional[torch.Tensor] = None,
                 rate_prev: Optional[torch.Tensor] = None,
                 serving_rsu_onehot: Optional[torch.Tensor] = None,
                 global_state: Optional[torch.Tensor] = None,
-                candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（Beta分布版本）
 
@@ -387,17 +429,23 @@ class OffloadingPolicyNetwork(nn.Module):
             resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 资源原始特征
             subtask_index: [Batch], 当前选中任务索引
             action_mask: [Batch, N_res], 动作掩码（True=可选）
-            task_mask: [Batch, MAX_NODES], 有效节点mask
+            subtask_mask: [Batch, MAX_NODES], 可调度子任务mask（READY且未分配）
+            node_valid_mask: [Batch, MAX_NODES], DAG有效节点mask（非padding）
+            task_mask: [Batch, MAX_NODES], 兼容别名（若node_valid_mask为空则使用）
             priority: [Batch, MAX_NODES], 节点优先级分数（0-1，越大越重要）[方案A新增]
             rate_prev: [Batch, N_res], 上步链路速率（归一化）[时序信号补齐]
             serving_rsu_onehot: [Batch, NUM_RSU], 当前服务RSU的one-hot编码 [多RSU感知]
 
         Returns:
+            subtask_logits: [Batch, MAX_NODES]
             target_logits: [Batch, N_res]
             alpha: [Batch, 1], Beta分布参数
             beta: [Batch, 1], Beta分布参数
             value: [Batch, 1]
         """
+        if node_valid_mask is None:
+            node_valid_mask = task_mask
+
         # 1. DAG节点嵌入
         node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
 
@@ -415,13 +463,13 @@ class OffloadingPolicyNetwork(nn.Module):
                 tau=TC.RANK_BIAS_TAU,
                 kappa=TC.RANK_BIAS_KAPPA,
                 cover_mode=TC.RANK_BIAS_COVER,
-                task_mask=task_mask
+                task_mask=node_valid_mask
             )
 
         # 3. Transformer编码
         # 构造padding mask（从task_mask）
-        if task_mask is not None:
-            key_padding_mask = ~task_mask  # True表示需要mask
+        if node_valid_mask is not None:
+            key_padding_mask = ~node_valid_mask  # True表示需要mask
         else:
             key_padding_mask = None
 
@@ -469,23 +517,24 @@ class OffloadingPolicyNetwork(nn.Module):
         commwait_extra = global_state
         
         # 7. Actor-Critic输出
-        target_logits, alpha, beta, value = self.actor_critic(
+        subtask_logits, target_logits, alpha, beta, value = self.actor_critic(
             dag_features=dag_features,
             resource_encoded=resource_encoded,
             resource_raw=resource_raw,
             subtask_index=subtask_index,
             action_mask=action_mask,
-            task_mask=task_mask,
+            subtask_mask=subtask_mask,
+            task_mask=node_valid_mask,
             resource_padding_mask=resource_padding_mask,
             commwait_extra=commwait_extra,
         )
         
-        return target_logits, alpha, beta, value
+        return subtask_logits, target_logits, alpha, beta, value
     
     def get_action_and_value(self,
                             obs_list: List[Dict],
                             deterministic: bool = False,
-                            device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                            device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         从观测获取动作和价值（用于训练和推理）
         
@@ -495,6 +544,7 @@ class OffloadingPolicyNetwork(nn.Module):
             device: 计算设备
         
         Returns:
+            subtask_actions: [Batch], 子任务动作
             target_actions: [Batch], 目标选择动作
             power_actions: [Batch], 功率比例动作
             log_probs: [Batch], 联合动作的log概率
@@ -504,7 +554,7 @@ class OffloadingPolicyNetwork(nn.Module):
         inputs = self.prepare_inputs(obs_list, device)
         
         # 2. 前向传播
-        target_logits, alpha, beta, values = self.forward(
+        subtask_logits, target_logits, alpha, beta, values_env = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -517,10 +567,49 @@ class OffloadingPolicyNetwork(nn.Module):
             resource_raw=inputs['resource_raw'],
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
+            subtask_mask=inputs.get('subtask_mask'),
+            node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
             priority=inputs['priority'],  # [方案A] 传递priority
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
+            global_state=inputs.get('global_state'),
+        )
+
+        # 2.5 Subtask采样（自回归第一阶段）
+        masked_subtask_logits = self._masked_subtask_logits(
+            subtask_logits=subtask_logits,
+            subtask_mask=inputs.get('subtask_mask', inputs['task_mask']),
+            node_valid_mask=inputs.get('node_valid_mask'),
+            fallback_index=inputs.get('subtask_index'),
+        )
+        subtask_dist = Categorical(logits=masked_subtask_logits)
+        if deterministic:
+            subtask_actions = torch.argmax(subtask_dist.probs, dim=-1)
+        else:
+            subtask_actions = subtask_dist.sample()
+        log_prob_subtask = subtask_dist.log_prob(subtask_actions)
+
+        # 2.6 使用 sampled subtask 重算 target/power/value（value 允许使用 sampled subtask 作为条件）
+        _, target_logits, alpha, beta, _ = self.forward(
+            node_x=inputs['node_x'],
+            adj=inputs['adj'],
+            status=inputs['status'],
+            location=inputs['location'],
+            L_fwd=inputs['L_fwd'],
+            L_bwd=inputs['L_bwd'],
+            data_matrix=inputs['data_matrix'],
+            delta=inputs['delta'],
+            resource_ids=inputs['resource_ids'],
+            resource_raw=inputs['resource_raw'],
+            subtask_index=subtask_actions,
+            action_mask=inputs['action_mask'],
+            subtask_mask=inputs.get('subtask_mask'),
+            node_valid_mask=inputs.get('node_valid_mask'),
+            task_mask=inputs['task_mask'],
+            priority=inputs['priority'],
+            rate_prev=inputs['rate_prev'],
+            serving_rsu_onehot=inputs['serving_rsu_onehot'],
             global_state=inputs.get('global_state'),
         )
 
@@ -532,17 +621,18 @@ class OffloadingPolicyNetwork(nn.Module):
             action_mask=inputs['action_mask'],
         )
         
-        # 应用action_mask，将无效动作的logits设为极小值
-        # [P33修复] 使用统一的MASK_VALUE常量
-        action_mask_tensor = inputs['action_mask']
-        masked_logits = torch.where(
-            action_mask_tensor > 0,
-            target_logits,
-            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
-        )
+        # 应用action_mask（在Categorical/softmax前执行），非法动作logit强制压到极小值
+        action_mask_tensor = inputs['action_mask'] > 0
+        if action_mask_tensor.ndim == 2:
+            no_valid = ~action_mask_tensor.any(dim=-1)
+            if torch.any(no_valid):
+                # 保底：防止全0 mask 导致分布退化；回退开放 Local(槽位0)
+                action_mask_tensor = action_mask_tensor.clone()
+                action_mask_tensor[no_valid, 0] = True
+        masked_logits = target_logits.masked_fill(~action_mask_tensor, -1e9)
 
-        target_probs = F.softmax(masked_logits, dim=-1)
-        target_dist = Categorical(target_probs)
+        target_dist = Categorical(logits=masked_logits)
+        target_probs = target_dist.probs
 
         if deterministic:
             target_actions = torch.argmax(target_probs, dim=-1)
@@ -575,12 +665,13 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_power = power_dist.log_prob(power_actions) * remote_mask
         
         # 5. 联合log概率
-        log_probs = log_prob_target + log_prob_power
+        log_probs = log_prob_subtask + log_prob_target + log_prob_power
         
-        return target_actions, power_actions, log_probs, values
+        return subtask_actions, target_actions, power_actions, log_probs, values_env
     
     def evaluate_actions(self,
                         obs_list: List[Dict],
+                        subtask_actions: torch.Tensor,
                         target_actions: torch.Tensor,
                         power_actions: torch.Tensor,
                         device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -589,6 +680,7 @@ class OffloadingPolicyNetwork(nn.Module):
         
         Args:
             obs_list: 环境观测列表
+            subtask_actions: [Batch], 子任务选择动作
             target_actions: [Batch], 目标选择动作
             power_actions: [Batch], 功率比例动作
             device: 计算设备
@@ -602,7 +694,7 @@ class OffloadingPolicyNetwork(nn.Module):
         inputs = self.prepare_inputs(obs_list, device)
         
         # 2. 前向传播
-        target_logits, alpha, beta, values = self.forward(
+        subtask_logits, _, _, _, values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -615,10 +707,46 @@ class OffloadingPolicyNetwork(nn.Module):
             resource_raw=inputs['resource_raw'],  # P38修复: 添加缺失的resource_raw参数
             subtask_index=inputs['subtask_index'],
             action_mask=inputs['action_mask'],
+            subtask_mask=inputs.get('subtask_mask'),
+            node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
             priority=inputs['priority'],  # [方案A] 传递priority，确保与采样时一致
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
+            global_state=inputs.get('global_state'),
+        )
+
+        # 先评估 subtask 分布（与采样路径一致的mask）
+        masked_subtask_logits = self._masked_subtask_logits(
+            subtask_logits=subtask_logits,
+            subtask_mask=inputs.get('subtask_mask', inputs['task_mask']),
+            node_valid_mask=inputs.get('node_valid_mask'),
+            fallback_index=inputs.get('subtask_index'),
+        )
+        subtask_dist = Categorical(logits=masked_subtask_logits)
+        log_prob_subtask = subtask_dist.log_prob(subtask_actions)
+        entropy_subtask = subtask_dist.entropy()
+
+        # 再以给定 subtask 评估 target/power/value（自回归一致性）
+        _, target_logits, alpha, beta, _ = self.forward(
+            node_x=inputs['node_x'],
+            adj=inputs['adj'],
+            status=inputs['status'],
+            location=inputs['location'],
+            L_fwd=inputs['L_fwd'],
+            L_bwd=inputs['L_bwd'],
+            data_matrix=inputs['data_matrix'],
+            delta=inputs['delta'],
+            resource_ids=inputs['resource_ids'],
+            resource_raw=inputs['resource_raw'],
+            subtask_index=subtask_actions,
+            action_mask=inputs['action_mask'],
+            subtask_mask=inputs.get('subtask_mask'),
+            node_valid_mask=inputs.get('node_valid_mask'),
+            task_mask=inputs['task_mask'],
+            priority=inputs['priority'],
+            rate_prev=inputs['rate_prev'],
+            serving_rsu_onehot=inputs['serving_rsu_onehot'],
             global_state=inputs.get('global_state'),
         )
 
@@ -629,18 +757,17 @@ class OffloadingPolicyNetwork(nn.Module):
             action_mask=inputs['action_mask'],
         )
 
-        # 应用action_mask，将无效动作的logits设为极小值
-        # [P33修复] 使用统一的MASK_VALUE常量
-        action_mask_tensor = inputs['action_mask']
-        masked_logits = torch.where(
-            action_mask_tensor > 0,
-            target_logits,
-            torch.tensor(MASK_VALUE, dtype=target_logits.dtype, device=target_logits.device)
-        )
+        # 应用action_mask（在Categorical/softmax前执行），非法动作logit强制压到极小值
+        action_mask_tensor = inputs['action_mask'] > 0
+        if action_mask_tensor.ndim == 2:
+            no_valid = ~action_mask_tensor.any(dim=-1)
+            if torch.any(no_valid):
+                action_mask_tensor = action_mask_tensor.clone()
+                action_mask_tensor[no_valid, 0] = True
+        masked_logits = target_logits.masked_fill(~action_mask_tensor, -1e9)
 
         # 3. Target分布评估
-        target_probs = F.softmax(masked_logits, dim=-1)
-        target_dist = Categorical(target_probs)
+        target_dist = Categorical(logits=masked_logits)
         log_prob_target = target_dist.log_prob(target_actions)
         entropy_target = target_dist.entropy()
         
@@ -659,7 +786,7 @@ class OffloadingPolicyNetwork(nn.Module):
         entropy_power = power_dist.entropy() * remote_mask
         
         # 5. 联合log概率和熵
-        log_probs = log_prob_target + log_prob_power
-        entropy = entropy_target + entropy_power
+        log_probs = log_prob_subtask + log_prob_target + log_prob_power
+        entropy = entropy_subtask + entropy_target + entropy_power
         
         return log_probs, entropy, values

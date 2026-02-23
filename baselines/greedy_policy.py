@@ -10,6 +10,7 @@
 import numpy as np
 from typing import List, Dict
 from configs.config import SystemConfig as Cfg
+from baselines.action_utils import attach_subtask
 
 
 class GreedyPolicy:
@@ -90,6 +91,7 @@ class GreedyPolicy:
             subtask_idx = dag.get_top_priority_task() if dag is not None else None
             if subtask_idx is None or dag.is_finished or dag.is_failed:
                 act = {'target': 0, 'power': 1.0}
+                act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
                 actions.append(act)
@@ -107,6 +109,7 @@ class GreedyPolicy:
             if len(valid_targets) == 0:
                 # 如果没有合法目标，默认选择本地执行
                 act = {'target': 0, 'power': 1.0}
+                act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
                 actions.append(act)
@@ -210,6 +213,7 @@ class GreedyPolicy:
                 'target': int(best_target),
                 'power': 1.0
             }
+            act = attach_subtask(obs, act, preferred=subtask_idx)
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

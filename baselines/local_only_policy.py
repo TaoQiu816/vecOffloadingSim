@@ -9,6 +9,7 @@
 
 import numpy as np
 from typing import List, Dict
+from baselines.action_utils import attach_subtask
 
 
 class LocalOnlyPolicy:
@@ -36,6 +37,7 @@ class LocalOnlyPolicy:
                 'target': 0,
                 'power': 1.0  # 本地执行不需要传输，功率设为最大值
             }
+            act = attach_subtask(obs, act)
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

@@ -209,9 +209,9 @@ class TrainConfig:
                             # 推荐范围: 64-256 (256 for better stability)
                             # Recommended range: 64-256
 
-    ENTROPY_COEF = 0.02     # 当前生效熵系数（固定值，退火关闭）; 0.005→0.02: 数学验证需COEF≥0.021防止崩溃
-    ENTROPY_COEF_START = 0.02    # 与END相同 → 等价于关闭退火
-    ENTROPY_COEF_END = 0.02     # 固定熵系数：0.02 满足 COEF×grad(H)@p_rsu=0.9 > actor_loss均值
+    ENTROPY_COEF = 0.012     # 当前生效熵系数（固定值，退火关闭）; 0.01→0.012: 轻微提升后段探索，缓解熵不足/RSU集中
+    ENTROPY_COEF_START = 0.012    # 与END相同 → 等价于关闭退火
+    ENTROPY_COEF_END = 0.012     # 固定熵系数：0.012（仅本轮最小调参验证）
     ENTROPY_ANNEAL_STEPS = 0    # =0 → 禁用退火，全程使用ENTROPY_COEF_END固定值
                             # 原值140000面向1000ep；3000ep时在ep700(step140000)就完成退火，后2300ep熵固定在END值
                             # 影响: 增加动作探索性，应对动态环境
@@ -241,9 +241,10 @@ class TrainConfig:
 
     MIN_ACTIVE_SAMPLES = 64  # active样本低于阈值时跳过更新（防止过高方差）
     
-    TARGET_KL = 0.03        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
-                            # 原值0.02导致break_thresh=0.03，466个有效ep中95.5%触发early_stop，实际epoch≈1/5
-                            # 调整为0.03（break_thresh=TARGET_KL*STOP_MULT=0.03*1.5=0.045），减少过度截断
+    TARGET_KL = 0.05        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
+                            # 实际触发阈值 = TARGET_KL × STOP_MULT(1.5) = 0.05×1.5 = 0.075（per mini-batch）
+                            # 0.03时: 阈值0.045, early_stop率86.5%, 实际epoch≈1~2/5
+                            # 0.05时: ep级mean>0.075仅1.6%, early_stop率预计<20%, 恢复完整5epoch更新
                             # 推荐范围: 0.01-0.05
                             # Recommended range: 0.01-0.05
                             # 影响: 平衡Actor-Critic训练，控制值函数更新权重

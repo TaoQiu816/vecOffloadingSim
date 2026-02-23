@@ -8,6 +8,7 @@ Queue-aware EFT Policy (Earliest Finish Time).
 import numpy as np
 from typing import Dict, List, Optional
 from configs.config import SystemConfig as Cfg
+from baselines.action_utils import attach_subtask
 
 
 class EFTPolicy:
@@ -188,6 +189,7 @@ class EFTPolicy:
             subtask_idx = dag.get_top_priority_task() if dag else None
             if subtask_idx is None or dag.is_finished or dag.is_failed:
                 act = {"target": 0, "power": 0.0}
+                act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
                 actions.append(act)
@@ -201,6 +203,7 @@ class EFTPolicy:
             action_mask = obs.get("action_mask")
             if candidate_ids is None or action_mask is None:
                 act = {"target": 0, "power": 0.0}
+                act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
                 actions.append(act)
@@ -238,6 +241,7 @@ class EFTPolicy:
                     best_power = a_pw
 
             act = {"target": int(best_idx), "power": float(best_power)}
+            act = attach_subtask(obs, act, preferred=subtask_idx)
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

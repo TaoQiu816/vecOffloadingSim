@@ -75,7 +75,7 @@ BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "Oracle-Min", "EFT", "CP-
 
 TRAINING_STATS_FIELDS = [
     "episode", "steps", "wall_time", "sim_time",
-    "reward_mean", "reward_total", "reward_p95", "reward_abs_mean",
+    "reward_mean", "reward_total", "episode_reward", "reward_p95", "reward_abs_mean",
     "vehicle_sr", "task_sr", "subtask_sr",
     "task_duration_mean", "task_duration_p95", "completed_tasks",
     "mean_cft_est", "episode_time_seconds",
@@ -87,10 +87,14 @@ TRAINING_STATS_FIELDS = [
     "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
     "trust_failure_rate", "rho_selected_p10", "uncertainty_selected_p90",
     "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
-    "time_limit_rate", "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate",
+    "time_limit_rate", "illegal_action_rate", "illegal_action_ratio", "no_task_rate", "on_task_rate", "has_task_available_rate",
     "unified_illegal_trigger_rate", "hard_trigger_rate",
-    "actor_loss", "critic_loss", "entropy", "approx_kl", "clip_frac",
-    "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction", "skipped_update_count", "early_stop", "lr",
+    "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
+    "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
+    "critic_loss_active", "critic_loss_inactive",
+    "ppo_epochs_executed", "num_minibatches_executed", "mb_kl_max", "mb_kl_p95",
+    "early_stop_epoch_idx", "early_stop_batch_idx",
+    "skipped_update_count", "early_stop", "lr",
     "bias_rsu", "bias_local",
 ]
 
@@ -126,8 +130,10 @@ BASELINE_STATS_FIELDS = [
     "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
     "avg_power", "power_ratio_mean", "power_ratio_p95",
     "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
+    "act_seconds", "makespan_seconds",
     "task_duration_mean", "task_duration_p95",
-    "deadline_miss_rate", "time_limit_rate",
+    "deadline_miss_rate", "deadline_meet_ratio", "time_limit_rate",
+    "energy_mean", "energy_p95",
     "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate", "unified_illegal_trigger_rate",
     "I_total_mean", "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
     "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
@@ -1308,6 +1314,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     mean_cft_completed = epm.get("mean_cft_completed")
     task_duration_mean = epm.get("task_duration_mean")
     task_duration_p95 = epm.get("task_duration_p95")
+    energy_norm_mean = epm.get("energy_norm_mean")
+    energy_norm_p95 = epm.get("energy_norm_p95")
     I_total_mean = epm.get("I_total_mean")
     I_total_p50 = epm.get("I_total_p50")
     I_total_p95 = epm.get("I_total_p95")
@@ -1331,6 +1339,14 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     on_task_rate = epm.get("on_task_rate")
     has_task_available_rate = epm.get("has_task_available_rate")
     unified_illegal_trigger_rate = epm.get("unified_illegal_trigger_rate")
+    makespan_seconds = episode_time_seconds
+    act_seconds = mean_cft_completed if mean_cft_completed is not None else mean_cft_est
+    deadline_meet_ratio = None
+    if deadline_miss_rate is not None:
+        try:
+            deadline_meet_ratio = float(np.clip(1.0 - float(deadline_miss_rate), 0.0, 1.0))
+        except Exception:
+            deadline_meet_ratio = None
     
     return {
         'total_reward': ep_reward,
@@ -1351,10 +1367,15 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'episode_time_seconds': float(episode_time_seconds) if episode_time_seconds is not None else None,
         'time_limit_rate': float(time_limit_rate) if time_limit_rate is not None else None,
         'deadline_miss_rate': float(deadline_miss_rate) if deadline_miss_rate is not None else None,
+        'deadline_meet_ratio': float(deadline_meet_ratio) if deadline_meet_ratio is not None else None,
         'mean_cft_est': float(mean_cft_est) if mean_cft_est is not None else None,
         'mean_cft_completed': float(mean_cft_completed) if mean_cft_completed is not None else None,
+        'act_seconds': float(act_seconds) if act_seconds is not None else None,
+        'makespan_seconds': float(makespan_seconds) if makespan_seconds is not None else None,
         'task_duration_mean': float(task_duration_mean) if task_duration_mean is not None else None,
         'task_duration_p95': float(task_duration_p95) if task_duration_p95 is not None else None,
+        'energy_mean': float(energy_norm_mean) if energy_norm_mean is not None else None,
+        'energy_p95': float(energy_norm_p95) if energy_norm_p95 is not None else None,
         'I_total_mean': float(I_total_mean) if I_total_mean is not None else None,
         'I_total_p50': float(I_total_p50) if I_total_p50 is not None else None,
         'I_total_p95': float(I_total_p95) if I_total_p95 is not None else None,
@@ -2540,7 +2561,20 @@ def main():
                 getattr(Cfg, "TIME_LIMIT_PENALTY_RATIO_CLIP", 3.0),
             )
             remaining_ratio_used = ratio
-            buffer.rewards_buffer[-1] = buffer.rewards_buffer[-1] + penalty
+            # [结构性修复] 避免将time-limit惩罚广播到末步所有agent（含大量no-task样本）
+            # 优先只归因到末步active样本；为保持episode统计口径一致，保持“步均值惩罚”不变。
+            last_rewards = np.asarray(buffer.rewards_buffer[-1], dtype=np.float32)
+            penalty_vec = np.full_like(last_rewards, float(penalty), dtype=np.float32)
+            if last_rewards.size > 0 and getattr(buffer, "active_masks_buffer", None):
+                last_active = np.asarray(buffer.active_masks_buffer[-1], dtype=np.float32)
+                if last_active.shape == last_rewards.shape:
+                    active_idx = last_active > 0.0
+                    active_count = int(np.sum(active_idx))
+                    if 0 < active_count < int(last_rewards.size):
+                        penalty_vec = np.zeros_like(last_rewards, dtype=np.float32)
+                        # mean(penalty_vec)=penalty，避免改变日志/回报尺度，只改变归因对象
+                        penalty_vec[active_idx] = float(penalty) * (float(last_rewards.size) / float(active_count))
+            buffer.rewards_buffer[-1] = last_rewards + penalty_vec
             if ep_step_rewards:
                 ep_step_rewards[-1] += penalty
             ep_reward += penalty
@@ -2761,6 +2795,7 @@ def main():
             "total_subtasks": total_subtasks_metric,
             # reward: signed per-step mean/p95 (avoid reward_abs for policy quality)
             "reward_mean": reward_mean,
+            "episode_reward": ep_reward,
             "reward_p50": reward_p50,
             "reward_p95": reward_p95,
             "reward_min": reward_min,
@@ -2792,6 +2827,7 @@ def main():
             "subtask_success_rate": subtask_success,
             "deadline_miss_rate": deadline_miss_rate,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "illegal_action_ratio": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "top_illegal_reason": str(top_illegal_reason or ""),
             "top_illegal_reason_count": int(top_illegal_reason_count or 0),
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
@@ -2829,6 +2865,8 @@ def main():
             "clip_frac": update_stats.get("clip_fraction", clip_hit_ratio),
             "policy_loss": update_stats.get("policy_loss"),
             "value_loss": update_stats.get("value_loss"),
+            "value_loss_raw_mean": update_stats.get("value_loss_raw_mean", update_stats.get("value_loss")),
+            "normalized_value_loss": update_stats.get("normalized_value_loss"),
             "total_loss": update_stats.get("loss", update_loss),
             "grad_norm": update_stats.get("grad_norm"),
             # diagnostics
@@ -2926,6 +2964,7 @@ def main():
             # 奖励指标（与控制台打印一致）
             "reward_mean": reward_mean,  # 每步平均奖励（控制台显示的Reward）
             "reward_total": ep_reward,   # episode总奖励
+            "episode_reward": ep_reward, # overfit测试别名（总奖励）
             "reward_p95": reward_p95,
             "reward_abs_mean": reward_abs_mean if reward_abs_mean is not None else 0.0,
             # 成功率指标（0-1范围）
@@ -2972,6 +3011,7 @@ def main():
             # 约束与安全
             "time_limit_rate": time_limit_rate if time_limit_rate is not None else 0.0,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "illegal_action_ratio": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
             "on_task_rate": on_task_rate if on_task_rate is not None else 0.0,
             "has_task_available_rate": has_task_available_rate if has_task_available_rate is not None else 0.0,
@@ -2980,6 +3020,8 @@ def main():
             # 训练诊断指标
             "actor_loss": update_stats.get("policy_loss"),
             "critic_loss": update_stats.get("value_loss"),
+            "critic_loss_raw_mean": update_stats.get("value_loss_raw_mean", update_stats.get("value_loss")),
+            "normalized_value_loss": update_stats.get("normalized_value_loss"),
             "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
             "approx_kl": update_stats.get("approx_kl"),
             "clip_frac": update_stats.get("clip_fraction"),
@@ -2987,6 +3029,14 @@ def main():
             "active_ratio": update_stats.get("active_ratio"),
             "actor_update_active_frac": update_stats.get("actor_update_active_frac"),
             "value_clip_fraction": update_stats.get("value_clip_fraction"),
+            "critic_loss_active": update_stats.get("critic_loss_active"),
+            "critic_loss_inactive": update_stats.get("critic_loss_inactive"),
+            "ppo_epochs_executed": update_stats.get("ppo_epochs_executed"),
+            "num_minibatches_executed": update_stats.get("num_minibatches_executed"),
+            "mb_kl_max": update_stats.get("mb_kl_max"),
+            "mb_kl_p95": update_stats.get("mb_kl_p95"),
+            "early_stop_epoch_idx": update_stats.get("early_stop_epoch_idx"),
+            "early_stop_batch_idx": update_stats.get("early_stop_batch_idx"),
             "skipped_update_count": update_stats.get("skipped_update_count"),
             "early_stop": update_stats.get("early_stop"),
             "lr": current_lr,
@@ -3006,6 +3056,7 @@ def main():
             # reward
             tb.add_scalar("reward/mean", reward_mean, episode)
             tb.add_scalar("reward/p95", reward_p95, episode)
+            tb.add_scalar("overfit/episode_reward", ep_reward, episode)
             if reward_abs_mean is not None:
                 tb.add_scalar("reward/abs_mean", reward_abs_mean, episode)
             if dT_mean is not None:
@@ -3040,6 +3091,7 @@ def main():
             tb.add_scalar("success/deadline_miss_rate", deadline_miss_rate, episode)
             # safety
             tb.add_scalar("constraint/illegal_rate", illegal_action_rate or 0.0, episode)
+            tb.add_scalar("overfit/illegal_action_ratio", illegal_action_rate or 0.0, episode)
             tb.add_scalar("constraint/hard_trigger_rate", hard_trigger_rate or 0.0, episode)
             # decision
             tb.add_scalar("decision/local_frac", frac_local, episode)
@@ -3048,6 +3100,7 @@ def main():
             # PPO
             if policy_entropy_val is not None:
                 tb.add_scalar("ppo/policy_entropy", policy_entropy_val, episode)
+                tb.add_scalar("overfit/policy_entropy", policy_entropy_val, episode)
             if update_stats.get("approx_kl") is not None:
                 tb.add_scalar("ppo/approx_kl", update_stats.get("approx_kl"), episode)
             if update_stats.get("clip_fraction") is not None:
@@ -3056,6 +3109,10 @@ def main():
                 tb.add_scalar("ppo/p_loss", update_stats.get("policy_loss"), episode)
             if update_stats.get("value_loss") is not None:
                 tb.add_scalar("ppo/v_loss", update_stats.get("value_loss"), episode)
+                tb.add_scalar("overfit/value_loss", update_stats.get("value_loss"), episode)
+            if update_stats.get("normalized_value_loss") is not None:
+                tb.add_scalar("ppo/v_loss_norm", update_stats.get("normalized_value_loss"), episode)
+                tb.add_scalar("overfit/value_loss_norm", update_stats.get("normalized_value_loss"), episode)
             if update_stats.get("loss") is not None:
                 tb.add_scalar("ppo/total_loss", update_stats.get("loss"), episode)
             if update_stats.get("active_ratio") is not None:
@@ -3163,12 +3220,23 @@ def main():
                 if recorder.writer is not None:
                     recorder.writer.add_scalar(f'Baseline/{policy_name}/total_reward',
                                               baseline_metrics['total_reward'], episode)
+                    recorder.writer.add_scalar(f'Baseline/{policy_name}/task_success_rate',
+                                              baseline_metrics.get('task_success_rate', baseline_metrics['veh_success_rate']), episode)
                     recorder.writer.add_scalar(f'Baseline/{policy_name}/veh_success_rate',
                                               baseline_metrics['veh_success_rate'], episode)
                     recorder.writer.add_scalar(f'Baseline/{policy_name}/subtask_success_rate',
                                               baseline_metrics['subtask_success_rate'], episode)
                     recorder.writer.add_scalar(f'Baseline/{policy_name}/v2v_subtask_success_rate',
                                               baseline_metrics['v2v_subtask_success_rate'], episode)
+                    if baseline_metrics.get('act_seconds') is not None:
+                        recorder.writer.add_scalar(f'Baseline/{policy_name}/act_seconds',
+                                                  baseline_metrics['act_seconds'], episode)
+                    if baseline_metrics.get('energy_mean') is not None:
+                        recorder.writer.add_scalar(f'Baseline/{policy_name}/energy_mean',
+                                                  baseline_metrics['energy_mean'], episode)
+                    if baseline_metrics.get('deadline_meet_ratio') is not None:
+                        recorder.writer.add_scalar(f'Baseline/{policy_name}/deadline_meet_ratio',
+                                                  baseline_metrics['deadline_meet_ratio'], episode)
 
                 # 保存到baseline_stats.csv（用于绘图对比）
                 baseline_stats_row = {
@@ -3192,10 +3260,15 @@ def main():
                     "episode_time_seconds": baseline_metrics.get('episode_time_seconds'),
                     "mean_cft_est": baseline_metrics.get('mean_cft_est'),
                     "mean_cft_completed": baseline_metrics.get('mean_cft_completed'),
+                    "act_seconds": baseline_metrics.get('act_seconds'),
+                    "makespan_seconds": baseline_metrics.get('makespan_seconds'),
                     "task_duration_mean": baseline_metrics.get('task_duration_mean'),
                     "task_duration_p95": baseline_metrics.get('task_duration_p95'),
                     "deadline_miss_rate": baseline_metrics.get('deadline_miss_rate'),
+                    "deadline_meet_ratio": baseline_metrics.get('deadline_meet_ratio'),
                     "time_limit_rate": baseline_metrics.get('time_limit_rate'),
+                    "energy_mean": baseline_metrics.get('energy_mean'),
+                    "energy_p95": baseline_metrics.get('energy_p95'),
                     "illegal_action_rate": baseline_metrics.get('illegal_action_rate'),
                     "no_task_rate": baseline_metrics.get('no_task_rate'),
                     "on_task_rate": baseline_metrics.get('on_task_rate'),

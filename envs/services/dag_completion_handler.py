@@ -38,6 +38,23 @@ class DagCompletionHandler:
     
     def __init__(self, config):
         self.config = config
+
+    @staticmethod
+    def _valid_subtask_idx(dag, subtask_id: int) -> bool:
+        try:
+            idx = int(subtask_id)
+        except Exception:
+            return False
+        n = int(getattr(dag, "num_subtasks", 0))
+        return 0 <= idx < n
+
+    @staticmethod
+    def _is_stale_job_for_vehicle_dag(job, vehicle) -> bool:
+        dag = getattr(vehicle, "task_dag", None)
+        if dag is None:
+            return True
+        job_uid = getattr(job, "dag_uid", None)
+        return (job_uid is not None) and (job_uid != id(dag))
     
     def on_transfer_done(self, job: TransferJob, vehicle: Vehicle, 
                         time_now: float, active_edge_keys: Set,
@@ -60,6 +77,14 @@ class DagCompletionHandler:
             list[ComputeJob]: 新创建的ComputeJob列表（已入队）
         """
         created_jobs = []
+        dag = getattr(vehicle, "task_dag", None)
+        if dag is None:
+            return created_jobs
+        if self._is_stale_job_for_vehicle_dag(job, vehicle):
+            return created_jobs
+        if not self._valid_subtask_idx(dag, job.subtask_id):
+            # 动态场景下可能出现“陈旧队列作业”在车辆重生后完成，直接丢弃以避免索引越界。
+            return created_jobs
         
         if job.kind == "INPUT":
             # [INPUT完成] 回写rem_data=0
@@ -119,6 +144,20 @@ class DagCompletionHandler:
         """
         subtask_id = job.subtask_id
         dag = vehicle.task_dag
+        if self._is_stale_job_for_vehicle_dag(job, vehicle):
+            return {
+                "type": "COMPUTE_DONE_STALE",
+                "owner_vehicle_id": getattr(job, "owner_vehicle_id", -1),
+                "subtask_id": subtask_id,
+                "time": time_now,
+            }
+        if not self._valid_subtask_idx(dag, subtask_id):
+            return {
+                "type": "COMPUTE_DONE_STALE",
+                "owner_vehicle_id": getattr(job, "owner_vehicle_id", -1),
+                "subtask_id": int(subtask_id) if isinstance(subtask_id, (int,)) else subtask_id,
+                "time": time_now,
+            }
         if dag.status[subtask_id] == 3:
             raise RuntimeError("Completed task processed twice")
         
@@ -243,7 +282,8 @@ class DagCompletionHandler:
             rem_cycles=task_comp,
             exec_node=exec_node,
             processor_id=processor_id,
-            enqueue_time=time_now
+            enqueue_time=time_now,
+            dag_uid=id(dag),
         )
         
         # 入队

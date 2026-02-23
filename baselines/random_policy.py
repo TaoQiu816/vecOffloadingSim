@@ -9,6 +9,7 @@
 
 import numpy as np
 from typing import List, Dict
+from baselines.action_utils import attach_subtask
 
 
 class RandomPolicy:
@@ -55,6 +56,7 @@ class RandomPolicy:
                 'target': int(target),
                 'power': float(power)
             }
+            act = attach_subtask(obs, act)
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

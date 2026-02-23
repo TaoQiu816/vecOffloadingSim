@@ -658,6 +658,7 @@ class SystemConfig:
     REWARD_MIN = -25.0              # 奖励下限 - Reward lower bound
                                     # 影响: 容纳PENALTY_FAILURE(-20)，防止裁剪
                                     # Impact: Accommodates PENALTY_FAILURE(-20); prevents clipping
+    REWARD_SCALE = 10.0             # 奖励缩放因子 - Reward scaling factor (replace hard clipping)
     # -------------------------------------------------------------------------
     # 6.7 新奖励方案 (Reward Scheme Switch & PBRS Parameters)
     # -------------------------------------------------------------------------

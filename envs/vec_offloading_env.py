@@ -70,6 +70,8 @@ class VecOffloadingEnv(gym.Env):
         "inflight_limit",
     }
     ILLEGAL_ACTION_REASONS = {
+        "subtask_idx_out_of_range",
+        "masked_subtask",
         "idx_out_of_range",
         "masked_target",
         "rsu_unavailable",
@@ -269,9 +271,11 @@ class VecOffloadingEnv(gym.Env):
         # =====================================================================
         # 动作空间：Tuple of Dict (每个车辆一个动作)
         # 每个车辆的动作:
+        # - subtask: 子任务索引（Stage 1/2 接口预留，环境暂不使用）
         # - target: 0=Local, 1=RSU, 2...(2+MAX_NEIGHBORS-1)=V2V邻居
         # - power: 连续rho∈[0,1]（Beta输出），与环境解析保持一致
         single_agent_action_space = gym.spaces.Dict({
+            "subtask": gym.spaces.Discrete(self.config.MAX_NODES),
             "target": gym.spaces.Discrete(self.config.MAX_TARGETS),
             "power": gym.spaces.Box(low=0.0, high=1.0, shape=(), dtype=np.float32),
         })
@@ -289,6 +293,8 @@ class VecOffloadingEnv(gym.Env):
             'candidate_types': gym.spaces.Box(low=0, high=3, shape=(self.config.MAX_TARGETS,), dtype=np.int8),
             'adj': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_NODES, self.config.MAX_NODES), dtype=np.float32),
             'neighbors': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.config.MAX_NEIGHBORS, 8), dtype=np.float32),
+            'subtask_mask': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_NODES,), dtype=np.float32),
+            'node_valid_mask': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_NODES,), dtype=np.float32),
             'task_mask': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_NODES,), dtype=np.float32),
             'action_mask': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_TARGETS,), dtype=np.float32),
             'rate_prev': gym.spaces.Box(low=0.0, high=1.0, shape=(self.config.MAX_TARGETS,), dtype=np.float32),
@@ -853,6 +859,7 @@ class VecOffloadingEnv(gym.Env):
                     "vehicle": v,
                     "vehicle_id": v.id,
                     "index": i,
+                    "requested_subtask_idx": None,
                     "subtask_idx": None,
                     "extra_subtask_indices": [],
                     "task_comp": None,
@@ -873,6 +880,7 @@ class VecOffloadingEnv(gym.Env):
                 "vehicle": v,
                 "vehicle_id": v.id,
                 "index": i,
+                "requested_subtask_idx": None,
                 "subtask_idx": None,
                 "extra_subtask_indices": [],
                 "task_comp": None,
@@ -889,7 +897,7 @@ class VecOffloadingEnv(gym.Env):
             }
             # 防御性处理：如果actions长度小于车辆数，缺失的动作默认回退到Local
             if i >= len(actions):
-                act = {'target': 0, 'power': 1.0}
+                act = {'subtask': 0, 'target': 0, 'power': 1.0}
             else:
                 act = actions[i]
             if act is None:
@@ -900,6 +908,12 @@ class VecOffloadingEnv(gym.Env):
             # 移除离散 power_level 分支，Agent 使用 Beta 分布输出连续功率 rho∈[0,1]
             if isinstance(act, dict):
                 try:
+                    requested_subtask_idx = int(act.get("subtask", -1))
+                except Exception:
+                    requested_subtask_idx = -1
+                    if plan["illegal_reason"] is None:
+                        plan["illegal_reason"] = "action_format_invalid"
+                try:
                     target_idx = int(act.get("target", 0))
                 except Exception:
                     target_idx = 0
@@ -908,6 +922,7 @@ class VecOffloadingEnv(gym.Env):
             else:
                 # 兼容数组格式：[target_idx, power_ratio]，power 直接为连续值
                 act_array = np.asarray(act).flatten()
+                requested_subtask_idx = -1
                 try:
                     target_idx = int(act_array[0]) if len(act_array) > 0 else 0
                 except Exception:
@@ -922,6 +937,7 @@ class VecOffloadingEnv(gym.Env):
             plan["power_invalid"] = (not np.isfinite(raw_power_f)) or (raw_power_f < 0.0) or (raw_power_f > 1.0)
             p_norm = float(np.clip(np.nan_to_num(raw_power_f, nan=1.0, posinf=1.0, neginf=0.0), 0.0, 1.0))
             
+            plan["requested_subtask_idx"] = requested_subtask_idx
             plan["target_idx"] = target_idx
 
             dag = v.task_dag
@@ -940,26 +956,12 @@ class VecOffloadingEnv(gym.Env):
                 plans.append(plan)
                 continue
 
+            # Stage 3：环境正式使用 RL 给出的 subtask（严格校验，不再静态 top-priority 兜底）
             subtask_idx = None
             extra_subtasks = []
-            if schedule_limit == 1:
-                subtask_idx = dag.get_top_priority_task()
-            else:
-                ready_mask = (dag.status == 1)
-                unassigned_mask = np.array([loc is None for loc in dag.exec_locations])
-                schedulable = np.where(ready_mask & unassigned_mask)[0]
-                if len(schedulable) > 0:
-                    priorities = np.array([dag.compute_task_priority(tid) for tid in schedulable])
-                    order = schedulable[np.argsort(-priorities)]
-                    subtask_idx = int(order[0])
-                    for cand in order[1:]:
-                        if len(extra_subtasks) >= schedule_limit - 1:
-                            break
-                        extra_subtasks.append(int(cand))
-                else:
-                    subtask_idx = None
-            if subtask_idx is None:
-                # [Stage 1] 细分 no_task 原因
+            schedulable_mask = np.asarray(dag.get_action_mask(), dtype=bool)
+            if not np.any(schedulable_mask):
+                # 无可调度任务：no-task 语义（非非法动作）
                 if dag.is_finished:
                     plan["illegal_reason"] = "no_task_dag_done"
                 elif dag.is_failed:
@@ -976,6 +978,21 @@ class VecOffloadingEnv(gym.Env):
                         plan["illegal_reason"] = "no_task_assigned"
                 plans.append(plan)
                 continue
+            if plan.get("illegal_reason") is not None:
+                # 动作格式/功率等已非法，直接拦截，不进行本地回退
+                plans.append(plan)
+                continue
+            if requested_subtask_idx is None:
+                requested_subtask_idx = -1
+            if requested_subtask_idx < 0 or requested_subtask_idx >= dag.num_subtasks:
+                plan["illegal_reason"] = "subtask_idx_out_of_range"
+                plans.append(plan)
+                continue
+            if requested_subtask_idx >= len(schedulable_mask) or (not bool(schedulable_mask[requested_subtask_idx])):
+                plan["illegal_reason"] = "masked_subtask"
+                plans.append(plan)
+                continue
+            subtask_idx = int(requested_subtask_idx)
 
             task_comp = v.task_dag.total_comp[subtask_idx] if subtask_idx < len(v.task_dag.total_comp) else self.config.MEAN_COMP_LOAD
             task_data = v.task_dag.total_data[subtask_idx] if subtask_idx < len(v.task_dag.total_data) else 0.0
@@ -2205,7 +2222,8 @@ class VecOffloadingEnv(gym.Env):
                         tx_power_dbm=v.tx_power_dbm,  # INPUT使用动作映射功率
                         link_type=link_type,
                         enqueue_time=self.time,
-                        parent_task_id=None  # INPUT无parent
+                        parent_task_id=None,  # INPUT无parent
+                        dag_uid=id(v.task_dag),
                     )
 
                     # 入队到对应通信队列
@@ -2313,7 +2331,8 @@ class VecOffloadingEnv(gym.Env):
                             tx_power_dbm=self.config.TX_POWER_MAX_DBM,  # EDGE固定最大功率
                             link_type=link_type,
                             enqueue_time=self.time,
-                            parent_task_id=parent_id
+                            parent_task_id=parent_id,
+                            dag_uid=id(v.task_dag),
                         )
                         
                         # 入队到对应通信队列
@@ -2578,6 +2597,9 @@ class VecOffloadingEnv(gym.Env):
         """
         v = self._get_vehicle_by_id(job.owner_vehicle_id)
         if v is not None:
+            if getattr(job, "dag_uid", None) is not None and getattr(v, "task_dag", None) is not None:
+                if job.dag_uid != id(v.task_dag):
+                    return
             self._dag_handler.on_transfer_done(
                 job, v, self.time, self.active_edge_keys,
                 self.veh_cpu_q, self.rsu_cpu_q, self.rsus
@@ -2621,6 +2643,11 @@ class VecOffloadingEnv(gym.Env):
             if v is not None:
                 dag = v.task_dag
                 if dag.is_finished or dag.is_failed:
+                    continue
+                if getattr(job, "dag_uid", None) is not None and job.dag_uid != id(dag):
+                    continue
+                if job.subtask_id is None or int(job.subtask_id) < 0 or int(job.subtask_id) >= int(getattr(dag, "num_subtasks", 0)):
+                    # 动态车辆重生/队列异步完成时的陈旧作业保护，避免索引当前新DAG越界。
                     continue
 
                 # 信誉采样：远端子任务完成前检查可靠性
@@ -3346,7 +3373,7 @@ class VecOffloadingEnv(gym.Env):
                     recomposed = float(r_step) + float(r_term) + float(r_pbrs)
                     if (not np.isfinite(recomposed)) or (not np.isfinite(r_total_raw)) or (abs(recomposed - r_total_raw) > 1e-6):
                         step_unified_consistency_mismatch_count += 1
-                r_total = float(np.clip(r_total_raw, self.config.REWARD_MIN, self.config.REWARD_MAX))
+                r_total = self._clip_reward(r_total_raw)
                 for rv in (r_step, r_term, r_pbrs, r_total):
                     if not np.isfinite(rv):
                         step_unified_nonfinite_count += 1
@@ -3465,7 +3492,8 @@ class VecOffloadingEnv(gym.Env):
                 reward_parts = None
                 r_shape = 0.0
                 if getattr(v, 'illegal_action', False):
-                    r = self.config.REWARD_MIN  # 非法动作给予最小奖励
+                    # 非法动作吃满统一惩罚，再做等比例缩放（不再硬裁剪）
+                    r = -float(getattr(self.config, "W_ILLEGAL", abs(self.config.REWARD_MIN)))
                     components = {
                         "delay_norm": 0.0,
                         "energy_norm": 0.0,
@@ -5001,6 +5029,8 @@ class VecOffloadingEnv(gym.Env):
 
             padded_task_mask = np.zeros(self.config.MAX_NODES, dtype=bool)
             padded_task_mask[:num_nodes] = task_schedulable
+            padded_node_valid_mask = np.zeros(self.config.MAX_NODES, dtype=bool)
+            padded_node_valid_mask[:num_nodes] = True
 
             # [新增] DAG拓扑特征（用于网络特征工程）
             # L_fwd, L_bwd: [MAX_NODES], 前向/后向层级
@@ -5082,6 +5112,8 @@ class VecOffloadingEnv(gym.Env):
             rate_prev = _nan_clip(rate_prev, 0.0, 1.0, dtype=np.float32)
 
             task_mask_obs = padded_task_mask.astype(np.float32)
+            subtask_mask_obs = padded_task_mask.astype(np.float32)
+            node_valid_mask_obs = padded_node_valid_mask.astype(np.float32)
             action_mask_obs = padded_target_mask.astype(np.float32)
             subtask_index_obs = np.array(int(selected_subtask_idx), dtype=np.int64)
             obs_stamp_obs = np.array(int(self._episode_steps), dtype=np.int64)
@@ -5094,6 +5126,8 @@ class VecOffloadingEnv(gym.Env):
             'candidate_types': candidate_types.astype(np.int8),
             'adj': padded_adj,
             'neighbors': neighbors_array,
+            'subtask_mask': subtask_mask_obs,  # READY且未分配（供SubtaskHead采样）
+            'node_valid_mask': node_valid_mask_obs,  # 仅表示padding有效节点
             'task_mask': task_mask_obs,
             'action_mask': action_mask_obs,  # [新增] Actor专用动作掩码
             'rate_prev': rate_prev,
@@ -6812,19 +6846,21 @@ class VecOffloadingEnv(gym.Env):
 
     def _clip_reward(self, reward):
         """
-        [奖励函数辅助] 奖励裁剪，防止奖励爆炸
+        [奖励函数辅助] 奖励缩放（兼容旧调用名）
 
         Args:
             reward: 原始奖励值
 
         Returns:
-            float: 裁剪后的奖励值
+            float: 缩放后的奖励值
         """
-        if reward <= self.config.REWARD_MIN:
-            pass  # 已清理
-        if reward >= self.config.REWARD_MAX:
-            pass  # 已清理
-        return np.clip(reward, self.config.REWARD_MIN, self.config.REWARD_MAX)
+        reward = float(reward)
+        if not np.isfinite(reward):
+            return reward
+        reward_scale = float(getattr(self.config, "REWARD_SCALE", 1.0))
+        if abs(reward_scale) < 1e-12:
+            return reward
+        return reward / reward_scale
 
     def calculate_agent_reward(self, vehicle_id, target, task_idx=None, data_size=0, task_comp=None, return_components=False, cft_prev_rem=None, cft_curr_rem=None, power_ratio=None, t_tx=None):
         """

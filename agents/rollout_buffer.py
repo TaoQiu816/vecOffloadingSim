@@ -52,7 +52,6 @@ class RolloutBuffer:
         """
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        
         # 存储容器 - 列表形式支持动态车辆数
         self.obs_list_buffer = []  # [T][N_t] 观测字典列表
         self.actions_buffer = []   # [T][N_t] 动作字典列表
@@ -85,7 +84,13 @@ class RolloutBuffer:
             truncated: 是否时间截断
         """
         self.obs_list_buffer.append(obs_list)
-        self.actions_buffer.append(actions)
+        # 动作字典按原样透传，支持扩展键（如 subtask/target/power）
+        if isinstance(actions, list):
+            self.actions_buffer.append([
+                dict(a) if isinstance(a, dict) else a for a in actions
+            ])
+        else:
+            self.actions_buffer.append(actions)
         
         # 确保rewards是numpy数组
         if isinstance(rewards, list):

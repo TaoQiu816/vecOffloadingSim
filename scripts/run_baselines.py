@@ -18,6 +18,7 @@ import sys
 import shutil
 import time
 import subprocess
+from collections import defaultdict
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -315,10 +316,15 @@ def main():
                         "episode_time_seconds": metrics.get("episode_time_seconds"),
                         "mean_cft_est": metrics.get("mean_cft_est"),
                         "mean_cft_completed": metrics.get("mean_cft_completed"),
+                        "act_seconds": metrics.get("act_seconds"),
+                        "makespan_seconds": metrics.get("makespan_seconds"),
                         "task_duration_mean": metrics.get("task_duration_mean"),
                         "task_duration_p95": metrics.get("task_duration_p95"),
                         "deadline_miss_rate": metrics.get("deadline_miss_rate"),
+                        "deadline_meet_ratio": metrics.get("deadline_meet_ratio"),
                         "time_limit_rate": metrics.get("time_limit_rate"),
+                        "energy_mean": metrics.get("energy_mean"),
+                        "energy_p95": metrics.get("energy_p95"),
                         "illegal_action_rate": metrics.get("illegal_action_rate"),
                         "no_task_rate": metrics.get("no_task_rate"),
                         "on_task_rate": metrics.get("on_task_rate"),
@@ -373,6 +379,64 @@ def main():
                         pass
 
     print(f"✓ Baseline stats saved: {baseline_stats_csv}")
+
+    # 额外导出论文核心指标聚合摘要（按策略）
+    core_summary = []
+    for policy_name in baseline_policies:
+        records = summary.get(policy_name, [])
+        if not records:
+            continue
+        def _vals(key):
+            out = []
+            for r in records:
+                v = r.get(key)
+                if v is None:
+                    continue
+                try:
+                    fv = float(v)
+                except Exception:
+                    continue
+                if np.isfinite(fv):
+                    out.append(fv)
+            return out
+        import numpy as np
+        act_vals = _vals("act_seconds")
+        makespan_vals = _vals("makespan_seconds")
+        energy_vals = _vals("energy_mean")
+        tsr_vals = _vals("task_success_rate")
+        dmr_vals = _vals("deadline_miss_rate")
+        core_summary.append({
+            "policy": policy_name,
+            "episodes": len(records),
+            "act_mean": float(np.mean(act_vals)) if act_vals else None,
+            "act_std": float(np.std(act_vals)) if act_vals else None,
+            "makespan_mean": float(np.mean(makespan_vals)) if makespan_vals else None,
+            "energy_mean": float(np.mean(energy_vals)) if energy_vals else None,
+            "energy_std": float(np.std(energy_vals)) if energy_vals else None,
+            "task_success_rate_mean": float(np.mean(tsr_vals)) if tsr_vals else None,
+            "deadline_meet_ratio_mean": (float(np.mean([max(0.0, min(1.0, 1.0 - x)) for x in dmr_vals])) if dmr_vals else None),
+        })
+    core_json = os.path.join(logs_dir, "baseline_eval_core_summary.json")
+    with open(core_json, "w", encoding="utf-8") as f:
+        json.dump(core_summary, f, ensure_ascii=True, indent=2)
+    try:
+        import csv
+        core_csv = os.path.join(logs_dir, "baseline_eval_core_summary.csv")
+        fieldnames = [
+            "policy", "episodes",
+            "act_mean", "act_std", "makespan_mean",
+            "energy_mean", "energy_std",
+            "task_success_rate_mean", "deadline_meet_ratio_mean",
+        ]
+        with open(core_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in core_summary:
+                writer.writerow(row)
+        print(f"✓ Baseline core summary saved: {core_csv}")
+    except Exception:
+        pass
+    print(f"✓ Baseline core summary saved: {core_json}")
 
     print("结果摘要 (均值):")
     for policy_name in baseline_policies:

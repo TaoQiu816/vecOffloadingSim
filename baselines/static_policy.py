@@ -9,6 +9,7 @@
 
 import numpy as np
 from typing import List, Dict
+from baselines.action_utils import attach_subtask
 
 
 class StaticPolicy:
@@ -52,6 +53,7 @@ class StaticPolicy:
                 target = 0
             power = 1.0 if target != 0 else 1.0
             act = {'target': int(target), 'power': float(power)}
+            act = attach_subtask(obs, act)
             if "obs_stamp" in obs:
                 act["obs_stamp"] = int(obs["obs_stamp"])
             actions.append(act)

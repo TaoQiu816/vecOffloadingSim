@@ -52,10 +52,41 @@ class MAPPOAgent:
         self.network = network.to(device)
         self.device = device
 
-        # 优化器
+        # 单优化器 + 参数组：
+        # 共享trunk同时接收Actor/Critic梯度，Critic head使用更高学习率，避免表示漂移
+        named_params = [(n, p) for n, p in self.network.named_parameters() if p.requires_grad]
+        actor_prefixes = (
+            "actor_critic.cross_attention.",
+            "actor_critic.subtask_head.",
+            "actor_critic.actor_head.",
+            "actor_critic.layer_norm.",
+            "power_cond_mlp.",
+        )
+        critic_prefix = "actor_critic.critic_head."
+
+        self.shared_trunk_params = []
+        self.actor_head_params = []
+        self.critic_head_params = []
+        for name, param in named_params:
+            if name.startswith(critic_prefix):
+                self.critic_head_params.append(param)
+            elif any(name.startswith(prefix) for prefix in actor_prefixes):
+                self.actor_head_params.append(param)
+            else:
+                self.shared_trunk_params.append(param)
+
+        if len(self.shared_trunk_params) == 0 or len(self.actor_head_params) == 0 or len(self.critic_head_params) == 0:
+            raise RuntimeError(
+                "Failed to build parameter groups for MAPPOAgent "
+                f"(shared={len(self.shared_trunk_params)}, actor={len(self.actor_head_params)}, critic={len(self.critic_head_params)})"
+            )
+
         self.optimizer = torch.optim.Adam(
-            self.network.parameters(),
-            lr=TC.LR_ACTOR
+            [
+                {"params": self.shared_trunk_params, "lr": getattr(TC, "LR_ACTOR", 3e-4)},
+                {"params": self.actor_head_params, "lr": getattr(TC, "LR_ACTOR", 3e-4)},
+                {"params": self.critic_head_params, "lr": getattr(TC, "LR_CRITIC", 1e-3)},
+            ]
         )
         
         # 学习率调度器
@@ -69,6 +100,13 @@ class MAPPOAgent:
             )
         else:
             self.scheduler = None
+
+    @staticmethod
+    def _has_invalid_grad(params) -> bool:
+        for param in params:
+            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                return True
+        return False
     
     def select_action(self, obs_list: List[Dict], deterministic: bool = False) -> Dict:
         """
@@ -82,10 +120,11 @@ class MAPPOAgent:
             动作字典，包含actions, log_probs, values
         """
         with torch.no_grad():
-            target_actions, power_actions, log_probs, values = self.network.get_action_and_value(
+            subtask_actions, target_actions, power_actions, log_probs, values = self.network.get_action_and_value(
                 obs_list, deterministic=deterministic, device=self.device
             )
         
+        subtask_actions_np = torch.atleast_1d(subtask_actions).cpu().numpy().astype(int).flatten()
         target_actions_np = torch.atleast_1d(target_actions).cpu().numpy().astype(int).flatten()
         power_actions_np = torch.atleast_1d(power_actions).cpu().numpy().flatten()
 
@@ -94,6 +133,7 @@ class MAPPOAgent:
         for i in range(len(obs_list)):
             obs_stamp = obs_list[i].get("obs_stamp")
             actions.append({
+                'subtask': int(subtask_actions_np[i]),
                 'target': int(target_actions_np[i]),
                 'power': float(power_actions_np[i]),
                 **({'obs_stamp': int(obs_stamp)} if obs_stamp is not None else {})
@@ -118,7 +158,7 @@ class MAPPOAgent:
         with torch.no_grad():
             inputs = self.network.prepare_inputs(obs_list, self.device)
             
-            _, _, _, values = self.network.forward(
+            _, _, _, _, values = self.network.forward(
                 node_x=inputs['node_x'],
                 adj=inputs['adj'],
                 status=inputs['status'],
@@ -131,6 +171,8 @@ class MAPPOAgent:
                 resource_raw=inputs['resource_raw'],
                 subtask_index=inputs['subtask_index'],
                 action_mask=inputs['action_mask'],
+                subtask_mask=inputs.get('subtask_mask'),
+                node_valid_mask=inputs.get('node_valid_mask'),
                 task_mask=inputs['task_mask'],
                 rate_prev=inputs.get('rate_prev'),
                 serving_rsu_onehot=inputs.get('serving_rsu_onehot'),
@@ -152,10 +194,21 @@ class MAPPOAgent:
             values: 状态价值
             entropy: 熵
         """
+        subtask_values = []
+        for obs, act in zip(obs_list, actions):
+            if isinstance(act, dict) and ('subtask' in act):
+                sval = int(act.get('subtask', 0))
+            else:
+                sval = int(obs.get('subtask_index', 0))
+            if sval < 0:
+                sval = 0
+            subtask_values.append(sval)
+        subtask_actions = torch.tensor(subtask_values, dtype=torch.long, device=self.device)
         target_actions = torch.tensor([a['target'] for a in actions], dtype=torch.long, device=self.device)
         power_actions = torch.tensor([a['power'] for a in actions], dtype=torch.float32, device=self.device)
         log_probs, entropy, values = self.network.evaluate_actions(
             obs_list=obs_list,
+            subtask_actions=subtask_actions,
             target_actions=target_actions,
             power_actions=power_actions,
             device=self.device,
@@ -185,9 +238,18 @@ class MAPPOAgent:
         total_value_target_std = 0.0
         total_value_pred_mean = 0.0
         total_value_pred_std = 0.0
+        total_critic_loss_active = 0.0
+        total_critic_loss_inactive = 0.0
+        total_value_norm = 0.0
         total_mask_active = 0.0
         total_mask_count = 0.0
         num_updates = 0
+        ppo_epochs_executed = 0
+        num_minibatches_executed = 0
+        mb_kl_values = []
+        mb_kl_max = 0.0
+        early_stop_epoch_idx = -1
+        early_stop_batch_idx = -1
         active_samples, total_samples = buffer.get_active_stats()
         adv_mean, adv_std = buffer.get_adv_stats()
 
@@ -199,6 +261,8 @@ class MAPPOAgent:
                 "entropy_loss": 0.0,
                 "policy_loss": 0.0,
                 "value_loss": 0.0,
+                "value_loss_raw_mean": 0.0,
+                "normalized_value_loss": 0.0,
                 "approx_kl": 0.0,
                 "clip_fraction": 0.0,
                 "grad_norm": 0.0,
@@ -213,6 +277,14 @@ class MAPPOAgent:
                 "value_pred_mean": 0.0,
                 "value_pred_std": 0.0,
                 "value_clip_fraction": 0.0,
+                "critic_loss_active": 0.0,
+                "critic_loss_inactive": 0.0,
+                "ppo_epochs_executed": 0,
+                "num_minibatches_executed": 0,
+                "mb_kl_max": 0.0,
+                "mb_kl_p95": 0.0,
+                "early_stop_epoch_idx": -1,
+                "early_stop_batch_idx": -1,
                 "skipped_update_count": 1,
             }
             return 0.0
@@ -220,11 +292,15 @@ class MAPPOAgent:
         early_stop = False
         target_kl = getattr(TC, "TARGET_KL", None)
         kl_stop_mult = float(max(getattr(TC, "TARGET_KL_STOP_MULT", 1.5), 1.0))
-        for _ in range(TC.PPO_EPOCH):
+        critic_soft_mask_enabled = bool(getattr(TC, "CRITIC_SOFT_ACTIVE_MASK", True))
+        critic_inactive_weight = float(getattr(TC, "CRITIC_INACTIVE_SAMPLE_WEIGHT", 0.2))
+        critic_inactive_weight = max(0.0, min(1.0, critic_inactive_weight))
+        for epoch_idx in range(TC.PPO_EPOCH):
             if early_stop:
                 break
+            ppo_epochs_executed += 1
             # 固化: mini-batch 包含 all-steps；actor/critic 再用各自mask计算
-            for batch in buffer.get_batches(batch_size, active_only=False):
+            for batch_idx, batch in enumerate(buffer.get_batches(batch_size, active_only=False)):
                 # 提取batch数据
                 obs_list = batch['obs_list']
                 actions = batch['actions']
@@ -234,7 +310,11 @@ class MAPPOAgent:
                 active_masks = torch.tensor(batch['active_masks'], dtype=torch.float32, device=self.device)
                 old_values = torch.tensor(batch['old_values'], dtype=torch.float32, device=self.device)
                 actor_masks = active_masks
-                critic_masks = torch.ones_like(active_masks)
+                if critic_soft_mask_enabled:
+                    inactive_valid_masks = (active_masks <= 0.0).float()
+                    critic_masks = actor_masks + critic_inactive_weight * inactive_valid_masks
+                else:
+                    critic_masks = torch.ones_like(active_masks)
                 
                 # 重新评估动作
                 log_probs, values, entropy = self.evaluate_actions(obs_list, actions)
@@ -287,6 +367,10 @@ class MAPPOAgent:
                 value_loss_clip = (value_pred_clipped - returns_used) ** 2
                 value_loss_max = torch.max(value_loss_raw, value_loss_clip) if TC.USE_VALUE_CLIP else value_loss_raw
                 value_loss_raw_mean = (value_loss_max * critic_masks).sum() / critic_mask_sum
+                active_idx = actor_masks > 0.0
+                inactive_idx = (active_masks <= 0.0)
+                critic_loss_active = value_loss_max[active_idx].mean() if torch.any(active_idx) else torch.tensor(0.0, device=self.device)
+                critic_loss_inactive = value_loss_max[inactive_idx].mean() if torch.any(inactive_idx) else torch.tensor(0.0, device=self.device)
                 # 将Value Loss归一化到与Policy Loss相近的量级
                 # 使用动态归一化：除以returns的方差
                 masked_returns_used = returns_used[critic_idx]
@@ -304,37 +388,35 @@ class MAPPOAgent:
                     entropy_loss = -entropy_mean
                     approx_kl = ((old_log_probs - log_probs) * actor_masks).sum() / actor_mask_sum
                     clip_frac = ((torch.abs(ratio - 1.0) > TC.CLIP_PARAM).float() * actor_masks).sum() / actor_mask_sum
+                mb_kl = float(approx_kl.item())
+                num_minibatches_executed += 1
+                mb_kl_values.append(mb_kl)
+                mb_kl_max = max(mb_kl_max, mb_kl)
                 value_clip_frac = (
                     (torch.abs(values_used - old_values_used) > TC.VALUE_CLIP_RANGE).float() * critic_masks
                 ).sum() / critic_mask_sum if TC.USE_VALUE_CLIP else torch.tensor(0.0, device=self.device)
                 
-                # Total Loss
-                loss = policy_loss + TC.VF_COEF * value_loss + TC.ENTROPY_COEF * entropy_loss
+                # 单优化器 + 参数组：共享trunk同时接收Actor/Critic梯度
+                actor_loss_total = policy_loss + TC.ENTROPY_COEF * entropy_loss
+                critic_loss_total = TC.VF_COEF * value_loss
+                loss = actor_loss_total + critic_loss_total
                 
                 # 检查loss是否有效
                 if torch.isnan(loss) or torch.isinf(loss):
                     continue
                 
-                # 优化
                 self.optimizer.zero_grad()
                 loss.backward()
-
-                # 梯度裁剪
                 grad_norm = nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
-                
-                # 检查梯度是否有效
-                has_invalid_grad = False
-                for param in self.network.parameters():
-                    if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
-                        has_invalid_grad = True
-                        break
-                
+                has_invalid_grad = self._has_invalid_grad(self.network.parameters())
+
                 if not has_invalid_grad:
                     self.optimizer.step()
                     total_loss += loss.item()
                     total_entropy += entropy_mean.item()
                     total_policy += policy_loss.item()
                     total_value += value_loss_raw_mean.item()  # 记录mask后的Value Loss用于诊断
+                    total_value_norm += value_loss.item()      # 记录实际用于优化的归一化Value Loss
                     total_kl += approx_kl.item()
                     total_clip += clip_frac.item()
                     total_grad_norm += float(grad_norm) if grad_norm is not None else 0.0
@@ -343,15 +425,20 @@ class MAPPOAgent:
                     total_value_target_std += float(value_target_std.item())
                     total_value_pred_mean += float(value_pred_mean.item())
                     total_value_pred_std += float(value_pred_std.item())
+                    total_critic_loss_active += float(critic_loss_active.item())
+                    total_critic_loss_inactive += float(critic_loss_inactive.item())
                     num_updates += 1
                 if (
                     target_kl is not None
                     and target_kl > 0.0
-                    and approx_kl.item() > (target_kl * kl_stop_mult)
+                    and mb_kl > (target_kl * kl_stop_mult)
                 ):
                     early_stop = True
+                    early_stop_epoch_idx = int(epoch_idx)
+                    early_stop_batch_idx = int(batch_idx)
                     break
 
+        mb_kl_p95 = float(np.percentile(mb_kl_values, 95)) if mb_kl_values else 0.0
         if num_updates > 0:
             avg_entropy = total_entropy / num_updates
             # 确保entropy是有效的正数（策略分布的熵应该 > 0）
@@ -365,7 +452,9 @@ class MAPPOAgent:
                 "policy_entropy": avg_entropy,
                 "entropy_loss": -avg_entropy,  # 熵损失（负号因为我们要最大化熵）
                 "policy_loss": total_policy / num_updates,
-                "value_loss": total_value / num_updates,
+                "value_loss": total_value / num_updates,  # raw mse-like diagnostic (legacy key)
+                "value_loss_raw_mean": total_value / num_updates,
+                "normalized_value_loss": total_value_norm / num_updates,
                 "approx_kl": total_kl / num_updates,
                 "clip_fraction": total_clip / num_updates,
                 "grad_norm": total_grad_norm / num_updates,
@@ -380,6 +469,14 @@ class MAPPOAgent:
                 "value_pred_mean": total_value_pred_mean / num_updates,
                 "value_pred_std": total_value_pred_std / num_updates,
                 "value_clip_fraction": total_value_clip / num_updates,
+                "critic_loss_active": total_critic_loss_active / num_updates,
+                "critic_loss_inactive": total_critic_loss_inactive / num_updates,
+                "ppo_epochs_executed": int(ppo_epochs_executed),
+                "num_minibatches_executed": int(num_minibatches_executed),
+                "mb_kl_max": float(mb_kl_max),
+                "mb_kl_p95": float(mb_kl_p95),
+                "early_stop_epoch_idx": int(early_stop_epoch_idx),
+                "early_stop_batch_idx": int(early_stop_batch_idx),
                 "skipped_update_count": 0,
                 "early_stop": early_stop,
             }
@@ -392,6 +489,8 @@ class MAPPOAgent:
                 "entropy_loss": 0.0,
                 "policy_loss": 0.0,
                 "value_loss": 0.0,
+                "value_loss_raw_mean": 0.0,
+                "normalized_value_loss": 0.0,
                 "approx_kl": 0.0,
                 "clip_fraction": 0.0,
                 "grad_norm": 0.0,
@@ -406,6 +505,14 @@ class MAPPOAgent:
                 "value_pred_mean": 0.0,
                 "value_pred_std": 0.0,
                 "value_clip_fraction": 0.0,
+                "critic_loss_active": 0.0,
+                "critic_loss_inactive": 0.0,
+                "ppo_epochs_executed": int(ppo_epochs_executed),
+                "num_minibatches_executed": int(num_minibatches_executed),
+                "mb_kl_max": float(mb_kl_max),
+                "mb_kl_p95": float(mb_kl_p95),
+                "early_stop_epoch_idx": int(early_stop_epoch_idx),
+                "early_stop_batch_idx": int(early_stop_batch_idx),
                 "skipped_update_count": 0,
                 "early_stop": early_stop,
             }
@@ -419,10 +526,13 @@ class MAPPOAgent:
     
     def save(self, path: str):
         """保存模型"""
-        torch.save({
+        payload = {
             'network_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-        }, path)
+        }
+        if self.scheduler is not None:
+            payload['scheduler_state_dict'] = self.scheduler.state_dict()
+        torch.save(payload, path)
     
     def load(self, path: str, restore_optimizer: bool = True, restore_scheduler: bool = True):
         """加载模型。
@@ -432,5 +542,13 @@ class MAPPOAgent:
         """
         checkpoint = torch.load(path, map_location=self.device)
         self.network.load_state_dict(checkpoint['network_state_dict'], strict=False)
-        if restore_optimizer and 'optimizer_state_dict' in checkpoint:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if restore_optimizer:
+            if 'optimizer_state_dict' in checkpoint:
+                try:
+                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                except Exception:
+                    # 兼容旧双优化器checkpoint（param_groups结构不一致时跳过）
+                    pass
+        if restore_scheduler:
+            if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

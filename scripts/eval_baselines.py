@@ -32,6 +32,7 @@ import os
 import sys
 import json
 import argparse
+import csv
 from pathlib import Path
 from tqdm import tqdm
 
@@ -41,8 +42,9 @@ if str(ROOT_DIR) not in sys.path:
 
 from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
+from configs.exp_dynamic_config import apply_exp_dynamic_config
 from envs.vec_offloading_env import VecOffloadingEnv
-from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy
+from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, EFTPPolicy
 from models.offloading_policy import OffloadingPolicyNetwork
 
 
@@ -111,6 +113,9 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     decision_stats = {'local': 0, 'rsu': 0, 'v2v': 0}
     avg_queue_lengths = []
     avg_powers = []
+    avg_energy_consumptions = []
+    avg_makespans = []
+    deadline_meet_ratios = []
     
     for ep in tqdm(range(num_episodes), desc=f"{policy_name}"):
         obs_list, _ = env.reset(seed=ep)
@@ -122,21 +127,27 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         ep_queue_sum = 0
         ep_power_sum = 0
         total_decisions = 0
+        last_info = None
         
         for step in range(TC.MAX_STEPS):
             # 获取动作
             current_obs = obs_list
             if use_network:
                 with torch.no_grad():
-                    target_actions, power_actions, _, _ = policy.get_action_and_value(
+                    subtask_actions, target_actions, power_actions, _, _ = policy.get_action_and_value(
                         obs_list, deterministic=True, device='cpu'
                     )
+                    subtask_actions = subtask_actions.numpy()
                     target_actions = target_actions.numpy()
                     power_actions = power_actions.numpy()
                 
                 actions = []
                 for i in range(len(obs_list)):
-                    act = {'target': int(target_actions[i]), 'power': float(power_actions[i])}
+                    act = {
+                        'subtask': int(subtask_actions[i]),
+                        'target': int(target_actions[i]),
+                        'power': float(power_actions[i]),
+                    }
                     if "obs_stamp" in obs_list[i]:
                         act["obs_stamp"] = int(obs_list[i]["obs_stamp"])
                     actions.append(act)
@@ -145,6 +156,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
             
             # 环境步进
             obs_list, rewards, terminated, truncated, info = env.step(actions)
+            last_info = info
             done = terminated or truncated
             
             # 统计
@@ -199,6 +211,26 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         
         if completion_times:
             avg_completion_times.append(np.mean(completion_times))
+        epm = last_info.get("episode_metrics", {}) if isinstance(last_info, dict) else {}
+        # 论文指标：ACT / Makespan / Energy / Deadline Meet Ratio
+        energy_mean = epm.get("energy_norm_mean")
+        if energy_mean is not None:
+            try:
+                avg_energy_consumptions.append(float(energy_mean))
+            except Exception:
+                pass
+        makespan = epm.get("episode_time_seconds")
+        if makespan is not None:
+            try:
+                avg_makespans.append(float(makespan))
+            except Exception:
+                pass
+        dmr = epm.get("deadline_miss_rate")
+        if dmr is not None:
+            try:
+                deadline_meet_ratios.append(float(np.clip(1.0 - float(dmr), 0.0, 1.0)))
+            except Exception:
+                pass
         
         # 决策分布累加
         decision_stats['local'] += ep_decisions['local']
@@ -229,6 +261,11 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         'std_subtask_success_rate': np.std(subtask_success_rates),
         'avg_completion_time': np.mean(avg_completion_times) if avg_completion_times else 0,
         'std_completion_time': np.std(avg_completion_times) if avg_completion_times else 0,
+        'avg_makespan': np.mean(avg_makespans) if avg_makespans else 0,
+        'std_makespan': np.std(avg_makespans) if avg_makespans else 0,
+        'avg_energy_consumption': np.mean(avg_energy_consumptions) if avg_energy_consumptions else 0,
+        'std_energy_consumption': np.std(avg_energy_consumptions) if avg_energy_consumptions else 0,
+        'deadline_meet_ratio': np.mean(deadline_meet_ratios) if deadline_meet_ratios else 0,
         'decision_distribution': decision_distribution,
         'avg_queue_length': np.mean(avg_queue_lengths),
         'avg_power': np.mean(avg_powers)
@@ -240,6 +277,9 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     print(f"  车辆成功率: {results['avg_vehicle_success_rate']*100:.1f}% ± {results['std_vehicle_success_rate']*100:.1f}%")
     print(f"  子任务成功率: {results['avg_subtask_success_rate']*100:.1f}% ± {results['std_subtask_success_rate']*100:.1f}%")
     print(f"  平均完成时间: {results['avg_completion_time']:.2f}s ± {results['std_completion_time']:.2f}s")
+    print(f"  平均Makespan: {results['avg_makespan']:.2f}s ± {results['std_makespan']:.2f}s")
+    print(f"  平均能耗(归一化): {results['avg_energy_consumption']:.4f} ± {results['std_energy_consumption']:.4f}")
+    print(f"  截止满足率: {results['deadline_meet_ratio']*100:.1f}%")
     print(f"  决策分布: Local={decision_distribution['local']*100:.1f}%, "
           f"RSU={decision_distribution['rsu']*100:.1f}%, V2V={decision_distribution['v2v']*100:.1f}%")
     print(f"  平均队列长度: {results['avg_queue_length']:.2f}")
@@ -254,6 +294,7 @@ def _parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model-path", type=str, default="checkpoints/best_model.pth")
     parser.add_argument("--output-dir", type=str, default="eval_results")
+    parser.add_argument("--exp-dynamic", action="store_true", default=False, help="Apply configs.exp_dynamic_config profile before evaluation.")
     return parser.parse_args()
 
 
@@ -263,6 +304,9 @@ def main():
     print("="*60)
     print("基准策略对比评估")
     print("="*60)
+    if args.exp_dynamic:
+        info = apply_exp_dynamic_config(Cfg, TC)
+        print(f"[eval_baselines] dynamic profile applied: veh={info['num_vehicles']} rsu={info['num_rsu']} dag={info['dag_source']}")
     
     # 创建环境
     env = VecOffloadingEnv()
@@ -286,8 +330,13 @@ def main():
     greedy_policy = GreedyPolicy(env)
     results_greedy = evaluate_policy(env, greedy_policy, "Greedy Policy", num_episodes)
     all_results.append(results_greedy)
+
+    # 4. 评估 EFT / HEFT-style 启发式
+    eft_policy = EFTPPolicy(env)
+    results_eft = evaluate_policy(env, eft_policy, "EFT Policy", num_episodes)
+    all_results.append(results_eft)
     
-    # 4. 评估训练好的MAPPO（如果存在）
+    # 5. 评估训练好的MAPPO（如果存在）
     mappo_model_path = args.model_path
     if os.path.exists(mappo_model_path):
         print(f"\n检测到训练好的MAPPO模型: {mappo_model_path}")
@@ -316,9 +365,36 @@ def main():
     
     with open(f"{output_dir}/baseline_comparison.json", 'w') as f:
         json.dump(all_results, f, indent=2, default=_json_default)
+    # 论文核心指标汇总CSV
+    core_csv = os.path.join(output_dir, "baseline_core_metrics.csv")
+    with open(core_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "policy_name",
+                "avg_completion_time",
+                "avg_makespan",
+                "avg_energy_consumption",
+                "avg_task_success_rate",
+                "deadline_meet_ratio",
+                "avg_reward",
+            ],
+        )
+        writer.writeheader()
+        for r in all_results:
+            writer.writerow({
+                "policy_name": r.get("policy_name"),
+                "avg_completion_time": r.get("avg_completion_time"),
+                "avg_makespan": r.get("avg_makespan"),
+                "avg_energy_consumption": r.get("avg_energy_consumption"),
+                "avg_task_success_rate": r.get("avg_task_success_rate"),
+                "deadline_meet_ratio": r.get("deadline_meet_ratio"),
+                "avg_reward": r.get("avg_reward"),
+            })
     
     print(f"\n{'='*60}")
     print(f"评估完成！结果已保存到: {output_dir}/baseline_comparison.json")
+    print(f"论文核心指标CSV已保存到: {core_csv}")
     print(f"{'='*60}")
     
     # 生成对比表格
