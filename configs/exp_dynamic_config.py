@@ -126,10 +126,10 @@ def apply_exp_dynamic_config(Cfg, TC):
     TC.PPO_EPOCH = 5
     TC.USE_LR_DECAY = True
     # Entropy schedule: start near 0.01 (recommended), decay linearly for late-stage stabilization.
-    TC.ENTROPY_COEF = 0.010
-    TC.ENTROPY_COEF_START = 0.010
-    TC.ENTROPY_COEF_END = 0.003
-    TC.ENTROPY_ANNEAL_STEPS = 300_000
+    TC.ENTROPY_COEF = 0.015
+    TC.ENTROPY_COEF_START = 0.015
+    TC.ENTROPY_COEF_END = 0.015
+    TC.ENTROPY_ANNEAL_STEPS = 0
     # Preserve existing model size defaults unless user overrides via CLI/env
 
     _recompute_derived(Cfg)
