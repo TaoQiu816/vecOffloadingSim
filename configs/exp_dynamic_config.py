@@ -28,32 +28,31 @@ def _recompute_workload_and_norms(Cfg):
 
 def apply_exp_dynamic_config(Cfg, TC):
     """
-    Restore a realistic dynamic VEC experiment profile for paper-scale runs.
+    静态车辆 + 动态任务持续生成 实验配置。
 
-    Goals:
-    - multi-vehicle + multi-RSU with mobility
-    - stochastic DAGs (varied topology/size/load)
-    - queueing + interference contention enabled
-    - periodic evaluation enabled (incl. baseline eval)
+    场景设计：
+    - 固定 8 辆车持续在场，不动态增减
+    - 每辆车完成/失败当前 DAG 后立即获得新任务（TASK_RESPAWN_ON_COMPLETION）
+    - 200 步截断作为唯一 episode 终止条件
+    - 中等难度：MAX_NODES=15，ALPHA=1.8~2.5，打破零正反馈
     """
 
     # ------------------------------------------------------------------
-    # Scenario scale / mobility (high-dynamic)
+    # 场景规模 / 移动性
     # ------------------------------------------------------------------
     Cfg.SEED = 123
-    Cfg.NUM_VEHICLES = 10
-    Cfg.NUM_RSU = 3
+    Cfg.NUM_VEHICLES = 8          # 固定 8 辆，不动态增减
+    Cfg.NUM_RSU = 4               # 4 个 RSU，2000m 路段均匀分布（间距 500m）
     Cfg.NUM_LANES = 3
-    # For NUM_RSU=3 and fixed RSU_RANGE=350m, use a longer road so adjacent RSUs
-    # keep only small overlap while still guaranteeing full coverage.
+    # 4 RSU × RSU_RANGE=350m：间距 500m，重叠 200m，全路段无盲区
     Cfg.MAP_SIZE = 2000.0
     Cfg.RSU_Y_DIST = 10.0
     Cfg.RSU_RANGE = 350.0
     Cfg.V2V_RANGE = 220.0
-    # Spawn vehicles almost across the whole covered road while avoiding exact boundaries.
     Cfg.VEHICLE_SPAWN_X_MIN = 0.02
     Cfg.VEHICLE_SPAWN_X_MAX = 0.98
-    Cfg.VEHICLE_ARRIVAL_RATE = 0.30  # high-load dynamic arrivals (veh/s)
+    Cfg.VEHICLE_ARRIVAL_RATE = 0.0   # 关闭泊松车辆生成；任务重生由 TASK_RESPAWN_ON_COMPLETION 驱动
+    Cfg.TASK_RESPAWN_ON_COMPLETION = True  # DAG 完成/失败后立即为该车分配新任务
     Cfg.VEL_MEAN = 18.0
     Cfg.VEL_STD = 5.0
     Cfg.VEL_MIN = 4.0
@@ -61,7 +60,7 @@ def apply_exp_dynamic_config(Cfg, TC):
     Cfg.MAX_VELOCITY = max(float(Cfg.VEL_MAX), 1.0)
 
     # ------------------------------------------------------------------
-    # Communication / interference / queueing contention
+    # 通信 / 干扰 / 排队竞争
     # ------------------------------------------------------------------
     Cfg.ENABLE_RSU_SELECTION = True
     Cfg.CANDIDATE_MODE = "ALL"
@@ -73,50 +72,42 @@ def apply_exp_dynamic_config(Cfg, TC):
     Cfg.V2V_NUM_RB = 5
     Cfg.BW_V2I = 10e6
     Cfg.BW_V2V = 10e6
-    # finite queue budgets -> real contention
     Cfg.VEHICLE_QUEUE_CYCLES_LIMIT = 12e9
     Cfg.RSU_QUEUE_CYCLES_LIMIT = 60e9
 
     # ------------------------------------------------------------------
-    # DAG workload diversity (random generator)
+    # DAG 工作负载（中等难度，打破零正反馈）
     # ------------------------------------------------------------------
-    Cfg.DAG_SOURCE = "synthetic_small"  # stochastic DAG generator
-    Cfg.MIN_NODES = 10
-    Cfg.MAX_NODES = 24
-    # High-pressure compute / task profile (top-tier VEC setting)
+    Cfg.DAG_SOURCE = "synthetic_small"
+    Cfg.MIN_NODES = 6
+    Cfg.MAX_NODES = 15             # 从 24 降至 15，缩短关键路径，使 200 步内可完成
     Cfg.MIN_VEHICLE_CPU_FREQ = 0.5e9
     Cfg.MAX_VEHICLE_CPU_FREQ = 1.5e9
     Cfg.F_RSU = 20.0e9
-    Cfg.MIN_COMP = 1.0e8
-    Cfg.MAX_COMP = 1.0e9
-    # Input data uses bits in codebase: 100KB=8e5 bits, 1MB=8e6 bits
-    Cfg.MIN_DATA = 8.0e5
-    Cfg.MAX_DATA = 8.0e6
+    Cfg.MIN_COMP = 1.0e8           # 0.1 Gcycles
+    Cfg.MAX_COMP = 1.0e9           # 1.0 Gcycles（绝对不能是 4.0e9）
+    Cfg.MIN_DATA = 8.0e5           # 100 KB
+    Cfg.MAX_DATA = 8.0e6           # 1 MB
     Cfg.DOMAIN_RANDOMIZATION = True
-    # keep workload/deadline stochastic with moderate difficulty
     Cfg.DEADLINE_MODE = "LB_ALPHA"
-    # With 10 vehicles / 3 RSUs on a 2km road, pure LB-based deadlines can become too harsh
-    # because LB omits queueing/communication contention. Use a slightly looser but still
-    # learnable alpha range plus small slack.
-    Cfg.DEADLINE_ALPHA_MIN = 1.2
-    Cfg.DEADLINE_ALPHA_MAX = 1.8
+    # 适度放宽 deadline，给智能体足够试错空间同时保持区分度
+    Cfg.DEADLINE_ALPHA_MIN = 1.8
+    Cfg.DEADLINE_ALPHA_MAX = 2.5
     Cfg.DEADLINE_SLACK_SECONDS = 0.10
     Cfg.DEADLINE_TIGHTENING_MIN = 1.05
     Cfg.DEADLINE_TIGHTENING_MAX = 1.40
     Cfg.MAX_INFLIGHT_SUBTASKS_PER_VEHICLE = 0
 
     # ------------------------------------------------------------------
-    # Optional realism features
+    # 可选现实特征
     # ------------------------------------------------------------------
     Cfg.TRUST_ENABLED = True
-    Cfg.CHAIN_ENABLED = False  # keep chain off for main dynamic smoke unless specifically studied
+    Cfg.CHAIN_ENABLED = False
 
     # ------------------------------------------------------------------
-    # Training / evaluation defaults for paper runs
+    # 训练 / 评估默认参数
     # ------------------------------------------------------------------
     TC.MAX_EPISODES = 2000
-    # Use a longer horizon for 8-vehicle concurrent stochastic DAGs (up to 24 nodes)
-    # so most episodes can reach meaningful terminal outcomes rather than truncation.
     Cfg.MAX_STEPS = 200
     TC.MAX_STEPS = 200
     TC.LOG_INTERVAL = 20
@@ -125,12 +116,11 @@ def apply_exp_dynamic_config(Cfg, TC):
     TC.MINI_BATCH_SIZE = 256
     TC.PPO_EPOCH = 5
     TC.USE_LR_DECAY = True
-    # Entropy schedule: start near 0.01 (recommended), decay linearly for late-stage stabilization.
+    # 固定熵系数，关闭退火，保持非平稳环境持续探索
     TC.ENTROPY_COEF = 0.015
     TC.ENTROPY_COEF_START = 0.015
     TC.ENTROPY_COEF_END = 0.015
     TC.ENTROPY_ANNEAL_STEPS = 0
-    # Preserve existing model size defaults unless user overrides via CLI/env
 
     _recompute_derived(Cfg)
     _recompute_workload_and_norms(Cfg)

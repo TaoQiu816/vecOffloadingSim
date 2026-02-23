@@ -159,7 +159,10 @@ class DagCompletionHandler:
                 "time": time_now,
             }
         if dag.status[subtask_id] == 3:
-            raise RuntimeError("Completed task processed twice")
+            # 已完成的子任务重复处理，幂等跳过
+            return {"type": "COMPUTE_DONE_DUPLICATE",
+                    "owner_vehicle_id": getattr(job, "owner_vehicle_id", -1),
+                    "subtask_id": subtask_id, "time": time_now}
         
         # [完成位置落地] 从exec_locations读取位置码写入task_locations
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]

@@ -1617,6 +1617,44 @@ class VecOffloadingEnv(gym.Env):
                 self.vehicles[idx] = new_v
                 break
 
+    def _assign_new_dag_to_vehicle(self, vehicle) -> None:
+        """
+        为已完成/失败 DAG 的车辆就地分配新任务。
+
+        与 _respawn_vehicle 的区别：
+        - 保留车辆当前位置、速度、cpu_freq（车辆不消失，只换任务）
+        - 仅清除任务相关队列，不重建车辆对象
+        用于 TASK_RESPAWN_ON_COMPLETION=True 的静态车辆场景。
+        """
+        vid = vehicle.id
+        # 清除任务相关队列
+        if vid in self.veh_cpu_q:
+            self.veh_cpu_q[vid].clear()
+        self.txq_v2i.pop(("VEH", vid), None)
+        self.txq_v2v.pop(("VEH", vid), None)
+        self._last_candidates.pop(vid, None)
+        self._last_candidate_set.pop(vid, None)
+        self._last_rsu_choice.pop(vid, None)
+
+        # 重置车辆任务状态（保留 pos / vel / cpu_freq）
+        if hasattr(vehicle, 'capacity_tracker'):
+            vehicle.capacity_tracker.clear()
+        vehicle.task_queue_len = 0
+        vehicle.last_scheduled_subtask = -1
+        vehicle.last_action_step = -1
+        vehicle.last_action_target = 'Local'
+        vehicle.subtask_reward_buffer = 0.0
+
+        # 分配新 DAG（继承原车辆 CPU 频率，保持异构性）
+        old_id = vehicle.task_dag.id if vehicle.task_dag is not None else 0
+        adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=vehicle.cpu_freq)
+        vehicle.task_dag = DAGTask(old_id + 1, adj, prof, data, ddl)
+        vehicle.task_dag.deadline_gamma = extra.get("deadline_gamma")
+        vehicle.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
+        vehicle.task_dag.deadline_base_time = extra.get("deadline_base_time")
+        vehicle.task_dag.deadline_slack = extra.get("deadline_slack")
+        vehicle.task_dag.start_time = self.time
+
     def _handle_dynamic_arrivals(self):
         rate = float(getattr(self.config, "VEHICLE_ARRIVAL_RATE", 0.0))
         if rate <= 0:
@@ -4238,6 +4276,16 @@ class VecOffloadingEnv(gym.Env):
             arrival_count = self._handle_dynamic_arrivals()
         info['arrival_count'] = int(arrival_count)
         info['boundary_respawn_count'] = int(boundary_respawn_count)
+
+        # 任务持续生成：DAG 完成/失败后立即为该车辆分配新任务（静态车辆场景）
+        task_respawn_count = 0
+        if not terminated and not truncated and getattr(self.config, 'TASK_RESPAWN_ON_COMPLETION', False):
+            for v in self.vehicles:
+                if (v.task_dag.is_finished or v.task_dag.is_failed):
+                    if not self._vehicle_has_active_jobs(v.id):
+                        self._assign_new_dag_to_vehicle(v)
+                        task_respawn_count += 1
+        info['task_respawn_count'] = int(task_respawn_count)
 
         return self._get_obs(), rewards, terminated, truncated, info
 
