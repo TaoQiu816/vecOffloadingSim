@@ -60,6 +60,7 @@ class RolloutBuffer:
         self.log_probs_buffer = [] # [T] 每步是长度N_t的数组
         self.dones_buffer = []     # [T] 每步是标量
         self.active_masks_buffer = []  # [T] 每步是长度N_t的数组 (0/1)
+        self.agent_ids_buffer = []  # [T] 每步是长度N_t的数组（尽量使用稳定车辆ID）
         
         # GAE计算结果 - 列表形式
         self.advantages_buffer = []  # [T] 每步是长度N_t的数组
@@ -84,6 +85,7 @@ class RolloutBuffer:
             truncated: 是否时间截断
         """
         self.obs_list_buffer.append(obs_list)
+        self.agent_ids_buffer.append(self._extract_agent_ids(obs_list))
         # 动作字典按原样透传，支持扩展键（如 subtask/target/power）
         if isinstance(actions, list):
             self.actions_buffer.append([
@@ -136,7 +138,38 @@ class RolloutBuffer:
                 'truncated': False
             })
     
-    def compute_returns_and_advantages(self, last_value: np.ndarray):
+    @staticmethod
+    def _extract_agent_ids(obs_list: List[Dict]) -> np.ndarray:
+        """从观测中提取稳定agent id；失败时回退为步内索引。"""
+        ids = []
+        for idx, obs in enumerate(obs_list or []):
+            aid = None
+            if isinstance(obs, dict):
+                rid = obs.get("resource_ids")
+                try:
+                    if rid is not None and len(rid) > 0:
+                        aid = int(np.asarray(rid).reshape(-1)[0])
+                except Exception:
+                    aid = None
+            if aid is None:
+                aid = int(idx)
+            ids.append(aid)
+        return np.asarray(ids, dtype=np.int64)
+
+    @staticmethod
+    def _build_value_map(agent_ids: np.ndarray, values: np.ndarray) -> Dict[int, float]:
+        out = {}
+        if agent_ids is None or values is None:
+            return out
+        n = min(len(agent_ids), len(values))
+        for i in range(n):
+            aid = int(agent_ids[i])
+            # 同一步内若出现重复ID，保留首个以避免静默覆盖不同样本
+            if aid not in out:
+                out[aid] = float(values[i])
+        return out
+
+    def compute_returns_and_advantages(self, last_value: np.ndarray, last_obs_list: List[Dict] = None):
         """
         计算GAE优势函数和returns
         支持动态车辆数量
@@ -161,64 +194,45 @@ class RolloutBuffer:
             self.advantages_buffer.append(np.zeros(N_t, dtype=np.float32))
             self.returns_buffer.append(np.zeros(N_t, dtype=np.float32))
         
-        # 获取最后一步的车辆数
-        N_last = len(self.rewards_buffer[-1])
-        
-        # 从后向前计算GAE（每个车辆独立计算）
-        # 注意：由于车辆数量可能变化，我们对每个车辆索引分别处理
-        # 这里假设车辆ID在episode内是稳定的（索引0始终是同一辆车）
-        
-        # 获取所有时间步的最大车辆数
-        max_N = max(len(r) for r in self.rewards_buffer)
-        
-        # 对每个车辆索引独立计算GAE
-        for n in range(max_N):
-            gae = 0.0
-            for t in reversed(range(T)):
-                N_t = len(self.rewards_buffer[t])
-                N_v = len(self.values_buffer[t])
-                
-                # 如果当前时间步没有这个车辆（检查rewards和values两者），跳过
-                if n >= N_t or n >= N_v:
-                    gae = 0.0  # 重置GAE
-                    continue
-                
-                # 获取当前时间步的数据
-                reward = self.rewards_buffer[t][n]
-                value = self.values_buffer[t][n]
-                done_info = self.dones_buffer[t]
-                
-                # [修复] 使用terminated而不是done来决定是否bootstrap
-                # terminated=True: 真正的终局，不bootstrap (mask=0)
-                # truncated=True: 时间截断，应该bootstrap (mask=1)
-                if isinstance(done_info, dict):
-                    terminated = done_info['terminated']
-                else:
-                    # 向后兼容：done作为terminated
-                    terminated = done_info
-                
-                # 获取下一步的value
-                if t == T - 1:
-                    # 最后一步使用bootstrap value
-                    if n < len(last_value):
-                        next_value = last_value[n]
-                    else:
-                        next_value = 0.0
-                    next_non_terminal = 1.0 - float(terminated)
-                else:
-                    N_next = len(self.values_buffer[t + 1])
-                    if n < N_next:
-                        next_value = self.values_buffer[t + 1][n]
-                    else:
-                        next_value = 0.0
-                    next_non_terminal = 1.0 - float(terminated)
-                
-                # TD error
+        # 基于稳定agent id计算GAE；若agent在下一步不存在，则该链条在此处截断（不bootstrap）。
+        value_maps = []
+        for t in range(T):
+            ids_t = self.agent_ids_buffer[t] if t < len(self.agent_ids_buffer) else np.arange(len(self.values_buffer[t]))
+            value_maps.append(self._build_value_map(ids_t, self.values_buffer[t]))
+
+        if last_obs_list is not None:
+            last_agent_ids = self._extract_agent_ids(last_obs_list)
+        elif self.agent_ids_buffer:
+            last_agent_ids = self.agent_ids_buffer[-1]
+        else:
+            last_agent_ids = np.arange(len(last_value), dtype=np.int64)
+        last_value_map = self._build_value_map(last_agent_ids, last_value)
+
+        gae_state: Dict[int, float] = {}
+        for t in reversed(range(T)):
+            rewards_t = self.rewards_buffer[t]
+            values_t = self.values_buffer[t]
+            ids_t = self.agent_ids_buffer[t] if t < len(self.agent_ids_buffer) else np.arange(len(rewards_t))
+            done_info = self.dones_buffer[t]
+            if isinstance(done_info, dict):
+                terminated = bool(done_info.get('terminated', False))
+            else:
+                terminated = bool(done_info)
+            next_map = last_value_map if t == T - 1 else value_maps[t + 1]
+
+            n_cur = min(len(rewards_t), len(values_t), len(ids_t))
+            for i in range(n_cur):
+                aid = int(ids_t[i])
+                reward = float(rewards_t[i])
+                value = float(values_t[i])
+                present_next = (aid in next_map)
+                next_value = float(next_map.get(aid, 0.0))
+                next_non_terminal = (1.0 - float(terminated)) * (1.0 if present_next else 0.0)
+                prev_gae = gae_state.get(aid, 0.0) if present_next else 0.0
                 delta = reward + self.gamma * next_value * next_non_terminal - value
-                
-                # GAE
-                gae = delta + self.gamma * self.gae_lambda * next_non_terminal * gae
-                self.advantages_buffer[t][n] = gae
+                gae = delta + self.gamma * self.gae_lambda * next_non_terminal * prev_gae
+                self.advantages_buffer[t][i] = gae
+                gae_state[aid] = float(gae)
         
         # 计算returns = advantages + values
         for t in range(T):
@@ -327,6 +341,7 @@ class RolloutBuffer:
         self.advantages_buffer.clear()
         self.returns_buffer.clear()
         self.active_masks_buffer.clear()
+        self.agent_ids_buffer.clear()
 
     def get_active_stats(self) -> Tuple[int, int]:
         """

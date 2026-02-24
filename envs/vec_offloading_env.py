@@ -311,7 +311,6 @@ class VecOffloadingEnv(gym.Env):
             'data_matrix': gym.spaces.Box(low=0, high=1, shape=(self.config.MAX_NODES, self.config.MAX_NODES), dtype=np.float32),
             'Delta': gym.spaces.Box(low=0, high=self.config.MAX_NODES, shape=(self.config.MAX_NODES, self.config.MAX_NODES), dtype=np.int32),
             'location': gym.spaces.Box(low=0, high=max_loc_id, shape=(self.config.MAX_NODES,), dtype=np.int32),
-            'priority': gym.spaces.Box(low=0.0, high=1.0, shape=(self.config.MAX_NODES,), dtype=np.float32),
             'obs_stamp': gym.spaces.Box(low=0, high=self.config.MAX_STEPS, shape=(), dtype=np.int64),
             'global_state': gym.spaces.Box(low=0.0, high=1.0, shape=(30,), dtype=np.float32),
         })
@@ -5144,19 +5143,10 @@ class VecOffloadingEnv(gym.Env):
                 else:
                     padded_location[t_idx] = 0
 
-            # [Rank Bias用] 填充priority（用于RankBiasEncoder）
-            padded_priority = np.zeros(MAX_NODES, dtype=np.float32)
-            if v.task_dag.priority is not None:
-                padded_priority[:num_nodes] = v.task_dag.priority
-            else:
-                # 如果priority未计算，使用均匀分布作为fallback
-                padded_priority[:num_nodes] = 0.5
-
             # 数值稳定性处理：确保归一化特征有限且落在合理范围
             padded_node_feats = _nan_clip(padded_node_feats, 0.0, 1.0, dtype=np.float32)
             padded_adj = _nan_clip(padded_adj, 0.0, 1.0, dtype=np.float32)
             padded_data_matrix = _nan_clip(padded_data_matrix, 0.0, 1.0, dtype=np.float32)
-            padded_priority = _nan_clip(padded_priority, 0.0, 1.0, dtype=np.float32)
 
             self_info = _nan_clip(self_info, dtype=np.float32)
             if self_info.shape[0] >= 2:
@@ -5212,7 +5202,6 @@ class VecOffloadingEnv(gym.Env):
             'data_matrix': padded_data_matrix,
             'Delta': padded_Delta,
             'location': padded_location,
-            'priority': padded_priority,  # [Rank Bias用] 节点优先级（归一化，越大越重要）
             'obs_stamp': obs_stamp_obs,
             'global_state': global_state_vec,
         })
@@ -5913,6 +5902,9 @@ class VecOffloadingEnv(gym.Env):
             rate = self._get_rate_from_snapshot(("VEH", vehicle.id), dst_node, "V2I")
             rate = max(rate if rate is not None else 0.0, eps_rate)
             t_tx = din / rate if din > 0 else 0.0
+            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
+            if tx_timeout > 0 and t_tx > tx_timeout:
+                t_tx = tx_timeout
             freq_r = self.config.F_RSU
             cpu_wait = 0.0
             if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
@@ -5927,6 +5919,9 @@ class VecOffloadingEnv(gym.Env):
             rate = self._get_rate_from_snapshot(("VEH", vehicle.id), dst_node, "V2V")
             rate = max(rate if rate is not None else 0.0, eps_rate)
             t_tx = din / rate if din > 0 else 0.0
+            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
+            if tx_timeout > 0 and t_tx > tx_timeout:
+                t_tx = tx_timeout
             tgt_veh = self._get_vehicle_by_id(target)
             freq_t = getattr(tgt_veh, "cpu_freq", self.config.MIN_VEHICLE_CPU_FREQ) if tgt_veh is not None else self.config.MIN_VEHICLE_CPU_FREQ
             cpu_wait = self._get_veh_queue_wait_time(target, freq_t) if tgt_veh is not None else 0.0
@@ -7344,7 +7339,9 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics['energy_norm_p95'] = 0.0
 
         if self._episode_t_tx_values:
-            episode_metrics['t_tx_mean'] = float(np.mean(self._episode_t_tx_values))
+            tx_cap = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
+            capped = np.clip(np.asarray(self._episode_t_tx_values, dtype=np.float64), 0.0, max(tx_cap, 1e-6))
+            episode_metrics['t_tx_mean'] = float(np.mean(capped))
         else:
             episode_metrics['t_tx_mean'] = 0.0
 

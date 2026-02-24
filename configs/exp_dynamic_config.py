@@ -68,10 +68,11 @@ def apply_exp_dynamic_config(Cfg, TC):
     Cfg.USE_BLOCK_FADING = True
     Cfg.V2I_ICI_ENABLED = True
     Cfg.V2I_RATE_MODEL = "SHARE"
+    # 通信瓶颈（与之前敲定一致）：V2I 10MHz/5 RB，V2V 20MHz/10 RB
     Cfg.V2I_NUM_RB = 5
-    Cfg.V2V_NUM_RB = 5
-    Cfg.BW_V2I = 10e6
-    Cfg.BW_V2V = 10e6
+    Cfg.V2V_NUM_RB = 10
+    Cfg.BW_V2I = 10.0e6
+    Cfg.BW_V2V = 20.0e6
     Cfg.VEHICLE_QUEUE_CYCLES_LIMIT = 12e9
     Cfg.RSU_QUEUE_CYCLES_LIMIT = 60e9
 
@@ -86,13 +87,15 @@ def apply_exp_dynamic_config(Cfg, TC):
     # 车辆算力差距拉大，增强 V2V 优势：弱车卸到强邻车收益明显（5 倍差距）
     Cfg.MIN_VEHICLE_CPU_FREQ = 0.4e9   # 0.4 GHz，弱车
     Cfg.MAX_VEHICLE_CPU_FREQ = 2.0e9   # 2.0 GHz，强车
-    Cfg.F_RSU = 20.0e9
-    # 计算量：T_exec = C/f，仍落在约 0.5*DT~4*DT（弱车@0.4GHz 单子任务约 0.375s）
-    Cfg.MIN_COMP = 5.0e7           # 本地@2GHz≈0.025s，@0.4GHz≈0.125s
-    Cfg.MAX_COMP = 1.5e8            # 本地@2GHz≈0.075s，@0.4GHz≈0.375s≈3.75*DT；RSU≈0.0075s
-    # 数据量：使典型传输 T_tx ≈ 0.05–0.2s（BW=10MHz、5 RB、典型速率量级约数 Mbps → D≈1e5–5e5 bits）
-    Cfg.MIN_DATA = 1.0e5           # 12.5 KB
-    Cfg.MAX_DATA = 5.0e5           # 62.5 KB
+    # RSU：真实边缘服务器硬件。单核 20 GHz 不存在，采用单核 5 GHz + 4 核多核并行
+    # F_RSU 为单核频率 (Hz)；每任务占一核，执行时间 = cycles / F_RSU（见 envs/entities/rsu.py、CpuQueueService）
+    Cfg.F_RSU = 5.0e9                  # 单核 5.0 GHz（高端服务器单核性能）
+    Cfg.RSU_NUM_PROCESSORS = 4         # 4 核，多核并发、每核独立 FIFO 队列
+    # 计算量/数据量（与之前敲定一致）：MIN_COMP~MAX_COMP、MIN_DATA~MAX_DATA
+    Cfg.MIN_COMP = 1.0e8               # T_exec@5GHz: 0.02s~0.2s
+    Cfg.MAX_COMP = 1.0e9
+    Cfg.MIN_DATA = 4.0e6               # 0.5 MB
+    Cfg.MAX_DATA = 16.0e6              # 2 MB
     Cfg.DOMAIN_RANDOMIZATION = True
     Cfg.DEADLINE_MODE = "LB_ALPHA"
     Cfg.DEADLINE_ALPHA_MIN = 1.8

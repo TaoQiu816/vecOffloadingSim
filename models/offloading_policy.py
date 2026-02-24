@@ -113,12 +113,14 @@ class OffloadingPolicyNetwork(nn.Module):
         self.edge_encoder = EdgeFeatureEncoder(num_heads)
         self.spatial_encoder = SpatialDistanceEncoder(num_heads)
 
-        # 2.5 [方案A] Rank偏置编码器（GA-DRL启发的邻居重要性先验）
-        # rank_bias仅用于提升DAG表征质量，不参与调度决策
-        if TC.USE_RANK_BIAS:
-            self.rank_bias_encoder = RankBiasEncoder(num_heads)
-        else:
-            self.rank_bias_encoder = None
+        # 2.5 [暂时停用] Rank偏置编码器（priority/rank 相关路径）
+        # 为避免影响当前RC1仿真与训练口径，先显式关闭rank-bias前向路径。
+        # 保留priority相关函数签名与调用参数以兼容旧脚本/模型代码。
+        # if TC.USE_RANK_BIAS:
+        #     self.rank_bias_encoder = RankBiasEncoder(num_heads)
+        # else:
+        #     self.rank_bias_encoder = None
+        self.rank_bias_encoder = None
 
         # 3. 边增强Transformer
         self.transformer = EdgeEnhancedTransformer(
@@ -308,7 +310,7 @@ class OffloadingPolicyNetwork(nn.Module):
         L_bwd_list = []
         data_matrix_list = []
         delta_list = []
-        priority_list = []  # [方案A] 用于Rank Bias
+        priority_list = []  # [方案A] 用于Rank Bias（可选）
         
         for obs in obs_list:
             node_x_list.append(obs['node_x'])
@@ -360,8 +362,10 @@ class OffloadingPolicyNetwork(nn.Module):
             L_bwd_list.append(obs['L_bwd'])
             data_matrix_list.append(obs['data_matrix'])
             delta_list.append(obs['Delta'])
-            # [方案A] 提取priority用于Rank Bias
-            priority_list.append(obs.get('priority', np.ones(obs['node_x'].shape[0], dtype=np.float32) * 0.5))
+            # [暂时停用] priority/rank 路径
+            # 保留兼容变量priority_list，但不再从obs提取priority，避免误启用rank-bias。
+            # if 'priority' in obs and obs.get('priority') is not None:
+            #     priority_list.append(np.asarray(obs['priority'], dtype=np.float32))
         
         # 转换为Tensor并移到目标设备
         inputs = {
@@ -380,12 +384,14 @@ class OffloadingPolicyNetwork(nn.Module):
             'L_bwd': torch.from_numpy(np.stack(L_bwd_list)).long().to(device),
             'data_matrix': torch.from_numpy(np.stack(data_matrix_list)).float().to(device),
             'delta': torch.from_numpy(np.stack(delta_list)).long().to(device),
-            'priority': torch.from_numpy(np.stack(priority_list)).float().to(device),  # [方案A] Rank Bias用
             'candidate_types': torch.from_numpy(np.stack(candidate_types_list)).long().to(device),  # [通用化]
             'rate_prev': torch.from_numpy(np.stack(rate_prev_list)).float().to(device),  # [B, M]
             'serving_rsu_onehot': torch.from_numpy(np.stack(serving_rsu_onehot_list)).float().to(device),  # [B, NUM_RSU]
             'global_state': torch.from_numpy(np.stack(global_state_list)).float().to(device),  # [B, G]
         }
+        # [暂时停用] priority/rank 路径：不向前向传播提供inputs['priority']
+        # if len(priority_list) == len(obs_list) and len(priority_list) > 0:
+        #     inputs['priority'] = torch.from_numpy(np.stack(priority_list)).float().to(device)
         
         return inputs
     
@@ -453,18 +459,17 @@ class OffloadingPolicyNetwork(nn.Module):
         edge_bias = self.edge_encoder(data_matrix) if getattr(TC, "USE_EDGE_BIAS", True) else None
         spatial_bias = self.spatial_encoder(delta) if getattr(TC, "USE_SPATIAL_BIAS", True) else None
 
-        # 2.5 [方案A] 计算Rank偏置（可通过配置开关禁用）
-        # rank_bias仅用于提升DAG表征质量，不参与调度决策
+        # 2.5 [暂时停用] Rank偏置（priority/rank 相关路径）
         rank_bias = None
-        if self.rank_bias_encoder is not None and priority is not None:
-            rank_bias = self.rank_bias_encoder(
-                priority=priority,
-                adj=adj,
-                tau=TC.RANK_BIAS_TAU,
-                kappa=TC.RANK_BIAS_KAPPA,
-                cover_mode=TC.RANK_BIAS_COVER,
-                task_mask=node_valid_mask
-            )
+        # if self.rank_bias_encoder is not None and priority is not None:
+        #     rank_bias = self.rank_bias_encoder(
+        #         priority=priority,
+        #         adj=adj,
+        #         tau=TC.RANK_BIAS_TAU,
+        #         kappa=TC.RANK_BIAS_KAPPA,
+        #         cover_mode=TC.RANK_BIAS_COVER,
+        #         task_mask=node_valid_mask
+        #     )
 
         # 3. Transformer编码
         # 构造padding mask（从task_mask）
@@ -570,7 +575,7 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_mask=inputs.get('subtask_mask'),
             node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
-            priority=inputs['priority'],  # [方案A] 传递priority
+            priority=inputs.get('priority'),  # [方案A] 传递priority（可选）
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
             global_state=inputs.get('global_state'),
@@ -607,7 +612,7 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_mask=inputs.get('subtask_mask'),
             node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
-            priority=inputs['priority'],
+            priority=inputs.get('priority'),
             rate_prev=inputs['rate_prev'],
             serving_rsu_onehot=inputs['serving_rsu_onehot'],
             global_state=inputs.get('global_state'),
@@ -710,7 +715,7 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_mask=inputs.get('subtask_mask'),
             node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
-            priority=inputs['priority'],  # [方案A] 传递priority，确保与采样时一致
+            priority=inputs.get('priority'),  # [方案A] 传递priority（可选）
             rate_prev=inputs['rate_prev'],  # 上步链路速率
             serving_rsu_onehot=inputs['serving_rsu_onehot'],  # 当前服务RSU
             global_state=inputs.get('global_state'),
@@ -744,7 +749,7 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_mask=inputs.get('subtask_mask'),
             node_valid_mask=inputs.get('node_valid_mask'),
             task_mask=inputs['task_mask'],
-            priority=inputs['priority'],
+            priority=inputs.get('priority'),
             rate_prev=inputs['rate_prev'],
             serving_rsu_onehot=inputs['serving_rsu_onehot'],
             global_state=inputs.get('global_state'),

@@ -170,11 +170,11 @@ class SystemConfig:
     
     C_LIGHT = 3e8           # 光速 (m/s) - Speed of light
     
-    BW_V2I = 20e6           # V2I带宽 (Hz) - V2I bandwidth (20 MHz) [文献一标准]
+    BW_V2I = 10.0e6         # V2I带宽 (Hz) - V2I bandwidth (10 MHz, 拥挤Uu上行切片)
                             # 影响: V2I最大速率上限，20MHz对齐文献实际吞吐
                             # Impact: V2I max rate limit; 20 MHz aligned with literature throughput
 
-    BW_V2V = 12e6           # V2V带宽 (Hz) - V2V bandwidth (12 MHz, 轻度增强协同可竞争性)
+    BW_V2V = 20.0e6         # V2V带宽 (Hz) - V2V bandwidth (20 MHz, 释放PC5直连带宽红利)
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
                             # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
 
@@ -183,7 +183,7 @@ class SystemConfig:
     # - RB_SINR: PRB级建模（RSU内正交 + 跨RSU同RB干扰）
     V2I_RATE_MODEL = "RB_SINR"
     V2I_RB_BW_HZ = 180e3               # 单RB带宽口径（ETSI/3GPP常用）
-    V2I_NUM_RB = int(round(BW_V2I / V2I_RB_BW_HZ))
+    V2I_NUM_RB = 55         # 10 MHz / 180 kHz ≈ 55 RB（取整后固定）
     V2I_ICI_ENABLED = True             # 跨RSU同RB干扰（Inter-Cell Interference）
     V2I_FREQ_REUSE_FACTOR = 1          # 复用因子，1=全复用
     
@@ -244,7 +244,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 2.5.1 V2V RB 干扰模型 (V2V Resource Block Interference)
     # -------------------------------------------------------------------------
-    V2V_NUM_RB = 4                  # V2V 子信道（RB）数量
+    V2V_NUM_RB = 10                 # V2V 子信道（RB）数量
     V2V_BW_PER_RB = BW_V2V / V2V_NUM_RB  # 每 RB 带宽 (Hz)
     # 功率映射硬编码对数域: P = Pmin*(Pmax/Pmin)^a_power, a_power∈[0,1]
 
@@ -321,16 +321,16 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.1 CPU频率设定 (CPU Frequency - Heterogeneous Configuration)
     # -------------------------------------------------------------------------
-    MIN_VEHICLE_CPU_FREQ = 2.0e9    # 车辆最小CPU频率 (Hz) - Min vehicle CPU freq (2 GHz) [审计调优]
+    MIN_VEHICLE_CPU_FREQ = 0.5e9    # 车辆最小CPU频率 (Hz) - Min vehicle CPU freq (0.5 GHz)
                                     # 影响: 异构性下界，弱车需卸载才能在deadline内完成
                                     # Impact: Heterogeneity lower bound, weak vehicles need offloading
 
-    MAX_VEHICLE_CPU_FREQ = 8.0e9    # 车辆最大CPU频率 (Hz) - Max vehicle CPU freq (8 GHz) [审计调优]
+    MAX_VEHICLE_CPU_FREQ = 2.0e9    # 车辆最大CPU频率 (Hz) - Max vehicle CPU freq (2 GHz)
                                     # 影响: 异构性上界，强车可作为V2V卸载目标
                                     # Impact: Heterogeneity upper bound, strong vehicles as V2V targets
 
-    F_RSU = 12.0e9          # RSU CPU频率 (Hz) - RSU CPU frequency (12 GHz) [审计调优]
-                            # 影响: RSU算力优势明显但不绝对，与强车形成竞争
+    F_RSU = 12.0e9          # RSU 单核 CPU 频率 (Hz) - RSU per-core CPU frequency (12 GHz)
+                            # 语义：多核时每核同频，单任务占一核，执行时间 = cycles/F_RSU
                             # Impact: RSU computing advantage significant but not absolute
     
     # [N=20对比建议] 适度收紧RSU并行度，避免Greedy在RSU侧形成绝对优势，
@@ -432,20 +432,20 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 4.2 任务负载参数 (Task Load Parameters)
     # -------------------------------------------------------------------------
-    MIN_COMP = 1.0e8        # 子任务最小计算量 (cycles) - Min subtask computation (100 Mcycles)
+    MIN_COMP = 8.0e7        # 子任务最小计算量 (cycles) - Min subtask computation (80 Mcycles)
                             # 口径参考: 常见VEC设定中100M cycles量级任务
                             # Reference: Typical VEC settings include ~100M-cycle task scale
 
-    MAX_COMP = 4.0e9        # 子任务最大计算量 (cycles)
+    MAX_COMP = 6.0e8        # 子任务最大计算量 (cycles) - Max subtask computation (600 Mcycles)
                             # 目标: 200-step窗口内保持“可行但不必胜”
                             # Target: Keep tasks feasible-but-nontrivial under 200-step horizon
 
     # IMPORTANT UNIT: BITS（不是 bytes）
-    MIN_DATA = 1.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.1 Mbit)
+    MIN_DATA = 8.0e5        # 子任务最小数据量 (bits) - Min subtask data (0.8 Mbit, 100 KB)
                             # 口径参考: VEC任务数据量常见 0.1~10 Mb 区间
                             # Reference: VEC workloads often use 0.1~10 Mb data scale
 
-    MAX_DATA = 1.0e7        # 子任务最大数据量 (bits) - Max subtask data (10.0 Mbit)
+    MAX_DATA = 6.0e6        # 子任务最大数据量 (bits) - Max subtask data (6.0 Mbit, 750 KB)
                             # 目标: 覆盖主任务并包含少量较重样本
                             # Target: Cover main workloads plus a modest heavy tail
 
@@ -503,8 +503,8 @@ class SystemConfig:
     # 可选模式：deadline = alpha * Tmin + slack
     # 其中 Tmin = CP_total / f_max（物理下界）
     # 在保持均值3.0不变的前提下收窄方差，降低episode间任务难度波动（场景更均衡）
-    DEADLINE_ALPHA_MIN = 2.2
-    DEADLINE_ALPHA_MAX = 3.8
+    DEADLINE_ALPHA_MIN = 6.0
+    DEADLINE_ALPHA_MAX = 9.0
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -671,6 +671,7 @@ class SystemConfig:
     SHAPE_CLIP = 10.0               # 潜势差分裁剪上界
     R_CLIP = 40.0                   # 总奖励裁剪上界（绝对值）
     EPS_RATE = 1e-9                 # 速率下界，防止除0
+    TX_TIMEOUT_SECONDS = 2.0        # 单次传输时间物理上限(s)；超过视为信道中断，用于截断 t_tx 防止数值爆炸（C-V2X 协议级合理上界）
     ILLEGAL_PENALTY = -2.0          # 非法动作额外惩罚
     PBRS_PHI_MODE = "STATE_ONLY"    # STATE_ONLY / LEGACY_ACTION_SNAPSHOT
     PBRS_PHI_POWER_DBM = TX_POWER_MAX_DBM  # state-only Phi固定功率

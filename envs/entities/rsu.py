@@ -35,8 +35,8 @@ class RSU:
         Args:
             rsu_id: RSU唯一ID
             position: RSU位置坐标 [x, y] (m)
-            cpu_freq: CPU频率 (Hz)，如果为None则使用配置值
-            num_processors: 处理器数量，如果为None则使用配置值
+            cpu_freq: 单核 CPU 频率 (Hz)，每核同频、单任务占一核；若为 None 则用配置 F_RSU
+            num_processors: 处理器核心数，若为 None 则用配置 RSU_NUM_PROCESSORS
             queue_limit: 队列上限，如果为None则使用配置值
             coverage_range: 覆盖半径 (m)，如果为None则使用配置值
         """

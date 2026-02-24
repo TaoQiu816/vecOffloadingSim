@@ -1594,12 +1594,8 @@ def main():
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    # 固定算法定义：PS-MAPPO-CTDE-Hybrid（论文版）
-    # 约束为严格CTDE（actor局部观测，critic读取集中摘要），不依赖可切换模式。
-    TC.USE_SIMPLIFIED_CRITIC = False
-    TC.COMMWAIT_DIRECT_TO_CRITIC = True
-    TC.USE_LOGIT_BIAS = True
-    TC.USE_FIXED_POWER = False
+    # 固定算法约束（论文版）：
+    # 仅校验必要前提，不再在此处强制覆写配置，避免覆盖 profile/CLI/env 的生效值。
     if bool(getattr(TC, "USE_SIMPLIFIED_CRITIC", False)):
         raise ValueError(
             "PS-MAPPO-CTDE-Hybrid requires USE_SIMPLIFIED_CRITIC=False (centralized critic)."
@@ -1612,6 +1608,15 @@ def main():
         raise ValueError(
             "PS-MAPPO-CTDE-Hybrid requires CTDE_GLOBAL_DIM > 0."
         )
+    print(
+        "[ConfigEffective] "
+        f"USE_SIMPLIFIED_CRITIC={bool(getattr(TC, 'USE_SIMPLIFIED_CRITIC', False))} "
+        f"COMMWAIT_DIRECT_TO_CRITIC={bool(getattr(TC, 'COMMWAIT_DIRECT_TO_CRITIC', False))} "
+        f"USE_LOGIT_BIAS={bool(getattr(TC, 'USE_LOGIT_BIAS', False))} "
+        f"USE_FIXED_POWER={bool(getattr(TC, 'USE_FIXED_POWER', False))} "
+        f"CTDE_GLOBAL_DIM={int(getattr(TC, 'CTDE_GLOBAL_DIM', 0))} "
+        "GLOBAL_STATE_SOURCE=train_ctde_override"
+    )
     _print_unified_reward_scale_check()
 
     # 初始化配置和日志记录器
@@ -2057,8 +2062,9 @@ def main():
         if TC.USE_LR_DECAY and episode > 0 and episode % TC.LR_DECAY_STEPS == 0:
             agent.decay_lr()
 
-        # 重置环境
-        obs_list, _ = env.reset()
+        # 重置环境（显式传入每episode seed，收紧复现边界）
+        episode_seed = int(getattr(Cfg, "SEED", 0)) + int(episode) - 1
+        obs_list, _ = env.reset(seed=episode_seed)
         last_step_info = {}
         _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
 
@@ -2617,7 +2623,7 @@ def main():
         else:
             _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
             last_value = agent.get_value(obs_list)
-            buffer.compute_returns_and_advantages(last_value)
+            buffer.compute_returns_and_advantages(last_value, last_obs_list=obs_list)
             update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
             buffer.clear()
             update_stats = getattr(agent, "last_update_stats", {}) or {}
@@ -2972,8 +2978,8 @@ def main():
             "episode_reward": ep_reward, # overfit测试别名（总奖励）
             "reward_p95": reward_p95,
             "reward_abs_mean": reward_abs_mean if reward_abs_mean is not None else 0.0,
-            # 成功率指标（0-1范围）
-            "vehicle_sr": veh_success_rate,  # V_SR
+            # 成功率指标（0-1范围，与 env 一致：task_respawn 下均用累计 T_SR）
+            "vehicle_sr": vehicle_sr,         # V_SR（与 task_sr 同源，避免快照/累计混用）
             "task_sr": task_success_rate,    # T_SR
             "subtask_sr": subtask_success,   # S_SR
             # 物理性能指标
@@ -3170,8 +3176,8 @@ def main():
             "total_reward": ep_reward,
             "avg_step_reward": avg_step_reward,
             "loss": update_loss,
-            "veh_success_rate": veh_success_rate,
-            "vehicle_success_rate": veh_success_rate,
+            "veh_success_rate": vehicle_sr,
+            "vehicle_success_rate": vehicle_sr,
             "task_success_rate": task_success_rate,
             "subtask_success_rate": subtask_success_rate,
             "v2v_subtask_success_rate": v2v_subtask_success_rate,
