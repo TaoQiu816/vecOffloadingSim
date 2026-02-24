@@ -75,6 +75,7 @@ BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "Oracle-Min", "EFT", "CP-
 
 TRAINING_STATS_FIELDS = [
     "episode", "steps", "wall_time", "sim_time",
+    "termination_reason_raw", "termination_reason_bucket",
     "reward_mean", "reward_total", "episode_reward", "reward_p95", "reward_abs_mean",
     "vehicle_sr", "task_sr", "subtask_sr",
     "task_duration_mean", "task_duration_p95", "completed_tasks",
@@ -1832,6 +1833,8 @@ def main():
         "terminated",
         "truncated",
         "termination_reason",
+        "termination_reason_raw",
+        "termination_reason_bucket",
         "time_limit_rate",
         "episode_time_seconds",
         "mean_cft_est",
@@ -2024,6 +2027,21 @@ def main():
         "run_dir": run_dir,
         "completed": False,
     }
+    error_log_path = os.path.join(run_dir, "train_error.log")
+    if os.path.exists(error_log_path) and os.path.getsize(error_log_path) > 0:
+        rotate_ts = time.strftime("%Y%m%d_%H%M%S")
+        rotated_error_log = os.path.join(run_dir, f"train_error.log.prev_{rotate_ts}")
+        try:
+            os.replace(error_log_path, rotated_error_log)
+            print(f"[TrainErrorLog] rotated previous log -> {rotated_error_log}", flush=True)
+        except Exception as e:
+            print(f"[TrainErrorLog] rotate failed, truncating in-place: {e}", flush=True)
+            try:
+                with open(error_log_path, "w", encoding="utf-8"):
+                    pass
+            except Exception:
+                pass
+
     prev_excepthook = sys.excepthook
 
     def _train_excepthook(exc_type, exc, tb):
@@ -2032,7 +2050,6 @@ def main():
             and training_state["current_episode"] < training_state["max_episodes"]
         )
         if should_log:
-            error_log_path = os.path.join(run_dir, "train_error.log")
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             try:
                 with open(error_log_path, "a", encoding="utf-8") as f:
@@ -2345,12 +2362,29 @@ def main():
             reward_abs_mean = float(np.mean(np.abs(step_rewards)))
         terminated_flag = bool(env_stats.get("terminated")) if env_stats else bool(terminated)
         truncated_flag = bool(env_stats.get("truncated")) if env_stats else bool(truncated)
-        if terminated_flag:
-            termination_reason = "all_finished"
-        elif truncated_flag:
-            termination_reason = "time_limit"
+        termination_reason_raw = None
+        if env_stats:
+            termination_reason_raw = env_stats.get("terminated_reason") or env_stats.get("terminated_trigger")
+        if isinstance(termination_reason_raw, str) and termination_reason_raw.strip().lower() in ("", "none", "null", "nan"):
+            termination_reason_raw = None
+        if not termination_reason_raw and isinstance(info, dict):
+            termination_reason_raw = info.get("terminated_reason") or info.get("terminated_trigger")
+        if isinstance(termination_reason_raw, str) and termination_reason_raw.strip().lower() in ("", "none", "null", "nan"):
+            termination_reason_raw = None
+        if not termination_reason_raw:
+            if terminated_flag:
+                termination_reason_raw = "terminated_unknown"
+            elif truncated_flag:
+                termination_reason_raw = "time_limit"
+            else:
+                termination_reason_raw = "other"
+        termination_reason = str(termination_reason_raw)
+        if termination_reason == "time_limit":
+            termination_reason_bucket = "time_limit"
+        elif terminated_flag:
+            termination_reason_bucket = "terminated"
         else:
-            termination_reason = "other"
+            termination_reason_bucket = "other"
         success_rate_end = env_stats.get("success_rate_end") if env_stats else veh_success_rate
         task_success_rate = env_stats.get("task_success_rate", task_success_rate) if env_stats else task_success_rate
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
@@ -2749,6 +2783,8 @@ def main():
             "terminated": terminated_flag,
             "truncated": truncated_flag,
             "termination_reason": termination_reason,
+            "termination_reason_raw": termination_reason,
+            "termination_reason_bucket": termination_reason_bucket,
             "time_limit_rate": time_limit_rate,
             "episode_time_seconds": episode_time_seconds,
             "mean_cft_est": mean_cft_est,
@@ -2972,6 +3008,8 @@ def main():
             "steps": total_steps,
             "wall_time": duration,
             "sim_time": total_steps * Cfg.DT,
+            "termination_reason_raw": termination_reason,
+            "termination_reason_bucket": termination_reason_bucket,
             # 奖励指标（与控制台打印一致）
             "reward_mean": reward_mean,  # 每步平均奖励（控制台显示的Reward）
             "reward_total": ep_reward,   # episode总奖励

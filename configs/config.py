@@ -516,7 +516,7 @@ class SystemConfig:
     DEADLINE_FIXED_MIN = 2.0            # 最小deadline (秒)
     DEADLINE_FIXED_MAX = 5.0            # 最大deadline (秒)
     
-    DEADLINE_SLACK_SECONDS = 0.2        # 额外松弛时间 (s) - Additional slack time
+    DEADLINE_SLACK_SECONDS = 1.0        # 额外松弛时间 (s) - Additional slack time (RC1 calibrated by baseline feasibility)
                                         # 影响: 在关键路径基础上附加
                                         # Impact: Added on top of critical path
     
