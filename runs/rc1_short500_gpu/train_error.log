@@ -1,0 +1,22 @@
+[2026-02-24 22:22:12] Abnormal termination
+run_id=rc1_short500_gpu
+run_dir=/root/vecOffloadingSim/runs/rc1_short500_gpu
+episode=1
+step=27
+exception=KeyboardInterrupt: 
+traceback:
+Traceback (most recent call last):
+  File "/root/vecOffloadingSim/train.py", line 3500, in <module>
+    main()
+  File "/root/vecOffloadingSim/train.py", line 2107, in main
+    next_obs_list, rewards, terminated, truncated, info = env.step(actions)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 4314, in step
+    return self._get_obs(), rewards, terminated, truncated, info
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 4768, in _get_obs
+    comm_wait_for_mask = self._compute_comm_wait(v.id)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 1771, in _compute_comm_wait
+    v2i_user_count = self._estimate_v2i_users()
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 5293, in _estimate_v2i_users
+    tgt = getattr(veh, 'curr_target', None)
+KeyboardInterrupt
+

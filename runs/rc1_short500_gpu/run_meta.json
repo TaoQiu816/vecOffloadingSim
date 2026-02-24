@@ -1,0 +1,7 @@
+{
+  "run_id": "rc1_short500_gpu",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_short500_gpu",
+  "created_at": "2026-02-24 22:23:39",
+  "git_commit": "7f82d66c981dde4e9dc213375801a65cf48ba375",
+  "config_hash": "84443db6dbb71a2330767ca5a1c04c5c3e82f973ed139fdc415af404523606a4"
+}
