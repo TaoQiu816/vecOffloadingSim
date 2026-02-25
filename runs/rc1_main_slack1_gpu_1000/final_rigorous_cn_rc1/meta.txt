@@ -1,0 +1,6 @@
+rl_metrics_path=/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/rc1_main_slack1_gpu_1000/metrics/train_metrics.csv
+episodes=1000
+baseline_rows=80
+baseline_statistics_basis=raw_matched_tail
+window=50
+report=/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/rc1_main_slack1_gpu_1000/final_rigorous_cn_rc1/rigorous_report_cn.md

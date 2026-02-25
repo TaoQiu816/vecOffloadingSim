@@ -3317,6 +3317,14 @@ class VecOffloadingEnv(gym.Env):
             progress_mode = str(getattr(self.config, "PROGRESS_REWARD_MODE", "DELTA_CFT_ABS")).upper()
             progress_ref = float(max(getattr(self.config, "PROGRESS_REF_SECONDS", max(dt_total, 1e-3)), 1e-6))
             w_progress = float(getattr(self.config, "W_PROGRESS", 0.0))
+            w_margin = float(getattr(self.config, "W_MARGIN_SHAPING", 0.0))
+            margin_clip_c = float(getattr(self.config, "MARGIN_CLIP_C", 0.0))
+            EPS_MARGIN = 1e-6
+            if abs(w_margin) > 0.0:
+                if (not np.isfinite(margin_clip_c)) or margin_clip_c <= 0.0:
+                    raise ValueError(
+                        f"MARGIN_CLIP_C must be > 0 when W_MARGIN_SHAPING != 0, got {margin_clip_c!r}"
+                    )
             for i, v in enumerate(self.vehicles):
                 dag = v.task_dag
                 ctx = reward_cache.get(v.id, {})
@@ -3362,6 +3370,12 @@ class VecOffloadingEnv(gym.Env):
                 delta_cft_rem_v = 0.0
                 delta_cft_abs_true = 0.0  # 真实绝对CFT差（恒等于cft_prev-cft_curr，与mode无关）
                 delta_prog = 0.0
+                r_margin_raw = 0.0
+                r_margin_norm = 0.0
+                r_margin = 0.0
+                margin_pre = 0.0
+                margin_post = 0.0
+                margin_valid = False
                 if np.isfinite(cft_prev_v) and np.isfinite(cft_curr_v):
                     prev_rem_v = max(float(cft_prev_v) - t_prev, 0.0)
                     curr_rem_v = max(float(cft_curr_v) - t_curr, 0.0)
@@ -3373,6 +3387,30 @@ class VecOffloadingEnv(gym.Env):
                         delta_prog = slack_curr - slack_prev
                     else:
                         delta_prog = delta_cft_abs_true
+                # Deadline-margin shaping: dimensionless delta_m normalized to [-1, 1].
+                # Only uses same-step pre/post CFT estimates (no future info).
+                if bool(ctx.get("no_task_available", False)):
+                    if hasattr(self, "_reward_stats"):
+                        self._reward_stats.add_counter("margin_skip_no_task", 1)
+                elif (not np.isfinite(Td)) or float(Td) <= 0.0:
+                    if hasattr(self, "_reward_stats"):
+                        self._reward_stats.add_counter("margin_skip_invalid_deadline", 1)
+                elif not (np.isfinite(cft_prev_v) and np.isfinite(cft_curr_v)):
+                    if hasattr(self, "_reward_stats"):
+                        self._reward_stats.add_counter("margin_skip_invalid_cft", 1)
+                else:
+                    denom = max(float(Td) + EPS_MARGIN, EPS_MARGIN)
+                    margin_pre = (float(Td) - prev_rem_v) / denom
+                    margin_post = (float(Td) - curr_rem_v) / denom
+                    if np.isfinite(margin_pre) and np.isfinite(margin_post):
+                        margin_valid = True
+                        if hasattr(self, "_reward_stats"):
+                            self._reward_stats.add_counter("margin_valid", 1)
+                        r_margin_raw = float(margin_post - margin_pre)  # delta_m (dimensionless)
+                        r_margin_norm = float(np.clip(r_margin_raw / margin_clip_c, -1.0, 1.0))
+                        r_margin = float(w_margin * r_margin_norm)
+                    elif hasattr(self, "_reward_stats"):
+                        self._reward_stats.add_counter("margin_skip_invalid_margin", 1)
                 r_prog = w_progress * float(np.clip(delta_prog / progress_ref, -1.0, 1.0))
                 if not np.isfinite(r_prog):
                     r_prog = 0.0
@@ -3409,13 +3447,18 @@ class VecOffloadingEnv(gym.Env):
                     terminated = dag.is_finished or dag.is_failed
                     r_pbrs = compute_unified_pbrs(phi_prev, phi_next, terminated=terminated)
 
-                r_total_raw = float(r_step + r_term + r_pbrs)
-                if use_pbrs_u:
-                    recomposed = float(r_step) + float(r_term) + float(r_pbrs)
+                r_energy_step = float(step_info.get("r_energy", 0.0))
+                r_interf_step = float(step_info.get("r_interf", 0.0))
+                # Latency-centric base reward for current stage: keep terminal + illegal/risk/time/progress/PBRS,
+                # but exclude explicit energy/interference terms from the optimization target (still logged).
+                r_base = float((r_step - r_energy_step - r_interf_step) + r_term + r_pbrs)
+                r_total_raw = float(r_base + r_margin)
+                if use_pbrs_u or abs(w_margin) > 0.0:
+                    recomposed = float((r_step - r_energy_step - r_interf_step) + r_term + r_pbrs + r_margin)
                     if (not np.isfinite(recomposed)) or (not np.isfinite(r_total_raw)) or (abs(recomposed - r_total_raw) > 1e-6):
                         step_unified_consistency_mismatch_count += 1
                 r_total = self._clip_reward(r_total_raw)
-                for rv in (r_step, r_term, r_pbrs, r_total):
+                for rv in (r_step, r_term, r_pbrs, r_margin, r_base, r_total):
                     if not np.isfinite(rv):
                         step_unified_nonfinite_count += 1
                 rewards.append(r_total)
@@ -3426,6 +3469,13 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("r_step", r_step)
                     self._reward_stats.add_metric("r_term", r_term)
                     self._reward_stats.add_metric("r_pbrs", r_pbrs)
+                    self._reward_stats.add_metric("r_base", r_base)
+                    self._reward_stats.add_metric("r_margin", r_margin)
+                    self._reward_stats.add_metric("r_margin_raw", r_margin_raw)
+                    self._reward_stats.add_metric("r_margin_norm", r_margin_norm)
+                    if margin_valid:
+                        self._reward_stats.add_metric("margin_pre", margin_pre)
+                        self._reward_stats.add_metric("margin_post", margin_post)
                     # UNIFIED step components (mean + abs for dominance checks)
                     for k in ("r_time", "r_prog", "r_energy", "r_interf", "r_risk", "r_illegal"):
                         val = float(step_info.get(k, 0.0))
@@ -7457,6 +7507,8 @@ class VecOffloadingEnv(gym.Env):
         else:
             episode_metrics['shape_clip_hit_rate'] = 0.0
             episode_metrics['r_total_clip_hit_rate'] = 0.0
+        episode_metrics['reward_clip_hit_count'] = int(getattr(self, '_episode_r_total_clip_count', 0))
+        episode_metrics['reward_clip_hit_rate'] = float(episode_metrics.get('r_total_clip_hit_rate', 0.0) or 0.0)
 
         # 非法/无任务统计
         episode_metrics['illegal_count'] = int(getattr(self, "_episode_illegal_count", 0))
@@ -7491,7 +7543,8 @@ class VecOffloadingEnv(gym.Env):
             ]
         elif scheme == "UNIFIED":
             required_metrics = [
-                "reward", "r_step", "r_term", "r_pbrs",
+                "reward", "r_step", "r_term", "r_pbrs", "r_base",
+                "r_margin", "r_margin_raw", "r_margin_norm", "margin_pre", "margin_post",
             ]
         else:
             required_metrics = [
@@ -7537,6 +7590,32 @@ class VecOffloadingEnv(gym.Env):
         episode_metrics["dCFT_prog_p95"] = _metric_p95("delta_cft_prog", 0.0)
         episode_metrics["r_prog_mean"] = _metric_mean("r_prog", 0.0)
         episode_metrics["reward_step_p95"] = _metric_p95("r_step", _metric_p95("reward_step", 0.0))
+        episode_metrics["r_margin_mean"] = _metric_mean("r_margin", 0.0)
+        episode_metrics["r_margin_raw_mean"] = _metric_mean("r_margin_raw", 0.0)
+        episode_metrics["r_margin_norm_mean"] = _metric_mean("r_margin_norm", 0.0)
+        episode_metrics["margin_pre_mean"] = _metric_mean("margin_pre", 0.0)
+        episode_metrics["margin_post_mean"] = _metric_mean("margin_post", 0.0)
+        r_margin_stat = metrics_dict.get("r_margin", {}) if isinstance(metrics_dict, dict) else {}
+        r_margin_count = int(r_margin_stat.get("count", 0) or 0) if isinstance(r_margin_stat, dict) else 0
+        r_margin_nonzero = int(r_margin_stat.get("nonzero_count", 0) or 0) if isinstance(r_margin_stat, dict) else 0
+        episode_metrics["r_margin_abs_mean"] = float(r_margin_stat.get("abs_mean", 0.0) or 0.0) if isinstance(r_margin_stat, dict) else 0.0
+        episode_metrics["r_margin_nonzero_rate"] = (float(r_margin_nonzero) / float(r_margin_count)) if r_margin_count > 0 else 0.0
+        counters_dict = getattr(self._reward_stats, "counters", {}) if hasattr(self, "_reward_stats") else {}
+        episode_metrics["margin_valid_count"] = int(counters_dict.get("margin_valid", 0))
+        episode_metrics["margin_skip_no_task_count"] = int(counters_dict.get("margin_skip_no_task", 0))
+        episode_metrics["margin_skip_invalid_deadline_count"] = int(counters_dict.get("margin_skip_invalid_deadline", 0))
+        episode_metrics["margin_skip_invalid_cft_count"] = int(counters_dict.get("margin_skip_invalid_cft", 0))
+        episode_metrics["margin_skip_invalid_margin_count"] = int(counters_dict.get("margin_skip_invalid_margin", 0))
+        episode_metrics["margin_skip_count"] = (
+            episode_metrics["margin_skip_no_task_count"]
+            + episode_metrics["margin_skip_invalid_deadline_count"]
+            + episode_metrics["margin_skip_invalid_cft_count"]
+            + episode_metrics["margin_skip_invalid_margin_count"]
+        )
+        if str(getattr(self.config, "REWARD_SCHEME", "")).upper() == "UNIFIED":
+            episode_metrics["abs_ratio_basis"] = "unified_latency_centric_excl_energy_interf"
+        else:
+            episode_metrics["abs_ratio_basis"] = "default_abs_parts"
         # dT_eff 优先沿用episode聚合，缺失时回退到reward_stats
         if (not np.isfinite(episode_metrics.get("dT_eff_mean", np.nan))) or (
             abs(float(episode_metrics.get("dT_eff_mean", 0.0))) < 1e-12

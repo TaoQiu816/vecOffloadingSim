@@ -717,6 +717,17 @@ class SystemConfig:
     W_PROGRESS = 0.10               # 事后进度差分奖励权重（低幅度，避免单路径快速塌缩）
     PROGRESS_REWARD_MODE = "DELTA_SLACK"  # DELTA_CFT_ABS(长期为负,口径错误) / DELTA_SLACK(=dCFT_rem,正值正确)
     PROGRESS_REF_SECONDS = 0.20     # 进度差分归一化尺度（秒）; 0.30→0.20: discrimination 1.5x↑, r_prog/ep≈4.2<r_term=4.55
+    # Deadline margin shaping（latency-centric阶段主稠密项）
+    # 不要求权重和=1；按训练日志中的实际绝对贡献占比(abs_ratio_*)调参。
+    # 本阶段只优先调这两个旋钮：W_MARGIN_SHAPING 与 MARGIN_CLIP_C。
+    # 当前短程验证后建议：先将默认值设为折中方案 W_MARGIN_SHAPING=0.30（MARGIN_CLIP_C=0.20）。
+    # 调参门控（中后期参考，不是硬约束）：
+    # - abs_ratio_r_margin过低：增大W_MARGIN_SHAPING，或减小MARGIN_CLIP_C（先小步调W）
+    # - r_margin_norm大量饱和到±1：增大MARGIN_CLIP_C
+    # - r_margin_norm长期接近0：减小MARGIN_CLIP_C（必要时再增大W）
+    # 兼容旧实验：将 W_MARGIN_SHAPING 设为 0.0 时，行为退化回旧版（仅新增日志字段）。
+    W_MARGIN_SHAPING = 0.30         # 裕量差分稠密奖励权重；设为0可关闭
+    MARGIN_CLIP_C = 0.20            # 裕量差分归一化尺度 c（r_margin_norm=clip(delta_m/c,-1,1)）
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I

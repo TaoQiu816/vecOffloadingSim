@@ -1,0 +1,90 @@
+[
+  {
+    "policy": "Random",
+    "episodes": 10,
+    "act_mean": 0.4500000000000002,
+    "act_std": 0.9024965373894797,
+    "makespan_mean": 18.290000000000003,
+    "energy_mean": 0.005358104485222516,
+    "energy_std": 0.004033360445918951,
+    "task_success_rate_mean": 0.005,
+    "deadline_meet_ratio_mean": 0.010000000000000009
+  },
+  {
+    "policy": "Local-Only",
+    "episodes": 10,
+    "act_mean": 2.0769047619047623,
+    "act_std": 0.23396503411452033,
+    "makespan_mean": 4.7,
+    "energy_mean": 0.0,
+    "energy_std": 0.0,
+    "task_success_rate_mean": 0.205,
+    "deadline_meet_ratio_mean": 0.205
+  },
+  {
+    "policy": "Greedy",
+    "episodes": 10,
+    "act_mean": 1.6480627794977643,
+    "act_std": 0.07562083880981944,
+    "makespan_mean": 2.580000000000001,
+    "energy_mean": 0.19344403606919328,
+    "energy_std": 0.03212879446752589,
+    "task_success_rate_mean": 0.85,
+    "deadline_meet_ratio_mean": 0.85
+  },
+  {
+    "policy": "Oracle-Min",
+    "episodes": 10,
+    "act_mean": 1.7059229641617417,
+    "act_std": 0.16044569281154927,
+    "makespan_mean": 2.790000000000001,
+    "energy_mean": 0.20847484156879775,
+    "energy_std": 0.035730417515496354,
+    "task_success_rate_mean": 0.655,
+    "deadline_meet_ratio_mean": 0.655
+  },
+  {
+    "policy": "EFT",
+    "episodes": 10,
+    "act_mean": 1.7113271849409624,
+    "act_std": 0.15697810356549588,
+    "makespan_mean": 2.750000000000001,
+    "energy_mean": 0.021933212590734615,
+    "energy_std": 0.003926834302606781,
+    "task_success_rate_mean": 0.655,
+    "deadline_meet_ratio_mean": 0.655
+  },
+  {
+    "policy": "CP-EFT",
+    "episodes": 10,
+    "act_mean": 1.7440789105115737,
+    "act_std": 0.10523408684470575,
+    "makespan_mean": 2.870000000000001,
+    "energy_mean": 0.005349340747025031,
+    "energy_std": 0.003519533020244677,
+    "task_success_rate_mean": 0.8,
+    "deadline_meet_ratio_mean": 0.8
+  },
+  {
+    "policy": "LB-Greedy",
+    "episodes": 10,
+    "act_mean": 1.7174240617483654,
+    "act_std": 0.1477034036743169,
+    "makespan_mean": 2.770000000000001,
+    "energy_mean": 0.02181255838754894,
+    "energy_std": 0.003968005464060863,
+    "task_success_rate_mean": 0.655,
+    "deadline_meet_ratio_mean": 0.655
+  },
+  {
+    "policy": "Static",
+    "episodes": 10,
+    "act_mean": 1.6784260935143291,
+    "act_std": 0.07594561047562165,
+    "makespan_mean": 2.9000000000000012,
+    "energy_mean": 0.22296291552430753,
+    "energy_std": 0.05391032655099481,
+    "task_success_rate_mean": 0.7849999999999999,
+    "deadline_meet_ratio_mean": 0.7849999999999999
+  }
+]

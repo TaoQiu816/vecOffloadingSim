@@ -90,6 +90,12 @@ TRAINING_STATS_FIELDS = [
     "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
     "time_limit_rate", "illegal_action_rate", "illegal_action_ratio", "no_task_rate", "on_task_rate", "has_task_available_rate",
     "unified_illegal_trigger_rate", "hard_trigger_rate",
+    # UNIFIED latency-centric reward audit (keep training_stats.csv aligned with metrics.csv)
+    "r_margin", "r_margin_raw", "r_margin_norm",
+    "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term", "abs_ratio_r_margin",
+    "margin_valid_count", "margin_skip_count",
+    "reward_clip_hit_count", "reward_clip_hit_rate",
+    "abs_ratio_basis",
     "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
     "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
     "critic_loss_active", "critic_loss_inactive",
@@ -549,6 +555,9 @@ def apply_env_overrides():
         "RSU_QUEUE_CYCLES_LIMIT": "RSU_QUEUE_CYCLES_LIMIT",
         "VEHICLE_QUEUE_CYCLES_LIMIT": "VEHICLE_QUEUE_CYCLES_LIMIT",
         "VEHICLE_SPAWN_X_MAX": "VEHICLE_SPAWN_X_MAX",
+        # Reward shaping (latency-centric UNIFIED)
+        "W_MARGIN_SHAPING": "W_MARGIN_SHAPING",
+        "MARGIN_CLIP_C": "MARGIN_CLIP_C",
         # Chain proxy parameters
         "CHAIN_RISK_WEIGHT_DEPOSIT": "CHAIN_RISK_WEIGHT_DEPOSIT",
         "CHAIN_RISK_WEIGHT_FAIL": "CHAIN_RISK_WEIGHT_FAIL",
@@ -1852,6 +1861,9 @@ def main():
         "r_pbrs",
         "r_term",
         "r_step",
+        "r_margin",
+        "r_margin_raw",
+        "r_margin_norm",
         "r_total",
         "abs_ratio_r_time",
         "abs_ratio_r_energy",
@@ -1860,6 +1872,7 @@ def main():
         "abs_ratio_r_illegal",
         "abs_ratio_r_pbrs",
         "abs_ratio_r_term",
+        "abs_ratio_r_margin",
         # Interference / trust oracle
         "I_total_mean",
         "I_total_p50",
@@ -1901,6 +1914,15 @@ def main():
         "dCFT_abs_p95",
         "dCFT_rem_mean",
         "dCFT_rem_p95",
+        "margin_pre_mean",
+        "margin_post_mean",
+        "r_margin_abs_mean",
+        "r_margin_nonzero_rate",
+        "margin_valid_count",
+        "margin_skip_count",
+        "reward_clip_hit_count",
+        "reward_clip_hit_rate",
+        "abs_ratio_basis",
         "dt_used_mean",
         "implied_dt_mean",
         "dT_eff_mean",
@@ -2478,6 +2500,9 @@ def main():
         r_pbrs_mean = env_metrics.get("r_pbrs.mean")
         r_term_mean = env_metrics.get("r_term.mean")
         r_step_mean = env_metrics.get("r_step.mean")
+        r_margin_mean = env_metrics.get("r_margin.mean")
+        r_margin_raw_mean = env_metrics.get("r_margin_raw.mean")
+        r_margin_norm_mean = env_metrics.get("r_margin_norm.mean")
         r_total_mean = env_metrics.get("reward.mean")
         # Abs means for dominance ratios
         r_time_abs_mean = env_metrics.get("r_time_abs.mean")
@@ -2487,6 +2512,28 @@ def main():
         r_illegal_abs_mean = env_metrics.get("r_illegal_abs.mean")
         r_pbrs_abs_mean = env_metrics.get("r_pbrs_abs.mean")
         r_term_abs_mean = env_metrics.get("r_term_abs.mean")
+        margin_pre_mean = env_metrics.get("margin_pre.mean")
+        margin_post_mean = env_metrics.get("margin_post.mean")
+        r_margin_abs_mean = None
+        r_margin_nonzero_rate = None
+        if env_stats and isinstance(env_stats.get("metrics"), dict):
+            r_margin_stat = env_stats["metrics"].get("r_margin")
+            if isinstance(r_margin_stat, dict):
+                if r_margin_mean is None:
+                    r_margin_mean = r_margin_stat.get("mean")
+                if r_margin_abs_mean is None:
+                    r_margin_abs_mean = r_margin_stat.get("abs_mean")
+                try:
+                    _rm_count = int(r_margin_stat.get("count", 0) or 0)
+                    _rm_nonzero = int(r_margin_stat.get("nonzero_count", 0) or 0)
+                    r_margin_nonzero_rate = (float(_rm_nonzero) / float(_rm_count)) if _rm_count > 0 else 0.0
+                except Exception:
+                    r_margin_nonzero_rate = 0.0
+        margin_valid_count = env_stats.get("margin_valid_count") if env_stats else None
+        margin_skip_count = env_stats.get("margin_skip_count") if env_stats else None
+        reward_clip_hit_count = env_stats.get("reward_clip_hit_count") if env_stats else None
+        reward_clip_hit_rate = env_stats.get("reward_clip_hit_rate") if env_stats else None
+        abs_ratio_basis = env_stats.get("abs_ratio_basis") if env_stats else None
 
         # Interference / trust oracle (episode aggregates)
         I_total_mean = env_stats.get("I_total_mean") if env_stats else None
@@ -2522,14 +2569,17 @@ def main():
             mean_cft = mean_cft_rem + episode_time_seconds
 
         # Component dominance ratios (abs contribution shares)
+        _is_unified = str(getattr(Cfg, "REWARD_SCHEME", "")).upper() == "UNIFIED"
         abs_parts = {
             "r_time": r_time_abs_mean,
-            "r_energy": r_energy_abs_mean,
-            "r_interf": r_interf_abs_mean,
+            # 当前阶段 latency-centric：UNIFIED贡献占比计算中不将显式能耗/干扰计入分母
+            "r_energy": 0.0 if _is_unified else r_energy_abs_mean,
+            "r_interf": 0.0 if _is_unified else r_interf_abs_mean,
             "r_risk": r_risk_abs_mean,
             "r_illegal": r_illegal_abs_mean,
             "r_pbrs": r_pbrs_abs_mean,
             "r_term": r_term_abs_mean,
+            "r_margin": r_margin_abs_mean,
         }
         abs_sum = 0.0
         for v in abs_parts.values():
@@ -2806,6 +2856,9 @@ def main():
             "r_pbrs": float(r_pbrs_mean) if r_pbrs_mean is not None and np.isfinite(r_pbrs_mean) else 0.0,
             "r_term": float(r_term_mean) if r_term_mean is not None and np.isfinite(r_term_mean) else 0.0,
             "r_step": float(r_step_mean) if r_step_mean is not None and np.isfinite(r_step_mean) else 0.0,
+            "r_margin": float(r_margin_mean) if r_margin_mean is not None and np.isfinite(r_margin_mean) else 0.0,
+            "r_margin_raw": float(r_margin_raw_mean) if r_margin_raw_mean is not None and np.isfinite(r_margin_raw_mean) else 0.0,
+            "r_margin_norm": float(r_margin_norm_mean) if r_margin_norm_mean is not None and np.isfinite(r_margin_norm_mean) else 0.0,
             "r_total": float(r_total_mean) if r_total_mean is not None and np.isfinite(r_total_mean) else reward_mean,
             "abs_ratio_r_time": _abs_ratio("r_time"),
             "abs_ratio_r_energy": _abs_ratio("r_energy"),
@@ -2814,6 +2867,7 @@ def main():
             "abs_ratio_r_illegal": _abs_ratio("r_illegal"),
             "abs_ratio_r_pbrs": _abs_ratio("r_pbrs"),
             "abs_ratio_r_term": _abs_ratio("r_term"),
+            "abs_ratio_r_margin": _abs_ratio("r_margin"),
             # Interference / trust oracle (episode aggregates)
             "I_total_mean": float(I_total_mean) if I_total_mean is not None and np.isfinite(I_total_mean) else 0.0,
             "I_total_p50": float(I_total_p50) if I_total_p50 is not None and np.isfinite(I_total_p50) else 0.0,
@@ -2855,6 +2909,15 @@ def main():
             "dCFT_abs_p95": dCFT_abs_p95 if dCFT_abs_p95 is not None else 0.0,
             "dCFT_rem_mean": dCFT_rem_mean if dCFT_rem_mean is not None else 0.0,
             "dCFT_rem_p95": dCFT_rem_p95 if dCFT_rem_p95 is not None else 0.0,
+            "margin_pre_mean": float(margin_pre_mean) if margin_pre_mean is not None and np.isfinite(margin_pre_mean) else 0.0,
+            "margin_post_mean": float(margin_post_mean) if margin_post_mean is not None and np.isfinite(margin_post_mean) else 0.0,
+            "r_margin_abs_mean": float(r_margin_abs_mean) if r_margin_abs_mean is not None and np.isfinite(r_margin_abs_mean) else 0.0,
+            "r_margin_nonzero_rate": float(r_margin_nonzero_rate) if r_margin_nonzero_rate is not None and np.isfinite(r_margin_nonzero_rate) else 0.0,
+            "margin_valid_count": int(margin_valid_count) if margin_valid_count is not None else 0,
+            "margin_skip_count": int(margin_skip_count) if margin_skip_count is not None else 0,
+            "reward_clip_hit_count": int(reward_clip_hit_count) if reward_clip_hit_count is not None else 0,
+            "reward_clip_hit_rate": float(reward_clip_hit_rate) if reward_clip_hit_rate is not None and np.isfinite(reward_clip_hit_rate) else 0.0,
+            "abs_ratio_basis": str(abs_ratio_basis or ("unified_latency_centric_excl_energy_interf" if _is_unified else "default_abs_parts")),
             "dt_used_mean": dt_used_mean if dt_used_mean is not None else 0.0,
             "implied_dt_mean": implied_dt_mean if implied_dt_mean is not None else ( (dT_mean if dT_mean is not None else 0.0) - (dT_eff_mean if dT_eff_mean is not None else 0.0)),
             "dT_eff_mean": dT_eff_mean if dT_eff_mean is not None else 0.0,
@@ -3093,6 +3156,16 @@ def main():
             "bias_rsu": TC.LOGIT_BIAS_RSU,
             "bias_local": TC.LOGIT_BIAS_LOCAL,
         }
+        # Keep plot-oriented training_stats.csv aligned with metrics.csv for UNIFIED reward audits.
+        for _k in (
+            "r_margin", "r_margin_raw", "r_margin_norm",
+            "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term", "abs_ratio_r_margin",
+            "margin_valid_count", "margin_skip_count",
+            "reward_clip_hit_count", "reward_clip_hit_rate",
+            "abs_ratio_basis",
+        ):
+            if _k in metrics_row:
+                training_stats_row[_k] = metrics_row[_k]
         with open(training_stats_csv, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=training_stats_fields, extrasaction="ignore")
             if not training_stats_header_written:
