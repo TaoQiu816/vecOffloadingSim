@@ -96,6 +96,9 @@ TRAINING_STATS_FIELDS = [
     "margin_valid_count", "margin_skip_count",
     "reward_clip_hit_count", "reward_clip_hit_rate",
     "abs_ratio_basis",
+    "r_prog_on_task_mean", "r_margin_on_task_mean", "r_time_on_task_mean",
+    "r_prog_on_task_abs_mean", "r_margin_on_task_abs_mean", "r_time_on_task_abs_mean",
+    "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_margin", "abs_ratio_on_task_r_time", "abs_ratio_on_task_r_term",
     "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
     "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
     "critic_loss_active", "critic_loss_inactive",
@@ -558,6 +561,10 @@ def apply_env_overrides():
         # Reward shaping (latency-centric UNIFIED)
         "W_MARGIN_SHAPING": "W_MARGIN_SHAPING",
         "MARGIN_CLIP_C": "MARGIN_CLIP_C",
+        "W_PROGRESS": "W_PROGRESS",
+        "PROGRESS_REF_SECONDS": "PROGRESS_REF_SECONDS",
+        "TERMINAL_BONUS_SUCC": "TERMINAL_BONUS_SUCC",
+        "TERMINAL_PENALTY_FAIL": "TERMINAL_PENALTY_FAIL",
         # Chain proxy parameters
         "CHAIN_RISK_WEIGHT_DEPOSIT": "CHAIN_RISK_WEIGHT_DEPOSIT",
         "CHAIN_RISK_WEIGHT_FAIL": "CHAIN_RISK_WEIGHT_FAIL",
@@ -1855,6 +1862,7 @@ def main():
         "critical_path_cycles",
         # UNIFIED component/audit (dominance check)
         "r_time",
+        "r_prog",
         "r_interf",
         "r_risk",
         "r_illegal",
@@ -1917,12 +1925,23 @@ def main():
         "margin_pre_mean",
         "margin_post_mean",
         "r_margin_abs_mean",
+        "r_prog_abs_mean",
         "r_margin_nonzero_rate",
         "margin_valid_count",
         "margin_skip_count",
         "reward_clip_hit_count",
         "reward_clip_hit_rate",
         "abs_ratio_basis",
+        "r_prog_on_task_mean",
+        "r_margin_on_task_mean",
+        "r_time_on_task_mean",
+        "r_prog_on_task_abs_mean",
+        "r_margin_on_task_abs_mean",
+        "r_time_on_task_abs_mean",
+        "abs_ratio_on_task_r_prog",
+        "abs_ratio_on_task_r_margin",
+        "abs_ratio_on_task_r_time",
+        "abs_ratio_on_task_r_term",
         "dt_used_mean",
         "implied_dt_mean",
         "dT_eff_mean",
@@ -2494,6 +2513,7 @@ def main():
         r_power_mean = env_metrics.get("r_power.mean")
         # UNIFIED component logging (means from env reward_stats)
         r_time_mean = env_metrics.get("r_time.mean")
+        r_prog_mean = env_metrics.get("r_prog.mean")
         r_interf_mean = env_metrics.get("r_interf.mean")
         r_risk_mean = env_metrics.get("r_risk.mean")
         r_illegal_mean = env_metrics.get("r_illegal.mean")
@@ -2503,9 +2523,13 @@ def main():
         r_margin_mean = env_metrics.get("r_margin.mean")
         r_margin_raw_mean = env_metrics.get("r_margin_raw.mean")
         r_margin_norm_mean = env_metrics.get("r_margin_norm.mean")
+        r_prog_on_task_mean = env_metrics.get("r_prog_on_task.mean")
+        r_margin_on_task_mean = env_metrics.get("r_margin_on_task.mean")
+        r_time_on_task_mean = env_metrics.get("r_time_on_task.mean")
         r_total_mean = env_metrics.get("reward.mean")
         # Abs means for dominance ratios
         r_time_abs_mean = env_metrics.get("r_time_abs.mean")
+        r_prog_abs_mean = env_metrics.get("r_prog_abs.mean")
         r_energy_abs_mean = env_metrics.get("r_energy_abs.mean")
         r_interf_abs_mean = env_metrics.get("r_interf_abs.mean")
         r_risk_abs_mean = env_metrics.get("r_risk_abs.mean")
@@ -2531,6 +2555,13 @@ def main():
                     r_margin_nonzero_rate = 0.0
         margin_valid_count = env_stats.get("margin_valid_count") if env_stats else None
         margin_skip_count = env_stats.get("margin_skip_count") if env_stats else None
+        r_prog_on_task_abs_mean = env_stats.get("r_prog_on_task_abs_mean") if env_stats else None
+        r_margin_on_task_abs_mean = env_stats.get("r_margin_on_task_abs_mean") if env_stats else None
+        r_time_on_task_abs_mean = env_stats.get("r_time_on_task_abs_mean") if env_stats else None
+        abs_ratio_on_task_r_prog = env_stats.get("abs_ratio_on_task_r_prog") if env_stats else None
+        abs_ratio_on_task_r_margin = env_stats.get("abs_ratio_on_task_r_margin") if env_stats else None
+        abs_ratio_on_task_r_time = env_stats.get("abs_ratio_on_task_r_time") if env_stats else None
+        abs_ratio_on_task_r_term = env_stats.get("abs_ratio_on_task_r_term") if env_stats else None
         reward_clip_hit_count = env_stats.get("reward_clip_hit_count") if env_stats else None
         reward_clip_hit_rate = env_stats.get("reward_clip_hit_rate") if env_stats else None
         abs_ratio_basis = env_stats.get("abs_ratio_basis") if env_stats else None
@@ -2571,13 +2602,14 @@ def main():
         # Component dominance ratios (abs contribution shares)
         _is_unified = str(getattr(Cfg, "REWARD_SCHEME", "")).upper() == "UNIFIED"
         abs_parts = {
-            "r_time": r_time_abs_mean,
-            # 当前阶段 latency-centric：UNIFIED贡献占比计算中不将显式能耗/干扰计入分母
+            # 当前阶段 UNIFIED 主奖励口径：只统计实际参与主奖励总和的部分
+            # （r_margin, r_term, r_illegal, r_pbrs）；其余项保留日志但不计入贡献分母。
+            "r_time": 0.0 if _is_unified else r_time_abs_mean,
             "r_energy": 0.0 if _is_unified else r_energy_abs_mean,
             "r_interf": 0.0 if _is_unified else r_interf_abs_mean,
-            "r_risk": r_risk_abs_mean,
+            "r_risk": 0.0 if _is_unified else r_risk_abs_mean,
             "r_illegal": r_illegal_abs_mean,
-            "r_pbrs": r_pbrs_abs_mean,
+            "r_pbrs": 0.0 if _is_unified else r_pbrs_abs_mean,
             "r_term": r_term_abs_mean,
             "r_margin": r_margin_abs_mean,
         }
@@ -2850,6 +2882,7 @@ def main():
             "critical_path_cycles": critical_path_cycles,
             # UNIFIED component/audit (dominance check)
             "r_time": float(r_time_mean) if r_time_mean is not None and np.isfinite(r_time_mean) else 0.0,
+            "r_prog": float(r_prog_mean) if r_prog_mean is not None and np.isfinite(r_prog_mean) else 0.0,
             "r_interf": float(r_interf_mean) if r_interf_mean is not None and np.isfinite(r_interf_mean) else 0.0,
             "r_risk": float(r_risk_mean) if r_risk_mean is not None and np.isfinite(r_risk_mean) else 0.0,
             "r_illegal": float(r_illegal_mean) if r_illegal_mean is not None and np.isfinite(r_illegal_mean) else 0.0,
@@ -2912,12 +2945,23 @@ def main():
             "margin_pre_mean": float(margin_pre_mean) if margin_pre_mean is not None and np.isfinite(margin_pre_mean) else 0.0,
             "margin_post_mean": float(margin_post_mean) if margin_post_mean is not None and np.isfinite(margin_post_mean) else 0.0,
             "r_margin_abs_mean": float(r_margin_abs_mean) if r_margin_abs_mean is not None and np.isfinite(r_margin_abs_mean) else 0.0,
+            "r_prog_abs_mean": float(r_prog_abs_mean) if r_prog_abs_mean is not None and np.isfinite(r_prog_abs_mean) else 0.0,
             "r_margin_nonzero_rate": float(r_margin_nonzero_rate) if r_margin_nonzero_rate is not None and np.isfinite(r_margin_nonzero_rate) else 0.0,
             "margin_valid_count": int(margin_valid_count) if margin_valid_count is not None else 0,
             "margin_skip_count": int(margin_skip_count) if margin_skip_count is not None else 0,
             "reward_clip_hit_count": int(reward_clip_hit_count) if reward_clip_hit_count is not None else 0,
             "reward_clip_hit_rate": float(reward_clip_hit_rate) if reward_clip_hit_rate is not None and np.isfinite(reward_clip_hit_rate) else 0.0,
-            "abs_ratio_basis": str(abs_ratio_basis or ("unified_latency_centric_excl_energy_interf" if _is_unified else "default_abs_parts")),
+            "abs_ratio_basis": str(abs_ratio_basis or ("unified_margin_term_illegal" if _is_unified else "default_abs_parts")),
+            "r_prog_on_task_mean": float(r_prog_on_task_mean) if r_prog_on_task_mean is not None and np.isfinite(r_prog_on_task_mean) else 0.0,
+            "r_margin_on_task_mean": float(r_margin_on_task_mean) if r_margin_on_task_mean is not None and np.isfinite(r_margin_on_task_mean) else 0.0,
+            "r_time_on_task_mean": float(r_time_on_task_mean) if r_time_on_task_mean is not None and np.isfinite(r_time_on_task_mean) else 0.0,
+            "r_prog_on_task_abs_mean": float(r_prog_on_task_abs_mean) if r_prog_on_task_abs_mean is not None and np.isfinite(r_prog_on_task_abs_mean) else 0.0,
+            "r_margin_on_task_abs_mean": float(r_margin_on_task_abs_mean) if r_margin_on_task_abs_mean is not None and np.isfinite(r_margin_on_task_abs_mean) else 0.0,
+            "r_time_on_task_abs_mean": float(r_time_on_task_abs_mean) if r_time_on_task_abs_mean is not None and np.isfinite(r_time_on_task_abs_mean) else 0.0,
+            "abs_ratio_on_task_r_prog": float(abs_ratio_on_task_r_prog) if abs_ratio_on_task_r_prog is not None and np.isfinite(abs_ratio_on_task_r_prog) else 0.0,
+            "abs_ratio_on_task_r_margin": float(abs_ratio_on_task_r_margin) if abs_ratio_on_task_r_margin is not None and np.isfinite(abs_ratio_on_task_r_margin) else 0.0,
+            "abs_ratio_on_task_r_time": float(abs_ratio_on_task_r_time) if abs_ratio_on_task_r_time is not None and np.isfinite(abs_ratio_on_task_r_time) else 0.0,
+            "abs_ratio_on_task_r_term": float(abs_ratio_on_task_r_term) if abs_ratio_on_task_r_term is not None and np.isfinite(abs_ratio_on_task_r_term) else 0.0,
             "dt_used_mean": dt_used_mean if dt_used_mean is not None else 0.0,
             "implied_dt_mean": implied_dt_mean if implied_dt_mean is not None else ( (dT_mean if dT_mean is not None else 0.0) - (dT_eff_mean if dT_eff_mean is not None else 0.0)),
             "dT_eff_mean": dT_eff_mean if dT_eff_mean is not None else 0.0,
@@ -3158,11 +3202,15 @@ def main():
         }
         # Keep plot-oriented training_stats.csv aligned with metrics.csv for UNIFIED reward audits.
         for _k in (
-            "r_margin", "r_margin_raw", "r_margin_norm",
-            "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term", "abs_ratio_r_margin",
+        "r_margin", "r_margin_raw", "r_margin_norm",
+        "r_prog",
+        "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term", "abs_ratio_r_margin",
             "margin_valid_count", "margin_skip_count",
             "reward_clip_hit_count", "reward_clip_hit_rate",
             "abs_ratio_basis",
+            "r_prog_on_task_mean", "r_margin_on_task_mean", "r_time_on_task_mean",
+            "r_prog_on_task_abs_mean", "r_margin_on_task_abs_mean", "r_time_on_task_abs_mean",
+            "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_margin", "abs_ratio_on_task_r_time", "abs_ratio_on_task_r_term",
         ):
             if _k in metrics_row:
                 training_stats_row[_k] = metrics_row[_k]
