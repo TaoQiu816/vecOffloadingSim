@@ -1,0 +1,7 @@
+{
+  "run_id": "rc1_main_slack1_gpu_1000",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_main_slack1_gpu_1000",
+  "created_at": "2026-02-25 02:16:06",
+  "git_commit": "04302a268e92bf40ed33f8e8de625a4e5c3a06ba",
+  "config_hash": "0217d1675529e9edc2628537f99a8a82614fc9f7a52895c04ae3bbdc43c082a7"
+}
