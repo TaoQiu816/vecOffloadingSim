@@ -1,0 +1,20 @@
+[2026-02-26 01:42:20] Abnormal termination
+run_id=rc1_margin_term_illegal_w03_r12_1000ep_20260226_014210
+run_dir=/root/vecOffloadingSim/runs/rc1_margin_term_illegal_w03_r12_1000ep_20260226_014210
+episode=2
+step=32
+exception=KeyboardInterrupt: 
+traceback:
+Traceback (most recent call last):
+  File "/root/vecOffloadingSim/train.py", line 3617, in <module>
+    main()
+  File "/root/vecOffloadingSim/train.py", line 2152, in main
+    next_obs_list, rewards, terminated, truncated, info = env.step(actions)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 2801, in step
+    vehicle_cfts_prev = self._compute_vehicle_cfts_snapshot(t_prev, vehicle_ids=ids_prev)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 1927, in _compute_vehicle_cfts_snapshot
+    _, _, cft = calculate_est_ct(
+  File "/root/vecOffloadingSim/envs/modules/time_calculator.py", line 268, in calculate_est_ct
+    if isinstance(pred_loc, tuple) and isinstance(curr_loc, tuple):
+KeyboardInterrupt
+
