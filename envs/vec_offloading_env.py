@@ -3387,12 +3387,11 @@ class VecOffloadingEnv(gym.Env):
                         delta_prog = slack_curr - slack_prev
                     else:
                         delta_prog = delta_cft_abs_true
-                # Deadline-margin shaping: dimensionless delta_m normalized to [-1, 1].
+                # Deadline-margin shaping (PBRS-style potential difference on slack_norm).
+                # phi(s)=clip((Td-CFT_rem)/(Td+eps),-1,1), r_margin_raw = gamma*phi(s') - phi(s).
+                # Use gamma=1.0 here to avoid artificial penalty on unchanged/no-task states.
                 # Only uses same-step pre/post CFT estimates (no future info).
-                if bool(ctx.get("no_task_available", False)):
-                    if hasattr(self, "_reward_stats"):
-                        self._reward_stats.add_counter("margin_skip_no_task", 1)
-                elif (not np.isfinite(Td)) or float(Td) <= 0.0:
+                if (not np.isfinite(Td)) or float(Td) <= 0.0:
                     if hasattr(self, "_reward_stats"):
                         self._reward_stats.add_counter("margin_skip_invalid_deadline", 1)
                 elif not (np.isfinite(cft_prev_v) and np.isfinite(cft_curr_v)):
@@ -3400,13 +3399,14 @@ class VecOffloadingEnv(gym.Env):
                         self._reward_stats.add_counter("margin_skip_invalid_cft", 1)
                 else:
                     denom = max(float(Td) + EPS_MARGIN, EPS_MARGIN)
-                    margin_pre = (float(Td) - prev_rem_v) / denom
-                    margin_post = (float(Td) - curr_rem_v) / denom
+                    phi_margin_gamma = 1.0
+                    margin_pre = float(np.clip((float(Td) - prev_rem_v) / denom, -1.0, 1.0))
+                    margin_post = float(np.clip((float(Td) - curr_rem_v) / denom, -1.0, 1.0))
                     if np.isfinite(margin_pre) and np.isfinite(margin_post):
                         margin_valid = True
                         if hasattr(self, "_reward_stats"):
                             self._reward_stats.add_counter("margin_valid", 1)
-                        r_margin_raw = float(margin_post - margin_pre)  # delta_m (dimensionless)
+                        r_margin_raw = float(phi_margin_gamma * margin_post - margin_pre)
                         r_margin_norm = float(np.clip(r_margin_raw / margin_clip_c, -1.0, 1.0))
                         r_margin = float(w_margin * r_margin_norm)
                     elif hasattr(self, "_reward_stats"):

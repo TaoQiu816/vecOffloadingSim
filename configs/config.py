@@ -707,10 +707,10 @@ class SystemConfig:
     # 6.7.3 新统一奖励参数 (Unified Reward - nonlinear, dimensionless)
     # -------------------------------------------------------------------------
     # 终局 Terminal（注意：UNIFIED 路径使用的是 R_SUCC/R_FAIL，不是 TERMINAL_BONUS_*）
-    # 当前主奖励已收敛为 margin-term-illegal；为避免 r_term 长期压制 r_margin，将终止项系数下调。
-    # 目标（中后期参考，非硬约束）：abs_ratio_r_term≈45%~65%，abs_ratio_r_margin≈25%~45%。
-    R_SUCC = 12.0                   # 成功奖励系数 R_s（UNIFIED terminal）
-    R_FAIL = 12.0                   # 失败惩罚系数 R_f（UNIFIED terminal）
+    # 当前主奖励为 margin-term-illegal；终局项需要足够强作为目标锚点，避免 reward 过稀疏。
+    # 取 24 作为折中：高于过弱的 12，但显著低于会长期主导的 50。
+    R_SUCC = 24.0                   # 成功奖励系数 R_s（UNIFIED terminal）
+    R_FAIL = 24.0                   # 失败惩罚系数 R_f（UNIFIED terminal）
     P_SUCC = 1.0                    # 成功奖励指数 p_s
     P_FAIL = 1.0                    # 失败惩罚指数 p_f
     # 每步 Step-wise
