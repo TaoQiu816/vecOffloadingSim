@@ -41,7 +41,7 @@ class VecOffloadingEnv(gym.Env):
     - RSU边缘计算: 可选择将任务卸载到RSU服务器处理
 
     状态空间 (Observation Space):
-    - node_x: 子任务特征 (计算量、剩余数据、状态、入度、出度、剩余时间、紧急度)
+    - node_x: 子任务特征 (计算量、剩余数据、状态、入度、出度、剩余时间、可行性代理)
     - self_info: 自身状态 (速度、等待时间、CPU频率、信道质量、位置)
     - rsu_info: RSU负载信息
     - adj: DAG邻接矩阵 (任务依赖关系)
@@ -4721,14 +4721,18 @@ class VecOffloadingEnv(gym.Env):
             t_total = v.task_dag.deadline if v.task_dag.deadline > 0 else 1.0
 
             val_t_rem = np.clip(t_rem, -10.0, 10.0)
-            val_urgency = np.clip(t_rem / t_total, 0.0, 1.0) if t_rem > 0 else 0.0
 
             feat_t_rem = np.full(num_nodes, val_t_rem)
-            feat_urgency = np.full(num_nodes, val_urgency)
             feat_in_degree = v.task_dag.in_degree * self._inv_max_nodes
             out_degree_arr = v.task_dag.out_degree if hasattr(v.task_dag, 'out_degree') else np.sum(v.task_dag.adj, axis=1)
             feat_out_degree = out_degree_arr * self._inv_max_nodes
             feat_status = v.task_dag.status / 3.0
+            # [P2] 子任务可行性代理（非priority标签）：基于本地完成下界的deadline余量
+            # 仅使用当前快照信息（本地队列+该子任务剩余计算量+当前deadline剩余时间），无未来信息泄露。
+            local_queue_lb = self._get_veh_queue_load(v.id) / max(v.cpu_freq, 1e-6)
+            local_finish_lb_per_node = local_queue_lb + (v.task_dag.rem_comp / max(v.cpu_freq, 1e-6))
+            margin_local_lb = (t_rem - local_finish_lb_per_node) / max(t_total, 1e-6)
+            feat_feasibility = np.clip((margin_local_lb + 1.0) * 0.5, 0.0, 1.0)
 
             node_feats = np.stack([
                 v.task_dag.rem_comp * self._inv_max_comp,
@@ -4737,7 +4741,7 @@ class VecOffloadingEnv(gym.Env):
                 feat_in_degree,
                 feat_out_degree,
                 (feat_t_rem + 10.0) / 20.0,
-                feat_urgency
+                feat_feasibility
             ], axis=1)
 
             # [关键] 固定维度填充 - 适配批处理要求
@@ -4972,14 +4976,18 @@ class VecOffloadingEnv(gym.Env):
             resource_raw = np.zeros((self.config.MAX_TARGETS, self.config.RESOURCE_RAW_DIM), dtype=np.float32)
 
             # --- 物理约束特征 + 信誉特征布局 ---
-            # col 0-8: cpu/queue/dist/rate/rel_xy/vel_xy/node_type  (物理)
+            # col 0-8: cpu/queue/dist/rate/rel_xy/vel_xy/t_finish_norm  (物理)
             # col 9 : slack_norm  (硬约束: 任务松弛度)
             # col10 : contact_norm (硬约束: 链路剩余接触时间)
             # col11 : t_comp_lb   (快照下界: 计算时间)
             # col12 : hat_rho     (信誉估计)
             # col13 : uncertainty (信誉不确定度)
             trust_enabled = getattr(self.config, 'TRUST_ENABLED', False)
-            slack_norm = val_urgency
+            slack_norm = np.clip(t_rem / t_total, 0.0, 1.0) if t_rem > 0 else 0.0
+            finish_norm_denom = np.log1p(max(self.config.MAX_STEPS * self.config.DT, 1e-6))
+            def _finish_norm(t_finish: float) -> float:
+                t_clamped = max(float(t_finish), 0.0)
+                return float(np.clip(np.log1p(t_clamped) / max(finish_norm_denom, 1e-6), 0.0, 1.0))
 
             # --- 下界快照 (D) ---
             # t_comp_lb = w_v/f_m + cpu_backlog/f_m
@@ -4997,6 +5005,7 @@ class VecOffloadingEnv(gym.Env):
             tx_wait_lb_v2i = txq_bytes_v2i * 8.0 / max(rate_prev_v2i, eps_rate)
             tx_wait_lb_v2v = txq_bytes_v2v * 8.0 / max(rate_prev_v2v, eps_rate)
 
+            local_finish_est = local_comp_lb
             resource_raw[0] = [
                 v.cpu_freq * self._inv_max_cpu,             # 0 cpu
                 np.clip(self_wait * self._inv_max_wait, 0, 1),  # 1 queue_wait
@@ -5006,7 +5015,7 @@ class VecOffloadingEnv(gym.Env):
                 0.0,                                        # 5 rel_y
                 v.vel[0] * self._inv_max_velocity,          # 6 vel_x
                 v.vel[1] * self._inv_max_velocity,          # 7 vel_y
-                1.0,                                        # 8 node_type=Local
+                _finish_norm(local_finish_est),             # 8 t_finish_norm
                 slack_norm,                                 # 9 slack_norm (任务松弛度)
                 1.0,                                        #10 contact_norm (Local永久连接)
                 np.clip(local_comp_lb / 10.0, 0, 1),       #11 t_comp_lb
@@ -5047,6 +5056,7 @@ class VecOffloadingEnv(gym.Env):
                         _rho, _unc = self._trust_mgr.get_reputation(('RSU', rsu_id_iter))
                     else:
                         _rho, _unc = 1.0, 0.5
+                    rsu_finish_est = comm_wait_total_v2i + rsu_tx_lb + rsu_wait_iter + (task_comp_size / max(rsu_cpu_iter, 1e-6))
                     resource_raw[idx] = [
                         rsu_cpu_iter * self._inv_max_cpu,             # 0
                         np.clip(rsu_wait_iter * self._inv_max_wait, 0, 1),  # 1
@@ -5056,7 +5066,7 @@ class VecOffloadingEnv(gym.Env):
                         rel_rsu[1],                                   # 5
                         0.0,                                          # 6
                         0.0,                                          # 7
-                        2.0,                                          # 8 RSU
+                        _finish_norm(rsu_finish_est),                 # 8 t_finish_norm
                         slack_norm,                                   # 9 slack_norm
                         rsu_contact_norm,                             #10 contact_norm
                         np.clip(rsu_comp_lb / 10.0, 0, 1),           #11 t_comp_lb
@@ -5075,6 +5085,7 @@ class VecOffloadingEnv(gym.Env):
                     _rho_s, _unc_s = self._trust_mgr.get_reputation(('RSU', rsu_id))
                 else:
                     _rho_s, _unc_s = 1.0, 0.5
+                rsu_finish_est_s = comm_wait_total_v2i + rsu_tx_lb_s + rsu_wait + (task_comp_size / max(rsu_cpu, 1e-6))
                 resource_raw[1] = [
                     rsu.cpu_freq * self._inv_max_cpu,              # 0
                     np.clip(rsu_wait * self._inv_max_wait, 0, 1),  # 1
@@ -5084,7 +5095,7 @@ class VecOffloadingEnv(gym.Env):
                     rel_rsu[1],                                    # 5
                     0.0,                                           # 6
                     0.0,                                           # 7
-                    2.0,                                           # 8 RSU
+                    _finish_norm(rsu_finish_est_s),                # 8 t_finish_norm
                     slack_norm,                                    # 9 slack_norm
                     rsu_contact_norm,                              #10 contact_norm
                     np.clip(rsu_comp_lb_s / 10.0, 0, 1),          #11 t_comp_lb
@@ -5108,6 +5119,7 @@ class VecOffloadingEnv(gym.Env):
                 else:
                     _rho_v, _unc_v = 1.0, 0.5
                 # col3: log 压缩归一的零干扰参考速率（与动作无关；训练依赖 rate_prev 学习真实服务效果）
+                v2v_finish_est = info.get('total_time', comm_wait_total_v2v + (task_data_size * 8.0 / max(info['rate'], 1e-6)) + info['queue_wait'] + (task_comp_size / max(info['cpu_freq'], 1e-6)))
                 resource_raw[target_idx] = [
                     info['cpu_freq'] * self._inv_max_cpu,            # 0
                     np.clip(info['queue_wait'] * self._inv_max_wait, 0, 1),  # 1
@@ -5117,7 +5129,7 @@ class VecOffloadingEnv(gym.Env):
                     info['rel_pos'][1],                              # 5
                     info['vel'][0] * self._inv_max_velocity,         # 6
                     info['vel'][1] * self._inv_max_velocity,         # 7
-                    3.0,                                             # 8 V2V
+                    _finish_norm(v2v_finish_est),                    # 8 t_finish_norm
                     slack_norm,                                      # 9 slack_norm
                     contact_norm_v,                                  #10 contact_norm
                     np.clip(nbr_comp_lb / 10.0, 0, 1),              #11 t_comp_lb
@@ -5214,7 +5226,7 @@ class VecOffloadingEnv(gym.Env):
                 neighbors_array[:, 5:8] = np.clip(neighbors_array[:, 5:8], 0.0, 1.0)
 
             resource_raw = _nan_clip(resource_raw, dtype=np.float32)
-            for col in (0, 1, 2, 3, 9, 10, 11, 12, 13):
+            for col in (0, 1, 2, 3, 8, 9, 10, 11, 12, 13):
                 if col < resource_raw.shape[1]:
                     resource_raw[:, col] = np.clip(resource_raw[:, col], 0.0, 1.0)
             for col in (4, 5, 6, 7):

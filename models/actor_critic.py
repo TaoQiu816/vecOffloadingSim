@@ -26,7 +26,7 @@ Actor-Critic Network Module
     - 物理流：原始14维特征 → 物理偏置（显式先验）
     
     物理偏置公式：
-        Bias = -λ_dist * Dist_Norm - λ_load * Queue_Norm
+        Bias = -λ_dist * Dist_Norm - λ_load * (0.5*Queue_Norm + 0.5*T_finish_Norm)
     
     作用：
         - 引导注意力关注近距离、低负载的资源
@@ -67,7 +67,7 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         - 物理流：原始14维特征 → 物理偏置（显式先验）
     
     物理偏置公式：
-        Bias = -λ_dist * Dist_Norm - λ_load * Queue_Norm
+        Bias = -λ_dist * Dist_Norm - λ_load * (0.5*Queue_Norm + 0.5*T_finish_Norm)
     """
     
     def __init__(self, d_model: int = 128, num_heads: int = 8, dropout: float = 0.1):
@@ -132,15 +132,17 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         
         # 2. 物理流：计算物理偏置（支持消融开关）
         # resource_raw: [B, N_res, RESOURCE_RAW_DIM]
-        # [CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type]
+        # [CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, T_finish_Norm, ...]
         from configs.train_config import TrainConfig as TC
         if getattr(TC, "USE_PHYSICS_BIAS", True):
             dist_norm = resource_raw[:, :, 2]  # Dist_Norm
             load_norm = resource_raw[:, :, 1]  # Queue_Norm
+            finish_norm = resource_raw[:, :, 8]  # T_finish_Norm
             
-            # Bias = -λ_dist * dist - λ_load * load
+            # Bias = -λ_dist * dist - λ_load * (queue + finish)
             # [B, N_res] -> [B, 1, 1, N_res] (广播到多头)
-            bias_phy = -self.lambda_dist * dist_norm - self.lambda_load * load_norm
+            fused_load = 0.5 * load_norm + 0.5 * finish_norm
+            bias_phy = -self.lambda_dist * dist_norm - self.lambda_load * fused_load
             bias_phy = bias_phy.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, N_res]
             
             # 3. 融合：语义分数 + 物理偏置

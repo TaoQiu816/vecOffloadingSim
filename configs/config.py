@@ -329,7 +329,7 @@ class SystemConfig:
                                     # 影响: 异构性上界，强车可作为V2V卸载目标
                                     # Impact: Heterogeneity upper bound, strong vehicles as V2V targets
 
-    F_RSU = 12.0e9          # RSU 单核 CPU 频率 (Hz) - RSU per-core CPU frequency (12 GHz)
+    F_RSU = 10.0e9          # RSU 单核 CPU 频率 (Hz) - RSU per-core CPU frequency (10 GHz)
                             # 语义：多核时每核同频，单任务占一核，执行时间 = cycles/F_RSU
                             # Impact: RSU computing advantage significant but not absolute
     
@@ -810,7 +810,7 @@ class SystemConfig:
     RESOURCE_RAW_DIM = 14           # 资源原始特征维度 (14列)
                                     # [0] cpu  [1] queue_wait  [2] dist  [3] rate
                                     # [4] rel_x  [5] rel_y  [6] vel_x  [7] vel_y
-                                    # [8] node_type  [9] slack_norm  [10] contact_norm
+                                    # [8] t_finish_norm  [9] slack_norm  [10] contact_norm
                                     # [11] t_comp_lb  [12] hat_rho  [13] uncertainty
 
     # -------------------------------------------------------------------------
