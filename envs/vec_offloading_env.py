@@ -3441,14 +3441,20 @@ class VecOffloadingEnv(gym.Env):
                 # 如后续需要恢复，请在独立实验分支中重新启用，而不是在本轮奖励主线中加开关。
                 r_pbrs = 0.0
 
+                r_time_step = float(step_info.get("r_time", 0.0))
+                r_interf_step = float(step_info.get("r_interf", 0.0))
                 r_illegal_step = float(step_info.get("r_illegal", 0.0))
-                # Margin-centric latency reward for current stage:
-                # keep terminal reward + illegal-action penalty,
-                # use r_margin as the only dense shaping signal.
-                r_base = float(r_illegal_step + r_term + r_pbrs)
+                reward_mode = str(getattr(self.config, "UNIFIED_MAIN_REWARD_MODE", "margin_term_illegal")).lower()
+                if reward_mode == "time_margin_term_illegal_interf":
+                    # Scheme A: keep a latency-first objective while retaining a weak
+                    # interference externality term so power/target coupling remains learnable.
+                    r_base = float(r_time_step + r_interf_step + r_illegal_step + r_term + r_pbrs)
+                else:
+                    # Current default: margin-centric latency reward.
+                    r_base = float(r_illegal_step + r_term + r_pbrs)
                 r_total_raw = float(r_base + r_margin)
                 if abs(w_margin) > 0.0:
-                    recomposed = float(r_illegal_step + r_term + r_pbrs + r_margin)
+                    recomposed = float(r_base + r_margin)
                     if (not np.isfinite(recomposed)) or (not np.isfinite(r_total_raw)) or (abs(recomposed - r_total_raw) > 1e-6):
                         step_unified_consistency_mismatch_count += 1
                 r_total = self._clip_reward(r_total_raw)

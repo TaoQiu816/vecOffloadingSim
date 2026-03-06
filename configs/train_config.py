@@ -240,6 +240,8 @@ class TrainConfig:
                                    # 影响: 稳定critic尺度，但不改变环境奖励
 
     MIN_ACTIVE_SAMPLES = 64  # active样本低于阈值时跳过更新（防止过高方差）
+    CRITIC_SOFT_ACTIVE_MASK = True
+    CRITIC_INACTIVE_SAMPLE_WEIGHT = 0.2
     
     TARGET_KL = 0.05        # 目标KL散度（用于early stop）- Target KL divergence for early stopping
                             # 实际触发阈值 = TARGET_KL × STOP_MULT(1.5) = 0.05×1.5 = 0.075（per mini-batch）

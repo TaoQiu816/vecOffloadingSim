@@ -335,7 +335,7 @@ class SystemConfig:
     
     # [N=20对比建议] 适度收紧RSU并行度，避免Greedy在RSU侧形成绝对优势，
     # 让“干扰/队列/信誉感知”的策略收益更可见（Ours相对Greedy更容易拉开差距）。
-    RSU_NUM_PROCESSORS = 4  # RSU处理器核心数 - RSU processor cores
+    RSU_NUM_PROCESSORS = 3  # RSU处理器核心数 - RSU processor cores
                              # 影响: 降低并行度，提高调度压力
                              # Impact: Lower parallelism, higher scheduling pressure
     
@@ -730,6 +730,10 @@ class SystemConfig:
     # 兼容旧实验：将 W_MARGIN_SHAPING 设为 0.0 时，行为退化回旧版（仅新增日志字段）。
     W_MARGIN_SHAPING = 0.30         # 裕量差分稠密奖励权重；设为0可关闭
     MARGIN_CLIP_C = 0.20            # 裕量差分归一化尺度 c（r_margin_norm=clip(delta_m/c,-1,1)）
+    UNIFIED_MAIN_REWARD_MODE = "margin_term_illegal"
+                                    # 可切换主奖励聚合:
+                                    # - margin_term_illegal: 当前主线（r_margin + r_term + r_illegal）
+                                    # - time_margin_term_illegal_interf: 方案A（r_time + r_margin + r_term + r_illegal + r_interf）
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I

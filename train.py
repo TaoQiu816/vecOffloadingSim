@@ -517,6 +517,12 @@ def _parse_args():
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument(
+        "--config-snapshot",
+        type=str,
+        default=None,
+        help="Load system_config/train_config from a previous run's logs/config_snapshot.json (then apply env overrides).",
+    )
+    parser.add_argument(
         "--exact-run-dir",
         action="store_true",
         default=False,
@@ -529,6 +535,26 @@ def _parse_args():
     parser.add_argument("--enable-baseline-eval", action="store_true", default=False)
     parser.add_argument("--disable-baseline-eval", action="store_true", default=False)
     return parser.parse_args()
+
+
+def _load_config_snapshot_file(path: str) -> bool:
+    """Best-effort load config snapshot json into (Cfg, TC)."""
+    if not path:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        system_cfg = data.get("system_config", {}) or {}
+        train_cfg = data.get("train_config", {}) or {}
+        for key, val in system_cfg.items():
+            if hasattr(Cfg, key):
+                setattr(Cfg, key, val)
+        for key, val in train_cfg.items():
+            if hasattr(TC, key):
+                setattr(TC, key, val)
+        return True
+    except Exception:
+        return False
 
 
 def apply_env_overrides():
@@ -559,6 +585,13 @@ def apply_env_overrides():
         "VEHICLE_QUEUE_CYCLES_LIMIT": "VEHICLE_QUEUE_CYCLES_LIMIT",
         "VEHICLE_SPAWN_X_MAX": "VEHICLE_SPAWN_X_MAX",
         # Reward shaping (latency-centric UNIFIED)
+        "W_TIME": "W_TIME",
+        "W_ENERGY": "W_ENERGY",
+        "W_INTERF": "W_INTERF",
+        "W_RISK": "W_RISK",
+        "W_ILLEGAL": "W_ILLEGAL",
+        "R_SUCC": "R_SUCC",
+        "R_FAIL": "R_FAIL",
         "W_MARGIN_SHAPING": "W_MARGIN_SHAPING",
         "MARGIN_CLIP_C": "MARGIN_CLIP_C",
         "W_PROGRESS": "W_PROGRESS",
@@ -575,6 +608,10 @@ def apply_env_overrides():
         "CHAIN_P95_HIGH": "CHAIN_P95_HIGH",
         "CHAIN_PFAIL_HIGH": "CHAIN_PFAIL_HIGH",
         "CHAIN_NOISE_STD": "CHAIN_NOISE_STD",
+        # Trust / malicious sweep
+        "MALICIOUS_RATIO": "MALICIOUS_RATIO",
+        "REP_OVERLAP": "REP_OVERLAP",
+        "RSU_REPUTATION": "RSU_REPUTATION",
     }
     overrides_int = {
         "RSU_NUM_PROCESSORS": "RSU_NUM_PROCESSORS",
@@ -596,6 +633,10 @@ def apply_env_overrides():
         "CHAIN_MODE": "CHAIN_MODE",
         "V2I_RATE_MODEL": "V2I_RATE_MODEL",
         "DEADLINE_MODE": "DEADLINE_MODE",
+        "UNIFIED_MAIN_REWARD_MODE": "UNIFIED_MAIN_REWARD_MODE",
+        # Trust / malicious sweep
+        "REP_INIT_MODE": "REP_INIT_MODE",
+        "TRUST_FAIL_SCOPE": "TRUST_FAIL_SCOPE",
     }
     overrides_bool = {
         "CHAIN_ENABLED": "CHAIN_ENABLED",
@@ -641,6 +682,7 @@ def apply_env_overrides():
         "LOGIT_BIAS_RSU": "LOGIT_BIAS_RSU",
         "VALUE_CLIP_RANGE": "VALUE_CLIP_RANGE",
         "LR_DECAY_RATE": "LR_DECAY_RATE",
+        "CRITIC_INACTIVE_SAMPLE_WEIGHT": "CRITIC_INACTIVE_SAMPLE_WEIGHT",
         "CMDP_LAMBDA_LR": "CMDP_LAMBDA_LR",
         "CMDP_LAMBDA_MAX": "CMDP_LAMBDA_MAX",
         "CMDP_LAMBDA_ENERGY_INIT": "CMDP_LAMBDA_ENERGY_INIT",
@@ -687,6 +729,9 @@ def apply_env_overrides():
     use_value_target_norm = _env_bool("USE_VALUE_TARGET_NORM")
     if use_value_target_norm is not None:
         TC.USE_VALUE_TARGET_NORM = use_value_target_norm
+    critic_soft_active_mask = _env_bool("CRITIC_SOFT_ACTIVE_MASK")
+    if critic_soft_active_mask is not None:
+        TC.CRITIC_SOFT_ACTIVE_MASK = critic_soft_active_mask
     use_rank_bias = _env_bool("USE_RANK_BIAS")
     if use_rank_bias is not None:
         TC.USE_RANK_BIAS = use_rank_bias
@@ -1451,7 +1496,12 @@ def main():
     env_time_penalty_clip = _env_float("TIME_LIMIT_PENALTY_RATIO_CLIP")
     env_reward_scheme = _env_str("REWARD_SCHEME")
 
-    # Env/train overrides from environment variables (after profile/reward selection)
+    # Optional: load config snapshot first to align with an existing run, then apply env overrides.
+    if args.config_snapshot:
+        ok = _load_config_snapshot_file(args.config_snapshot)
+        print(f"[ConfigSnapshot] load={ok} path={args.config_snapshot}", flush=True)
+
+    # Env/train overrides from environment variables (after snapshot load)
     apply_env_overrides()
     if getattr(args, "exp_dynamic", False):
         from configs.exp_dynamic_config import apply_exp_dynamic_config
@@ -2601,12 +2651,20 @@ def main():
 
         # Component dominance ratios (abs contribution shares)
         _is_unified = str(getattr(Cfg, "REWARD_SCHEME", "")).upper() == "UNIFIED"
+        _unified_reward_mode = str(getattr(Cfg, "UNIFIED_MAIN_REWARD_MODE", "margin_term_illegal")).lower()
         abs_parts = {
-            # 当前阶段 UNIFIED 主奖励口径：只统计实际参与主奖励总和的部分
-            # （r_margin, r_term, r_illegal, r_pbrs）；其余项保留日志但不计入贡献分母。
-            "r_time": 0.0 if _is_unified else r_time_abs_mean,
+            # Keep dominance ratios aligned with the actual optimization target.
+            "r_time": (
+                r_time_abs_mean
+                if (_is_unified and _unified_reward_mode == "time_margin_term_illegal_interf")
+                else (0.0 if _is_unified else r_time_abs_mean)
+            ),
             "r_energy": 0.0 if _is_unified else r_energy_abs_mean,
-            "r_interf": 0.0 if _is_unified else r_interf_abs_mean,
+            "r_interf": (
+                r_interf_abs_mean
+                if (_is_unified and _unified_reward_mode == "time_margin_term_illegal_interf")
+                else (0.0 if _is_unified else r_interf_abs_mean)
+            ),
             "r_risk": 0.0 if _is_unified else r_risk_abs_mean,
             "r_illegal": r_illegal_abs_mean,
             "r_pbrs": 0.0 if _is_unified else r_pbrs_abs_mean,
@@ -2951,7 +3009,10 @@ def main():
             "margin_skip_count": int(margin_skip_count) if margin_skip_count is not None else 0,
             "reward_clip_hit_count": int(reward_clip_hit_count) if reward_clip_hit_count is not None else 0,
             "reward_clip_hit_rate": float(reward_clip_hit_rate) if reward_clip_hit_rate is not None and np.isfinite(reward_clip_hit_rate) else 0.0,
-            "abs_ratio_basis": str(abs_ratio_basis or ("unified_margin_term_illegal" if _is_unified else "default_abs_parts")),
+            "abs_ratio_basis": str(
+                abs_ratio_basis
+                or (f"unified_{_unified_reward_mode}" if _is_unified else "default_abs_parts")
+            ),
             "r_prog_on_task_mean": float(r_prog_on_task_mean) if r_prog_on_task_mean is not None and np.isfinite(r_prog_on_task_mean) else 0.0,
             "r_margin_on_task_mean": float(r_margin_on_task_mean) if r_margin_on_task_mean is not None and np.isfinite(r_margin_on_task_mean) else 0.0,
             "r_time_on_task_mean": float(r_time_on_task_mean) if r_time_on_task_mean is not None and np.isfinite(r_time_on_task_mean) else 0.0,

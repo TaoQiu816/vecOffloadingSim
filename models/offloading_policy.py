@@ -664,10 +664,15 @@ class OffloadingPolicyNetwork(nn.Module):
         else:
             power_actions = power_dist.sample()
 
-        # Local动作无发送功率语义：固定到0.5并mask掉power分量损失/熵
-        power_actions = torch.where(remote_mask > 0.0, power_actions, torch.full_like(power_actions, 0.5))
-        power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
-        log_prob_power = power_dist.log_prob(power_actions) * remote_mask
+        if bool(getattr(TC, "USE_FIXED_POWER", False)):
+            # 固定功率：不学习连续功率分支，避免无意义梯度干扰
+            power_actions = torch.full_like(power_actions, 0.5)
+            log_prob_power = torch.zeros_like(log_prob_target)
+        else:
+            # Local动作无发送功率语义：固定到0.5并mask掉power分量损失/熵
+            power_actions = torch.where(remote_mask > 0.0, power_actions, torch.full_like(power_actions, 0.5))
+            power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
+            log_prob_power = power_dist.log_prob(power_actions) * remote_mask
         
         # 5. 联合log概率
         log_probs = log_prob_subtask + log_prob_target + log_prob_power
@@ -786,9 +791,13 @@ class OffloadingPolicyNetwork(nn.Module):
         )
         sel_type = self._gather_selected(inputs['candidate_types'], target_actions).long()
         remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
-        power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
-        log_prob_power = power_dist.log_prob(power_actions) * remote_mask
-        entropy_power = power_dist.entropy() * remote_mask
+        if bool(getattr(TC, "USE_FIXED_POWER", False)):
+            log_prob_power = torch.zeros_like(log_prob_target)
+            entropy_power = torch.zeros_like(entropy_target)
+        else:
+            power_actions = torch.clamp(power_actions, 1e-6, 1.0 - 1e-6)
+            log_prob_power = power_dist.log_prob(power_actions) * remote_mask
+            entropy_power = power_dist.entropy() * remote_mask
         
         # 5. 联合log概率和熵
         log_probs = log_prob_subtask + log_prob_target + log_prob_power
