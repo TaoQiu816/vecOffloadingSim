@@ -1,0 +1,28 @@
+[Postprocess] loaded env_reward.jsonl: /root/vecOffloadingSim/runs/e0_head_control/logs/env_reward.jsonl
+✓ Wrote: /root/vecOffloadingSim/runs/e0_head_control/metrics/train_metrics_full.csv (rows=1000 cols=325)
+✓ Loaded 1000 episodes from runs/e0_head_control/metrics/train_metrics_full.csv
+⚠ No baseline data found
+✓ Output directory: runs/e0_head_control/plots
+
+[Generating Plots]
+/root/vecOffloadingSim/scripts/plot_results.py:182: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+✓ Saved: fig_convergence_baseline.png
+✓ Saved: fig_policy_evolution.png
+/root/vecOffloadingSim/scripts/plot_results.py:240: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+/root/vecOffloadingSim/scripts/plot_results.py:255: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+✓ Saved: fig_training_diagnostics.png
+/root/vecOffloadingSim/scripts/plot_results.py:354: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+/root/vecOffloadingSim/scripts/plot_results.py:365: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+✓ Saved: fig_physical_metrics.png
+✓ Saved: fig_constraint_health.png
+✓ Saved: fig_latency_with_baselines.png
+/root/vecOffloadingSim/scripts/plot_results.py:434: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+  ax.legend(loc='best', framealpha=0.9)
+✓ Saved: fig_summary_dashboard.png
+
+✓ All plots saved to: runs/e0_head_control/plots
