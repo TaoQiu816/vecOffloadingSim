@@ -18,7 +18,7 @@ Complete Offloading Policy Network
        - 捕获DAG依赖关系和拓扑结构
     
     3. 资源特征编码 (Resource Feature Encoding)
-       - 14维物理特征：CPU, Queue, Rate, Distance, Contact, Est_Time等
+       - 10维资源特征：CPU, backlog, tx backlog, distance, contact, competition等
        - 角色嵌入：Local/RSU/Neighbor（无ID泄漏）
     
     4. Actor-Critic输出 (Actor-Critic Heads)
@@ -33,7 +33,7 @@ Complete Offloading Policy Network
         - adj: [B, N, N] - 邻接矩阵
         - data_matrix: [B, N, N] - 边数据量
         - delta: [B, N, N] - 最短路径矩阵
-        - resource_raw: [B, M, 14] - 资源原始特征
+        - resource_raw: [B, M, 10] - 资源原始特征
         - resource_ids: [B, M] - 资源角色ID
         - subtask_index: [B] - 当前调度的子任务索引
         - action_mask: [B, M] - 动作掩码
@@ -196,8 +196,16 @@ class OffloadingPolicyNetwork(nn.Module):
         else:
             feasible_v2v = v2v_mask
         n_v = feasible_v2v.sum(dim=-1, keepdim=True).to(dtype=target_logits.dtype)  # [B,1]
-        n_v_safe = torch.clamp(n_v, min=1.0)
-        v2v_size_correction = torch.log(n_v_safe)
+        # In ALL-candidate mode, only a small subset of neighbors is usually competitive.
+        # Keep the original full correction by default, but allow a capped / scaled correction
+        # for controlled ablations when full -log(n_V) over-suppresses the whole V2V mode.
+        cap = int(getattr(TC, "LOGIT_BIAS_V2V_SIZE_CORR_CAP", 0) or 0)
+        if cap > 0:
+            n_v_eff = torch.clamp(n_v, min=1.0, max=float(cap))
+        else:
+            n_v_eff = torch.clamp(n_v, min=1.0)
+        corr_coef = float(getattr(TC, "LOGIT_BIAS_V2V_SIZE_CORR_COEF", 1.0))
+        v2v_size_correction = corr_coef * torch.log(n_v_eff)
         v2v_slot_bias = (v2v_bias - v2v_size_correction)  # [B,1], broadcast to V2V slots
         logit_bias = logit_bias + v2v_mask.to(dtype=target_logits.dtype) * v2v_slot_bias
         return target_logits + logit_bias
@@ -524,10 +532,12 @@ class OffloadingPolicyNetwork(nn.Module):
         # 7. Actor-Critic输出
         subtask_logits, target_logits, alpha, beta, value = self.actor_critic(
             dag_features=dag_features,
+            node_raw=node_x,
             resource_encoded=resource_encoded,
             resource_raw=resource_raw,
             subtask_index=subtask_index,
             action_mask=action_mask,
+            candidate_types=candidate_types,
             subtask_mask=subtask_mask,
             task_mask=node_valid_mask,
             resource_padding_mask=resource_padding_mask,
@@ -581,7 +591,7 @@ class OffloadingPolicyNetwork(nn.Module):
             global_state=inputs.get('global_state'),
         )
 
-        # 2.5 Subtask采样（自回归第一阶段）
+        # 2.5 Subtask采样（标准建模：策略自己选择待执行子任务）
         masked_subtask_logits = self._masked_subtask_logits(
             subtask_logits=subtask_logits,
             subtask_mask=inputs.get('subtask_mask', inputs['task_mask']),
@@ -596,7 +606,7 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_subtask = subtask_dist.log_prob(subtask_actions)
 
         # 2.6 使用 sampled subtask 重算 target/power/value（value 允许使用 sampled subtask 作为条件）
-        _, target_logits, alpha, beta, _ = self.forward(
+        _, target_logits, alpha, beta, values_env = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -684,7 +694,8 @@ class OffloadingPolicyNetwork(nn.Module):
                         subtask_actions: torch.Tensor,
                         target_actions: torch.Tensor,
                         power_actions: torch.Tensor,
-                        device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        device='cpu',
+                        return_aux: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         评估给定动作的log概率和熵（用于PPO训练）
         
@@ -726,7 +737,7 @@ class OffloadingPolicyNetwork(nn.Module):
             global_state=inputs.get('global_state'),
         )
 
-        # 先评估 subtask 分布（与采样路径一致的mask）
+        # 先评估 subtask 分布（与采样路径一致）
         masked_subtask_logits = self._masked_subtask_logits(
             subtask_logits=subtask_logits,
             subtask_mask=inputs.get('subtask_mask', inputs['task_mask']),
@@ -738,7 +749,7 @@ class OffloadingPolicyNetwork(nn.Module):
         entropy_subtask = subtask_dist.entropy()
 
         # 再以给定 subtask 评估 target/power/value（自回归一致性）
-        _, target_logits, alpha, beta, _ = self.forward(
+        _, target_logits, alpha, beta, values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -803,4 +814,12 @@ class OffloadingPolicyNetwork(nn.Module):
         log_probs = log_prob_subtask + log_prob_target + log_prob_power
         entropy = entropy_subtask + entropy_target + entropy_power
         
-        return log_probs, entropy, values
+        if not return_aux:
+            return log_probs, entropy, values
+
+        aux = {
+            'masked_target_logits': masked_logits,
+            'candidate_types': inputs['candidate_types'],
+            'action_mask': inputs['action_mask'],
+        }
+        return log_probs, entropy, values, aux

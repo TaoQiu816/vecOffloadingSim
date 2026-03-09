@@ -376,6 +376,63 @@ class RolloutBuffer:
             mean = float(np.mean(advantages))
             std = float(np.std(advantages))
         return mean, std
+
+    def get_oracle_group_adv_stats(self) -> Dict[str, float]:
+        """
+        基于raw GAE/returns（未归一化）统计若干关键 oracle×chosen 组别的均值。
+        仅统计 active 且 oracle/chosen 标签齐全的样本。
+        """
+        groups = (
+            ("v2v", "rsu"),
+            ("v2v", "v2v"),
+            ("rsu", "rsu"),
+            ("rsu", "v2v"),
+        )
+        acc = {
+            g: {"count": 0, "adv_sum": 0.0, "ret_sum": 0.0, "rew_sum": 0.0}
+            for g in groups
+        }
+        T = len(self.obs_list_buffer)
+        for t in range(T):
+            obs_t = self.obs_list_buffer[t]
+            rew_t = self.rewards_buffer[t] if t < len(self.rewards_buffer) else None
+            adv_t = self.advantages_buffer[t] if t < len(self.advantages_buffer) else None
+            ret_t = self.returns_buffer[t] if t < len(self.returns_buffer) else None
+            mask_t = self.active_masks_buffer[t] if t < len(self.active_masks_buffer) else None
+            if obs_t is None or rew_t is None or adv_t is None or ret_t is None or mask_t is None:
+                continue
+            n = min(len(obs_t), len(rew_t), len(adv_t), len(ret_t), len(mask_t))
+            for i in range(n):
+                if float(mask_t[i]) <= 0.0:
+                    continue
+                obs = obs_t[i] if i < len(obs_t) else None
+                if not isinstance(obs, dict):
+                    continue
+                oracle_mode = str(obs.get("oracle_mode", "") or "").lower()
+                chosen_mode = str(obs.get("chosen_mode", "") or "").lower()
+                key = (oracle_mode, chosen_mode)
+                if key not in acc:
+                    continue
+                rec = acc[key]
+                rec["count"] += 1
+                rec["adv_sum"] += float(adv_t[i])
+                rec["ret_sum"] += float(ret_t[i])
+                rec["rew_sum"] += float(rew_t[i])
+
+        out: Dict[str, float] = {}
+        for (oracle_mode, chosen_mode), rec in acc.items():
+            prefix = f"oracle_{oracle_mode}_chosen_{chosen_mode}"
+            cnt = int(rec["count"])
+            out[f"{prefix}_count"] = cnt
+            if cnt > 0:
+                out[f"{prefix}_adv_mean"] = float(rec["adv_sum"] / cnt)
+                out[f"{prefix}_ret_mean"] = float(rec["ret_sum"] / cnt)
+                out[f"{prefix}_rew_mean"] = float(rec["rew_sum"] / cnt)
+            else:
+                out[f"{prefix}_adv_mean"] = 0.0
+                out[f"{prefix}_ret_mean"] = 0.0
+                out[f"{prefix}_rew_mean"] = 0.0
+        return out
     
     def __len__(self):
         return len(self.obs_list_buffer)

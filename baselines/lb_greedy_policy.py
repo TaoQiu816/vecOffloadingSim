@@ -14,7 +14,7 @@ class LBGreedyPolicy(EFTPolicy):
 
     def _target_score(self, obs: Dict, idx: int, ctype: int, eft_time: float, task_comp: float, task_data: float, subtask_idx: int) -> float:
         _ = (subtask_idx, task_comp)
-        comp_lb = self._obs_comp_lb(obs, idx)
+        comp_lb = self._obs_comp_lb(obs, idx, task_comp=task_comp)
         if comp_lb is None:
             return float(eft_time)
         if idx == 0:

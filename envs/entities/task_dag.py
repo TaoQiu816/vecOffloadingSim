@@ -101,6 +101,13 @@ class DAGTask:
         # [P03新增] 任务完成时间记录（用于deadline检查）
         # 当所有子任务完成时，记录相对于start_time的完成时间
         self.completion_time = None  # None表示未完成
+        self.ready_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.comm_start_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.comm_end_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.cpu_start_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.cpu_end_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.done_time = np.full(self.num_subtasks, np.nan, dtype=np.float64)
+        self.reset_runtime_traces(self.start_time)
         
         # 拓扑特征：前向层级、后向层级、最短路径距离矩阵
         try:
@@ -132,6 +139,73 @@ class DAGTask:
     def is_finished(self):
         """判断整个DAG是否完成（所有子任务均为COMPLETED状态）"""
         return np.all(self.status == 3)
+
+    def reset_runtime_traces(self, start_time=None):
+        """重置子任务级真实时间戳。"""
+        if start_time is not None:
+            self.start_time = float(start_time)
+        for arr in (
+            self.ready_time,
+            self.comm_start_time,
+            self.comm_end_time,
+            self.cpu_start_time,
+            self.cpu_end_time,
+            self.done_time,
+        ):
+            arr.fill(np.nan)
+        entry_nodes = np.where(self.in_degree == 0)[0]
+        for node_id in entry_nodes:
+            self.ready_time[node_id] = float(self.start_time)
+        self.completion_time = None
+        self._completion_logged = False
+
+    def mark_ready(self, subtask_id, ready_time):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(ready_time):
+            if not np.isfinite(self.ready_time[subtask_id]):
+                self.ready_time[subtask_id] = float(ready_time)
+
+    def mark_comm_start(self, subtask_id, time_value):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(time_value):
+            curr = self.comm_start_time[subtask_id]
+            self.comm_start_time[subtask_id] = float(time_value) if not np.isfinite(curr) else min(curr, float(time_value))
+
+    def mark_comm_end(self, subtask_id, time_value):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(time_value):
+            curr = self.comm_end_time[subtask_id]
+            self.comm_end_time[subtask_id] = float(time_value) if not np.isfinite(curr) else max(curr, float(time_value))
+
+    def mark_cpu_start(self, subtask_id, time_value):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(time_value):
+            curr = self.cpu_start_time[subtask_id]
+            self.cpu_start_time[subtask_id] = float(time_value) if not np.isfinite(curr) else min(curr, float(time_value))
+
+    def mark_cpu_end(self, subtask_id, time_value):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(time_value):
+            curr = self.cpu_end_time[subtask_id]
+            self.cpu_end_time[subtask_id] = float(time_value) if not np.isfinite(curr) else max(curr, float(time_value))
+
+    def mark_done_time(self, subtask_id, time_value):
+        if 0 <= subtask_id < self.num_subtasks and np.isfinite(time_value):
+            curr = self.done_time[subtask_id]
+            self.done_time[subtask_id] = float(time_value) if not np.isfinite(curr) else max(curr, float(time_value))
+
+    def get_exit_finish_time_abs(self):
+        exit_nodes = np.where(self.out_degree == 0)[0]
+        if exit_nodes.size <= 0:
+            return None
+        exit_done = self.done_time[exit_nodes]
+        finite = exit_done[np.isfinite(exit_done)]
+        if finite.size <= 0:
+            return None
+        return float(np.max(finite))
+
+    def get_completion_time_abs(self):
+        exit_finish = self.get_exit_finish_time_abs()
+        if exit_finish is not None:
+            return exit_finish
+        if self.completion_time is not None:
+            return float(self.start_time + self.completion_time)
+        return None
 
     @property
     def is_failed(self):
@@ -307,7 +381,7 @@ class DAGTask:
         top_idx = np.argmax(priorities)
         return int(ready_tasks[top_idx])
         
-    def step_inter_task_transfers(self, subtask_id, transfer_speed, dt):
+    def step_inter_task_transfers(self, subtask_id, transfer_speed, dt, time_now=None):
         """
         处理任务间依赖数据的传输进度
         
@@ -360,6 +434,8 @@ class DAGTask:
             # 如果所有依赖都已满足且任务处于PENDING状态，转为READY
             if self.in_degree[subtask_id] == 0 and self.status[subtask_id] == 0:
                 self.status[subtask_id] = 1  # PENDING (0) -> READY (1)
+                if time_now is not None:
+                    self.mark_ready(subtask_id, time_now)
         
         return all_transfers_completed
 
@@ -445,7 +521,7 @@ class DAGTask:
 
         return False, tx_time_used
 
-    def _mark_done(self, subtask_id):
+    def _mark_done(self, subtask_id, done_time=None):
         """
         [任务完成] 标记任务完成并解锁后继任务
         
@@ -474,6 +550,8 @@ class DAGTask:
         
         # 标记完成
         self.status[subtask_id] = 3
+        if done_time is not None:
+            self.mark_done_time(subtask_id, done_time)
         
         # [完成位置落地] 写入task_locations（与exec_locations必须一致）
         self.task_locations[subtask_id] = self.exec_locations[subtask_id]
@@ -570,6 +648,8 @@ class DAGTask:
                     # 所有依赖满足且（传输完成 或 child未分配），解锁为READY
                     if self.status[child] == 0:  # PENDING
                         self.status[child] = 1  # PENDING -> READY
+                        if done_time is not None:
+                            self.mark_ready(child, done_time)
                         unlocked_ready_count += 1
                     # [硬断言] 如果已经是READY或RUNNING，不应回退
                     assert self.status[child] in [1, 2], (

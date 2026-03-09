@@ -127,11 +127,10 @@ class ActionIndex:
 
     @classmethod
     def from_config(cls):
-        """从config动态计算V2V_START（不修改类属性，返回新值）"""
+        """从固定主线配置计算 V2V_START。"""
         from configs.config import SystemConfig as Cfg
-        enable_rsu = getattr(Cfg, "ENABLE_RSU_SELECTION", False)
         num_rsu = getattr(Cfg, "NUM_RSU", 3)
-        v2v_start = (1 + num_rsu) if enable_rsu else 2
+        v2v_start = 1 + num_rsu
         return cls.LOCAL, cls.RSU, v2v_start
 
     @classmethod

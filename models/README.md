@@ -35,20 +35,21 @@ DAG节点嵌入模块：
 
 #### 4. `resource_features.py`
 资源节点特征构建：
-- `ResourceFeatureBuilder` - 9维统一特征构建器
-- `ResourceFeatureEncoder` - 特征编码器
+- `ResourceFeatureBuilder` - 已下沉为环境侧 `resource_raw`
+- `ResourceFeatureEncoder` - 资源特征编码器
 
-9维特征：`[CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, Node_Type]`
+当前主线资源特征由环境直接提供 cleaned `resource_raw`，只保留当前可观测量：
+`[CPU, Backlog, TxBacklog, Dist, Rel_X, Rel_Y, RelSpeed, Contact, Contention, Occupancy]`
 
 #### 5. `actor_critic.py`
 Actor-Critic网络：
 - `CrossAttention` - 跨注意力（DAG特征×资源特征）
-- `ActorHead` - 双头输出（Target离散 + Power连续）
+- `ActorHead` - 自回归三头输出（Subtask离散 + Target离散 + Power连续）
 - `CriticHead` - 价值估计（全局池化）
 - `ActorCriticNetwork` - 完整网络
 
 #### 6. `offloading_policy.py`
-完整策略网络（待完善）
+完整策略网络
 
 ### 使用示例
 
@@ -78,8 +79,8 @@ actor_critic = ActorCriticNetwork(d_model=128, num_heads=8)
 
 # 5. 前向传播
 # dag_features = transformer(node_emb, edge_bias, spatial_bias, mask)
-# target_logits, power_ratio, value = actor_critic(
-#     dag_features, resource_features, subtask_index, target_mask, task_mask
+# subtask_logits, target_logits, power_dist, value = actor_critic(
+#     dag_features, resource_raw, chosen_subtask, target_mask, task_mask
 # )
 ```
 
@@ -111,13 +112,12 @@ python tests/test_phase2_modules.py
 | 图编码 | GATv2Conv | Edge-Enhanced Transformer |
 | 边特征 | 不支持 | 数据依赖+拓扑距离 |
 | 位置编码 | 无 | BTPE（双向拓扑） |
-| 资源特征 | 分散 | 9维统一 |
-| 任务选择 | Agent决策 | 环境自动（优先级） |
+| 资源特征 | 分散 | cleaned `resource_raw` |
+| 任务选择 | 单一目标头 | 显式 subtask head |
 | Batch支持 | 需要PyG Batch | 原生Tensor |
 
-## 下一步
+## 当前主线
 
-1. 完善 `offloading_policy.py` 的 `get_action()` 方法
-2. 创建新的 `mappo_agent.py` 适配新架构
-3. 更新训练脚本使用新网络
-
+1. 策略口径固定为 `autoregressive parameterized hybrid action policy`
+2. 动作为 `subtask + concrete target + unified remote power`
+3. V2I 固定为 `RB_SINR`，V2V 固定为 `resource-pool / RB reuse + same-RB interference`

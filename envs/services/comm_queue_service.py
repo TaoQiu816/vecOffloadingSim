@@ -68,6 +68,7 @@ class CommQueueService:
         """
         remaining = dt
         eps = 1e-9
+        slot_end = time_now + dt
 
         while remaining > eps and queue:
             job = queue[0]
@@ -75,10 +76,15 @@ class CommQueueService:
                 raise RuntimeError("rem_bytes negative")
             if job.rem_bytes < 0:
                 job.rem_bytes = 0.0
+            cursor = slot_end - remaining
+            ready_time = max(float(getattr(job, "enqueue_time", time_now)), cursor)
+            if ready_time >= slot_end - eps:
+                break
 
             # 首次推进：记录start_time
             if job.start_time is None:
-                job.start_time = time_now + (dt - remaining)
+                job.start_time = ready_time
+                comm_result.started_jobs.append(job)
 
             # 计算速率（EDGE用 power_dbm_override=MAX，INPUT 用 job.tx_power_dbm）
             rate = rate_fn(job, tx_node) if rate_fn is not None else self._compute_job_rate(job, tx_node, time_now, queue_type)
@@ -86,13 +92,16 @@ class CommQueueService:
                 break  # 无法推进
 
             # 推进传输
-            send = min(job.rem_bytes, rate * remaining)
+            available = max(slot_end - ready_time, 0.0)
+            if available <= eps:
+                break
+            send = min(job.rem_bytes, rate * available)
             time_used = send / rate
 
             job.rem_bytes -= send
             job.step_bytes_sent += send
             job.step_time_used += time_used
-            remaining -= time_used
+            remaining = max(slot_end - (ready_time + time_used), 0.0)
             if job.rem_bytes < -1e-9:
                 raise RuntimeError("rem_bytes negative after step")
             if job.rem_bytes < 0:
@@ -110,7 +119,7 @@ class CommQueueService:
 
             # 完成处理
             if job.rem_bytes <= eps:
-                job.finish_time = time_now + (dt - remaining)
+                job.finish_time = ready_time + time_used
                 queue.popleft()
                 comm_result.completed_jobs.append(job)
 

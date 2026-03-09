@@ -10,6 +10,7 @@ else:
 
 @dataclass
 class CommStepResult:
+    started_jobs: List[TransferJob] = field(default_factory=list)
     completed_jobs: List[TransferJob] = field(default_factory=list)
     energy_delta_cost: Dict[int, float] = field(default_factory=dict)  # INPUT计成本
     energy_delta_record_edge: Dict[int, float] = field(default_factory=dict)  # EDGE仅记录
@@ -20,6 +21,7 @@ class CommStepResult:
 
 @dataclass
 class CpuStepResult:
+    started_jobs: List[ComputeJob] = field(default_factory=list)
     completed_jobs: List[ComputeJob] = field(default_factory=list)
     energy_delta_cost_local: Dict[int, float] = field(default_factory=dict)
     cycles_done_local: Dict[int, float] = field(default_factory=dict)

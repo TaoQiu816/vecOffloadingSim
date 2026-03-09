@@ -79,16 +79,16 @@ TRAINING_STATS_FIELDS = [
     "reward_mean", "reward_total", "episode_reward", "reward_p95", "reward_abs_mean",
     "vehicle_sr", "task_sr", "subtask_sr",
     "task_duration_mean", "task_duration_p95", "completed_tasks",
-    "mean_cft_est", "episode_time_seconds",
+    "mean_cft_completed", "episode_time_seconds",
     "energy_mean", "energy_p95", "t_tx_mean", "dT_eff_mean",
     "deadline_misses", "deadline_miss_rate",
     "ratio_local", "ratio_rsu", "ratio_v2v",
     "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
     "avg_power", "avg_rsu_queue", "rsu_queue_p95", "power_ratio_mean", "power_ratio_p95",
     "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
-    "trust_failure_rate", "rho_selected_p10", "uncertainty_selected_p90",
     "tx_created", "same_node_no_tx", "service_rate_ghz", "idle_fraction",
     "time_limit_rate", "illegal_action_rate", "illegal_action_ratio", "no_task_rate", "on_task_rate", "has_task_available_rate",
+    "v2v_link_break_rate",
     "unified_illegal_trigger_rate", "hard_trigger_rate",
     # UNIFIED latency-centric reward audit (keep training_stats.csv aligned with metrics.csv)
     "r_margin", "r_margin_raw", "r_margin_norm",
@@ -101,7 +101,7 @@ TRAINING_STATS_FIELDS = [
     "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_margin", "abs_ratio_on_task_r_time", "abs_ratio_on_task_r_term",
     "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
     "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
-    "critic_loss_active", "critic_loss_inactive",
+    "critic_loss_active", "critic_loss_inactive", "mode_aux_loss", "mode_aux_acc",
     "ppo_epochs_executed", "num_minibatches_executed", "mb_kl_max", "mb_kl_p95",
     "early_stop_epoch_idx", "early_stop_batch_idx",
     "skipped_update_count", "early_stop", "lr",
@@ -117,7 +117,7 @@ REQUIRED_COMPARE_COLUMNS = [
     "decision_frac_local",
     "decision_frac_rsu",
     "decision_frac_v2v",
-    "mean_cft_est",
+    "mean_cft_completed",
     "episode_time_seconds",
     "deadline_miss_rate",
     "time_limit_rate",
@@ -128,9 +128,6 @@ REQUIRED_COMPARE_COLUMNS = [
     "I_total_p95",
     "I_caused_mean",
     "I_caused_p95",
-    "trust_failure_rate",
-    "rho_selected_p10",
-    "uncertainty_selected_p90",
 ]
 
 BASELINE_STATS_FIELDS = [
@@ -139,18 +136,14 @@ BASELINE_STATS_FIELDS = [
     "ratio_local", "ratio_rsu", "ratio_v2v",
     "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
     "avg_power", "power_ratio_mean", "power_ratio_p95",
-    "episode_time_seconds", "mean_cft_est", "mean_cft_completed",
+    "episode_time_seconds", "mean_cft_completed",
     "act_seconds", "makespan_seconds",
     "task_duration_mean", "task_duration_p95",
     "deadline_miss_rate", "deadline_meet_ratio", "time_limit_rate",
     "energy_mean", "energy_p95",
-    "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate", "unified_illegal_trigger_rate",
+    "illegal_action_rate", "no_task_rate", "on_task_rate", "has_task_available_rate", "v2v_link_break_rate", "unified_illegal_trigger_rate",
     "I_total_mean", "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
-    "rho_selected_mean", "rho_selected_p10", "risk_penalty_mean",
-    "rho_selected_p50", "rho_selected_p95", "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
-    "uncertainty_selected_mean", "uncertainty_selected_p90",
     "chain_tx_total", "chain_p95_mean", "chain_pfail_mean", "chain_risk_cost_total",
-    "trust_attempts", "trust_failures", "trust_failure_rate", "trust_retry_count",
     "avg_queue_len", "avg_rsu_queue",
 ]
 
@@ -479,7 +472,6 @@ def _print_unified_reward_scale_check():
     w_t = float(getattr(Cfg, "W_TIME", 0.0))
     w_e = float(getattr(Cfg, "W_ENERGY", 0.0))
     w_i = float(getattr(Cfg, "W_INTERF", 0.0))
-    w_r = float(getattr(Cfg, "W_RISK", 0.0))
     p_e = float(getattr(Cfg, "P_ENERGY", 1.0))
     p_i = float(getattr(Cfg, "P_INTERF", 1.0))
     e_ratio_cap = float(getattr(Cfg, "REWARD_SCALE_E_RATIO_CAP", 1.5))
@@ -488,8 +480,7 @@ def _print_unified_reward_scale_check():
     r_time_max = w_t * (dt / max(td_min, 1e-6))
     r_energy_max = w_e * (e_ratio_cap ** p_e)
     r_interf_max = w_i * (i_ratio_cap ** p_i)
-    r_risk_max = w_r
-    step_legal_cap = r_time_max + r_energy_max + r_interf_max + r_risk_max
+    step_legal_cap = r_time_max + r_energy_max + r_interf_max
     ep_legal_cap = step_legal_cap * max_steps
     term_cap = max(float(getattr(Cfg, "R_SUCC", 10.0)), float(getattr(Cfg, "R_FAIL", 10.0)))
     ratio = ep_legal_cap / max(term_cap, 1e-6)
@@ -576,6 +567,7 @@ def apply_env_overrides():
         "MAP_SIZE": "MAP_SIZE",
         "RSU_RANGE": "RSU_RANGE",
         "V2V_RANGE": "V2V_RANGE",
+        "PL_BETA_V2V": "PL_BETA_V2V",
         "MIN_COMP": "MIN_COMP",
         "MAX_COMP": "MAX_COMP",
         "NORM_MAX_COMP": "NORM_MAX_COMP",
@@ -584,18 +576,19 @@ def apply_env_overrides():
         "RSU_QUEUE_CYCLES_LIMIT": "RSU_QUEUE_CYCLES_LIMIT",
         "VEHICLE_QUEUE_CYCLES_LIMIT": "VEHICLE_QUEUE_CYCLES_LIMIT",
         "VEHICLE_SPAWN_X_MAX": "VEHICLE_SPAWN_X_MAX",
+        "VEH_CPU_HELPER_PROB": "VEH_CPU_HELPER_PROB",
+        "VEH_CPU_WEAK_MIN": "VEH_CPU_WEAK_MIN",
+        "VEH_CPU_WEAK_MAX": "VEH_CPU_WEAK_MAX",
+        "VEH_CPU_HELPER_MIN": "VEH_CPU_HELPER_MIN",
+        "VEH_CPU_HELPER_MAX": "VEH_CPU_HELPER_MAX",
+        "F_RSU": "F_RSU",
         # Reward shaping (latency-centric UNIFIED)
         "W_TIME": "W_TIME",
         "W_ENERGY": "W_ENERGY",
         "W_INTERF": "W_INTERF",
-        "W_RISK": "W_RISK",
         "W_ILLEGAL": "W_ILLEGAL",
         "R_SUCC": "R_SUCC",
         "R_FAIL": "R_FAIL",
-        "W_MARGIN_SHAPING": "W_MARGIN_SHAPING",
-        "MARGIN_CLIP_C": "MARGIN_CLIP_C",
-        "W_PROGRESS": "W_PROGRESS",
-        "PROGRESS_REF_SECONDS": "PROGRESS_REF_SECONDS",
         "TERMINAL_BONUS_SUCC": "TERMINAL_BONUS_SUCC",
         "TERMINAL_PENALTY_FAIL": "TERMINAL_PENALTY_FAIL",
         # Chain proxy parameters
@@ -633,7 +626,7 @@ def apply_env_overrides():
         "CHAIN_MODE": "CHAIN_MODE",
         "V2I_RATE_MODEL": "V2I_RATE_MODEL",
         "DEADLINE_MODE": "DEADLINE_MODE",
-        "UNIFIED_MAIN_REWARD_MODE": "UNIFIED_MAIN_REWARD_MODE",
+        "VEH_CPU_DIST_MODE": "VEH_CPU_DIST_MODE",
         # Trust / malicious sweep
         "REP_INIT_MODE": "REP_INIT_MODE",
         "TRUST_FAIL_SCOPE": "TRUST_FAIL_SCOPE",
@@ -641,7 +634,6 @@ def apply_env_overrides():
     overrides_bool = {
         "CHAIN_ENABLED": "CHAIN_ENABLED",
         "CHAIN_TRUST_DELAY_COUPLED": "CHAIN_TRUST_DELAY_COUPLED",
-        "TRUST_ENABLED": "TRUST_ENABLED",
         "V2I_ICI_ENABLED": "V2I_ICI_ENABLED",
     }
     for env_key, cfg_attr in overrides_float.items():
@@ -694,6 +686,8 @@ def apply_env_overrides():
         "LATE_GUARD_REL_DROP": "LATE_GUARD_REL_DROP",
         "LOGIT_BIAS_V2V_INIT": "LOGIT_BIAS_V2V_INIT",
         "LOGIT_BIAS_V2V_END": "LOGIT_BIAS_V2V_END",
+        "ORACLE_MODE_AUX_WEIGHT": "ORACLE_MODE_AUX_WEIGHT",
+        "LOGIT_BIAS_V2V_SIZE_CORR_COEF": "LOGIT_BIAS_V2V_SIZE_CORR_COEF",
     }
     tc_int = {
         "PPO_EPOCH": "PPO_EPOCH",
@@ -708,6 +702,7 @@ def apply_env_overrides():
         "LATE_GUARD_START_EP": "LATE_GUARD_START_EP",
         "LATE_GUARD_WINDOW": "LATE_GUARD_WINDOW",
         "LATE_GUARD_PATIENCE": "LATE_GUARD_PATIENCE",
+        "LOGIT_BIAS_V2V_SIZE_CORR_CAP": "LOGIT_BIAS_V2V_SIZE_CORR_CAP",
     }
     for env_key, attr in tc_float.items():
         val = _env_float(env_key)
@@ -758,6 +753,12 @@ def apply_env_overrides():
     late_guard_freeze = _env_bool("LATE_GUARD_FREEZE_AFTER_RESTORE")
     if late_guard_freeze is not None:
         TC.LATE_GUARD_FREEZE_AFTER_RESTORE = late_guard_freeze
+    use_oracle_mode_aux_loss = _env_bool("USE_ORACLE_MODE_AUX_LOSS")
+    if use_oracle_mode_aux_loss is not None:
+        TC.USE_ORACLE_MODE_AUX_LOSS = use_oracle_mode_aux_loss
+    oracle_mode_aux_v2v_only = _env_bool("ORACLE_MODE_AUX_V2V_ONLY")
+    if oracle_mode_aux_v2v_only is not None:
+        TC.ORACLE_MODE_AUX_V2V_ONLY = oracle_mode_aux_v2v_only
     # Ablation: Transformer layers
     num_layers = _env_int("NUM_LAYERS")
     if num_layers is not None:
@@ -798,7 +799,7 @@ def apply_env_overrides():
 
     Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "TOPK")).upper() == "ALL")
     Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
-    Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
+    Cfg.MAX_TARGETS = 1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS
 
 
 def _compute_unified_nominal_scale_check() -> Dict[str, float]:
@@ -827,16 +828,12 @@ def _compute_unified_nominal_scale_check() -> Dict[str, float]:
     p_energy = float(getattr(Cfg, "P_ENERGY", 1.0))
     w_interf = float(getattr(Cfg, "W_INTERF", 0.0))
     p_interf = float(getattr(Cfg, "P_INTERF", 1.0))
-    w_risk = float(getattr(Cfg, "W_RISK", 0.0))
-    p_risk = float(getattr(Cfg, "P_RISK", 1.0))
     e_ref = max(float(getattr(Cfg, "E_REF_UNIFIED", 1.0)), 1e-12)
 
     r_time = -w_time * (dt / max(Td, 1e-12))
     r_energy = -w_energy * ((max(e_tx, 0.0) / e_ref) ** p_energy)
     # Nominal check requirement: assume I_caused = I_ref => normalized interference = 1.
     r_interf = -w_interf * (1.0 ** p_interf)
-    r_risk = -w_risk * ((1.0 - rho) ** p_risk)
-
     return {
         "w_cycles": w_cycles,
         "f_hz": f_hz,
@@ -854,7 +851,6 @@ def _compute_unified_nominal_scale_check() -> Dict[str, float]:
         "r_time_step": float(r_time),
         "r_energy_step": float(r_energy),
         "r_interf_step": float(r_interf),
-        "r_risk_step": float(r_risk),
     }
 
 
@@ -864,7 +860,7 @@ def _print_unified_nominal_scale_check():
         "[ScaleCheck] UNIFIED nominal: "
         f"E_loc={vals['E_loc']:.6g}J E_tx={vals['E_tx']:.6g}J "
         f"r_time={vals['r_time_step']:.6g} r_energy={vals['r_energy_step']:.6g} "
-        f"r_interf={vals['r_interf_step']:.6g} r_risk={vals['r_risk_step']:.6g} "
+        f"r_interf={vals['r_interf_step']:.6g} "
         f"(B_RB={vals['B_RB']:.6g}Hz, SNR=20dB, dt=0.1, Td=10, rho=0.7)",
         flush=True,
     )
@@ -873,7 +869,6 @@ def _print_unified_nominal_scale_check():
         "r_time_step": abs(vals["r_time_step"]),
         "r_energy_step": abs(vals["r_energy_step"]),
         "r_interf_step": abs(vals["r_interf_step"]),
-        "r_risk_step": abs(vals["r_risk_step"]),
     }
     warned = False
     for name, mag in abs_parts.items():
@@ -1209,7 +1204,7 @@ def evaluate_baselines(env, num_episodes=10):
     baseline_results['EFT'] = np.mean(eft_rewards)
 
     # 5. 静态策略
-    static_policy = StaticPolicy()
+    static_policy = StaticPolicy(env)
     static_rewards = []
     for _ in range(num_episodes):
         obs_list, _ = env.reset()
@@ -1250,7 +1245,7 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     elif policy_name == 'LB-Greedy':
         policy = LBGreedyPolicy(env)
     elif policy_name == 'Static':
-        policy = StaticPolicy()
+        policy = StaticPolicy(env)
     else:
         raise ValueError(f"Unknown policy: {policy_name}")
     
@@ -1301,7 +1296,7 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
                 # Fallback: target index convention
                 if target == 0:
                     stats["local_cnt"] += 1
-                elif getattr(Cfg, "ENABLE_RSU_SELECTION", False) and 1 <= target <= int(getattr(Cfg, "NUM_RSU", 1)):
+                elif 1 <= target <= int(getattr(Cfg, "NUM_RSU", 1)):
                     stats["rsu_cnt"] += 1
                 else:
                     stats["neighbor_cnt"] += 1
@@ -1373,7 +1368,6 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     episode_time_seconds = epm.get("episode_time_seconds")
     time_limit_rate = epm.get("time_limit_rate")
     deadline_miss_rate = epm.get("deadline_miss_rate")
-    mean_cft_est = epm.get("mean_cft_est")
     mean_cft_completed = epm.get("mean_cft_completed")
     task_duration_mean = epm.get("task_duration_mean")
     task_duration_p95 = epm.get("task_duration_p95")
@@ -1384,26 +1378,18 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     I_total_p95 = epm.get("I_total_p95")
     I_caused_mean = epm.get("I_caused_mean")
     I_caused_p95 = epm.get("I_caused_p95")
-    rho_selected_mean = epm.get("rho_selected_mean")
-    rho_selected_p10 = epm.get("rho_selected_p10")
-    uncertainty_selected_mean = epm.get("uncertainty_selected_mean")
-    uncertainty_selected_p90 = epm.get("uncertainty_selected_p90")
-    risk_penalty_mean = epm.get("risk_penalty_mean")
     chain_tx_total = epm.get("chain_tx_total")
     chain_p95_mean = epm.get("chain_p95_mean")
     chain_pfail_mean = epm.get("chain_pfail_mean")
     chain_risk_cost_total = epm.get("chain_risk_cost_total")
-    trust_attempts = epm.get("trust_attempts")
-    trust_failures = epm.get("trust_failures")
-    trust_failure_rate = epm.get("trust_failure_rate")
-    trust_retry_count = epm.get("trust_retry_count")
     illegal_action_rate = epm.get("illegal_action_rate")
+    v2v_link_break_rate = epm.get("v2v_link_break_rate")
     no_task_rate = epm.get("no_task_rate")
     on_task_rate = epm.get("on_task_rate")
     has_task_available_rate = epm.get("has_task_available_rate")
     unified_illegal_trigger_rate = epm.get("unified_illegal_trigger_rate")
     makespan_seconds = episode_time_seconds
-    act_seconds = mean_cft_completed if mean_cft_completed is not None else mean_cft_est
+    act_seconds = mean_cft_completed
     deadline_meet_ratio = None
     if deadline_miss_rate is not None:
         try:
@@ -1431,7 +1417,6 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'time_limit_rate': float(time_limit_rate) if time_limit_rate is not None else None,
         'deadline_miss_rate': float(deadline_miss_rate) if deadline_miss_rate is not None else None,
         'deadline_meet_ratio': float(deadline_meet_ratio) if deadline_meet_ratio is not None else None,
-        'mean_cft_est': float(mean_cft_est) if mean_cft_est is not None else None,
         'mean_cft_completed': float(mean_cft_completed) if mean_cft_completed is not None else None,
         'act_seconds': float(act_seconds) if act_seconds is not None else None,
         'makespan_seconds': float(makespan_seconds) if makespan_seconds is not None else None,
@@ -1444,20 +1429,12 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'I_total_p95': float(I_total_p95) if I_total_p95 is not None else None,
         'I_caused_mean': float(I_caused_mean) if I_caused_mean is not None else None,
         'I_caused_p95': float(I_caused_p95) if I_caused_p95 is not None else None,
-        'rho_selected_mean': float(rho_selected_mean) if rho_selected_mean is not None else None,
-        'rho_selected_p10': float(rho_selected_p10) if rho_selected_p10 is not None else None,
-        'uncertainty_selected_mean': float(uncertainty_selected_mean) if uncertainty_selected_mean is not None else None,
-        'uncertainty_selected_p90': float(uncertainty_selected_p90) if uncertainty_selected_p90 is not None else None,
-        'risk_penalty_mean': float(risk_penalty_mean) if risk_penalty_mean is not None else None,
         'chain_tx_total': int(chain_tx_total) if chain_tx_total is not None else None,
         'chain_p95_mean': float(chain_p95_mean) if chain_p95_mean is not None else None,
         'chain_pfail_mean': float(chain_pfail_mean) if chain_pfail_mean is not None else None,
         'chain_risk_cost_total': float(chain_risk_cost_total) if chain_risk_cost_total is not None else None,
-        'trust_attempts': int(trust_attempts) if trust_attempts is not None else None,
-        'trust_failures': int(trust_failures) if trust_failures is not None else None,
-        'trust_failure_rate': float(trust_failure_rate) if trust_failure_rate is not None else None,
-        'trust_retry_count': int(trust_retry_count) if trust_retry_count is not None else None,
         'illegal_action_rate': float(illegal_action_rate) if illegal_action_rate is not None else None,
+        'v2v_link_break_rate': float(v2v_link_break_rate) if v2v_link_break_rate is not None else None,
         'no_task_rate': float(no_task_rate) if no_task_rate is not None else None,
         'on_task_rate': float(on_task_rate) if on_task_rate is not None else None,
         'has_task_available_rate': float(has_task_available_rate) if has_task_available_rate is not None else None,
@@ -1657,7 +1634,14 @@ def main():
         log_obs_stats = tb_log_obs.lower() in ("1", "true", "yes")
 
     # 确定训练设备
-    device = TC.DEVICE_NAME if torch.cuda.is_available() else "cpu"
+    requested_device = str(getattr(TC, "DEVICE_NAME", "cpu")).lower()
+    mps_available = bool(getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available())
+    if requested_device == "cuda":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    elif requested_device == "mps":
+        device = "mps" if mps_available else "cpu"
+    else:
+        device = "cpu"
     if device == "cuda":
         torch.cuda.empty_cache()
 
@@ -1745,13 +1729,20 @@ def main():
     run_meta = {
         "run_id": run_id,
         "run_dir": run_dir,
+        "status": "running",
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "git_commit": env_snapshot["GIT_COMMIT"],
         "config_hash": snapshot["config_hash"],
+        "config_snapshot_path": config_snapshot_path,
     }
     run_meta_path = os.path.join(run_dir, "run_meta.json")
-    with open(run_meta_path, "w", encoding="utf-8") as f:
-        json.dump(run_meta, f, ensure_ascii=True, indent=2, default=_json_default)
+    def _save_run_meta(extra: dict | None = None):
+        payload = dict(run_meta)
+        if extra:
+            payload.update(extra)
+        with open(run_meta_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2, default=_json_default)
+    _save_run_meta()
 
     reward_scheme = Cfg.REWARD_SCHEME
     if reward_scheme == "PBRS_KP_V2":
@@ -2011,6 +2002,7 @@ def main():
         "subtask_success_rate",
         "deadline_miss_rate",
         "illegal_action_rate",
+        "v2v_link_break_rate",
         "top_illegal_reason",
         "top_illegal_reason_count",
         "no_task_rate",
@@ -2049,6 +2041,8 @@ def main():
         "value_pred_mean",
         "value_pred_std",
         "value_clip_fraction",
+        "mode_aux_loss",
+        "mode_aux_acc",
         "skipped_update_count",
         # Diagnostics
         "avail_L",
@@ -2057,6 +2051,45 @@ def main():
         "neighbor_count_mean",
         "best_v2v_rate_mean",
         "best_v2v_valid_rate",
+        "best_mode_compare_rate",
+        "best_mode_local_rate",
+        "best_mode_rsu_rate",
+        "best_mode_v2v_rate",
+        "oracle_match_rate",
+        "oracle_match_eps_abs_rate",
+        "oracle_match_eps_rel_rate",
+        "action_regret_mean",
+        "action_regret_p50",
+        "action_regret_p95",
+        "oracle_match_rate_on_task",
+        "action_regret_mean_on_task",
+        "target_match_within_mode_rate",
+        "target_regret_within_mode_mean",
+        "oracle_local_chosen_local_rate",
+        "oracle_local_chosen_rsu_rate",
+        "oracle_local_chosen_v2v_rate",
+        "oracle_rsu_chosen_local_rate",
+        "oracle_rsu_chosen_rsu_rate",
+        "oracle_rsu_chosen_v2v_rate",
+        "oracle_v2v_chosen_local_rate",
+        "oracle_v2v_chosen_rsu_rate",
+        "oracle_v2v_chosen_v2v_rate",
+        "oracle_v2v_chosen_rsu_count",
+        "oracle_v2v_chosen_rsu_adv_mean",
+        "oracle_v2v_chosen_rsu_ret_mean",
+        "oracle_v2v_chosen_rsu_rew_mean",
+        "oracle_v2v_chosen_v2v_count",
+        "oracle_v2v_chosen_v2v_adv_mean",
+        "oracle_v2v_chosen_v2v_ret_mean",
+        "oracle_v2v_chosen_v2v_rew_mean",
+        "oracle_rsu_chosen_rsu_count",
+        "oracle_rsu_chosen_rsu_adv_mean",
+        "oracle_rsu_chosen_rsu_ret_mean",
+        "oracle_rsu_chosen_rsu_rew_mean",
+        "oracle_rsu_chosen_v2v_count",
+        "oracle_rsu_chosen_v2v_adv_mean",
+        "oracle_rsu_chosen_v2v_ret_mean",
+        "oracle_rsu_chosen_v2v_rew_mean",
         "v2v_beats_rsu_rate",
         "mean_cost_gap_v2v_minus_rsu",
         "mean_cost_rsu",
@@ -2231,6 +2264,19 @@ def main():
             active_mask = info.get("active_agent_mask")
             if not active_mask or len(active_mask) != len(train_rewards):
                 active_mask = [1] * len(train_rewards)
+            oracle_step_info = info.get("oracle_step_info") if isinstance(info, dict) else None
+            if isinstance(oracle_step_info, list):
+                mode_map = {"local": 1, "rsu": 2, "v2v": 3}
+                for i, obs in enumerate(obs_list):
+                    if i >= len(oracle_step_info) or not isinstance(obs, dict):
+                        continue
+                    row = oracle_step_info[i]
+                    if not isinstance(row, dict):
+                        continue
+                    obs["oracle_mode_id"] = int(mode_map.get(str(row.get("oracle_mode", "")).lower(), 0))
+                    obs["oracle_valid"] = int(row.get("oracle_valid", 0) or 0)
+                    obs["oracle_mode"] = str(row.get("oracle_mode", "") or "").lower()
+                    obs["chosen_mode"] = str(row.get("chosen_mode", "") or "").lower()
             stats["active_sum"] += float(np.sum(active_mask))
             stats["active_total"] += float(len(active_mask))
             # 追踪每个Agent的累计奖励
@@ -2325,13 +2371,41 @@ def main():
 
             # 记录详细日志
             if log_step_logs:
+                oracle_step_info = info.get("oracle_step_info") if isinstance(info, dict) else None
                 for i, act in enumerate(actions):
+                    oracle_row = oracle_step_info[i] if isinstance(oracle_step_info, list) and i < len(oracle_step_info) and isinstance(oracle_step_info[i], dict) else {}
                     step_logs_buffer.append({
                         "episode": episode, "step": step, "veh_id": i,
                         "target": act['target'],
                         "power": f"{act['power']:.3f}",
                         "reward": f"{train_rewards[i]:.3f}",
-                        "q_len": env.vehicles[i].task_queue_len
+                        "q_len": env.vehicles[i].task_queue_len,
+                        "oracle_valid": int(oracle_row.get("oracle_valid", 0) or 0),
+                        "chosen_mode": oracle_row.get("chosen_mode", ""),
+                        "oracle_mode": oracle_row.get("oracle_mode", ""),
+                        "chosen_target_id": oracle_row.get("chosen_target_id"),
+                        "best_rsu_id_for_diag": oracle_row.get("best_rsu_id_for_diag"),
+                        "best_v2v_helper_id_for_diag": oracle_row.get("best_v2v_helper_id_for_diag"),
+                        "J_local": oracle_row.get("J_local"),
+                        "J_best_rsu": oracle_row.get("J_best_rsu"),
+                        "J_best_v2v": oracle_row.get("J_best_v2v"),
+                        "J_oracle": oracle_row.get("J_oracle"),
+                        "J_chosen_mode_besttarget": oracle_row.get("J_chosen_mode_besttarget"),
+                        "snapshot_action_regret": oracle_row.get("snapshot_action_regret"),
+                        "snapshot_oracle_match": oracle_row.get("snapshot_oracle_match"),
+                        "snapshot_oracle_match_eps_abs": oracle_row.get("snapshot_oracle_match_eps_abs"),
+                        "snapshot_oracle_match_eps_rel": oracle_row.get("snapshot_oracle_match_eps_rel"),
+                        "target_match_within_mode": oracle_row.get("target_match_within_mode"),
+                        "target_regret_within_mode": oracle_row.get("target_regret_within_mode"),
+                        "task_comp_cycles": oracle_row.get("task_comp_cycles"),
+                        "task_data_bits": oracle_row.get("task_data_bits"),
+                        "local_cpu_hz": oracle_row.get("local_cpu_hz"),
+                        "deadline_remaining_seconds": oracle_row.get("deadline_remaining_seconds"),
+                        "oracle_slack_seconds": oracle_row.get("oracle_slack_seconds"),
+                        "comp_bucket": oracle_row.get("comp_bucket", ""),
+                        "cpu_bucket": oracle_row.get("cpu_bucket", ""),
+                        "slack_bucket": oracle_row.get("slack_bucket", ""),
+                        "decision_state": oracle_row.get("decision_state", ""),
                     })
 
             obs_list = next_obs_list
@@ -2481,6 +2555,7 @@ def main():
         subtask_success = env_stats.get("subtask_success_rate") if env_stats else subtask_success_rate
         deadline_miss_rate = env_stats.get("deadline_miss_rate") if env_stats else 0.0
         illegal_action_rate = env_stats.get("illegal_action_rate") if env_stats else None
+        v2v_link_break_rate = env_stats.get("v2v_link_break_rate") if env_stats else None
         top_illegal_reason = env_stats.get("top_illegal_reason") if env_stats else ""
         top_illegal_reason_count = env_stats.get("top_illegal_reason_count") if env_stats else 0
         no_task_rate = env_stats.get("no_task_rate") if env_stats else None
@@ -2651,20 +2726,11 @@ def main():
 
         # Component dominance ratios (abs contribution shares)
         _is_unified = str(getattr(Cfg, "REWARD_SCHEME", "")).upper() == "UNIFIED"
-        _unified_reward_mode = str(getattr(Cfg, "UNIFIED_MAIN_REWARD_MODE", "margin_term_illegal")).lower()
         abs_parts = {
             # Keep dominance ratios aligned with the actual optimization target.
-            "r_time": (
-                r_time_abs_mean
-                if (_is_unified and _unified_reward_mode == "time_margin_term_illegal_interf")
-                else (0.0 if _is_unified else r_time_abs_mean)
-            ),
-            "r_energy": 0.0 if _is_unified else r_energy_abs_mean,
-            "r_interf": (
-                r_interf_abs_mean
-                if (_is_unified and _unified_reward_mode == "time_margin_term_illegal_interf")
-                else (0.0 if _is_unified else r_interf_abs_mean)
-            ),
+            "r_time": r_time_abs_mean,
+            "r_energy": r_energy_abs_mean,
+            "r_interf": r_interf_abs_mean,
             "r_risk": 0.0 if _is_unified else r_risk_abs_mean,
             "r_illegal": r_illegal_abs_mean,
             "r_pbrs": 0.0 if _is_unified else r_pbrs_abs_mean,
@@ -2690,6 +2756,29 @@ def main():
         neighbor_count_mean = env_stats.get("neighbor_count_mean") if env_stats else None
         best_v2v_rate_mean = env_stats.get("best_v2v_rate_mean") if env_stats else None
         best_v2v_valid_rate = env_stats.get("best_v2v_valid_rate") if env_stats else None
+        best_mode_compare_rate = env_stats.get("best_mode_compare_rate") if env_stats else None
+        best_mode_local_rate = env_stats.get("best_mode_local_rate") if env_stats else None
+        best_mode_rsu_rate = env_stats.get("best_mode_rsu_rate") if env_stats else None
+        best_mode_v2v_rate = env_stats.get("best_mode_v2v_rate") if env_stats else None
+        oracle_match_rate = env_stats.get("oracle_match_rate") if env_stats else None
+        oracle_match_eps_abs_rate = env_stats.get("oracle_match_eps_abs_rate") if env_stats else None
+        oracle_match_eps_rel_rate = env_stats.get("oracle_match_eps_rel_rate") if env_stats else None
+        action_regret_mean = env_stats.get("action_regret_mean") if env_stats else None
+        action_regret_p50 = env_stats.get("action_regret_p50") if env_stats else None
+        action_regret_p95 = env_stats.get("action_regret_p95") if env_stats else None
+        oracle_match_rate_on_task = env_stats.get("oracle_match_rate_on_task") if env_stats else None
+        action_regret_mean_on_task = env_stats.get("action_regret_mean_on_task") if env_stats else None
+        target_match_within_mode_rate = env_stats.get("target_match_within_mode_rate") if env_stats else None
+        target_regret_within_mode_mean = env_stats.get("target_regret_within_mode_mean") if env_stats else None
+        oracle_local_chosen_local_rate = env_stats.get("oracle_local_chosen_local_rate") if env_stats else None
+        oracle_local_chosen_rsu_rate = env_stats.get("oracle_local_chosen_rsu_rate") if env_stats else None
+        oracle_local_chosen_v2v_rate = env_stats.get("oracle_local_chosen_v2v_rate") if env_stats else None
+        oracle_rsu_chosen_local_rate = env_stats.get("oracle_rsu_chosen_local_rate") if env_stats else None
+        oracle_rsu_chosen_rsu_rate = env_stats.get("oracle_rsu_chosen_rsu_rate") if env_stats else None
+        oracle_rsu_chosen_v2v_rate = env_stats.get("oracle_rsu_chosen_v2v_rate") if env_stats else None
+        oracle_v2v_chosen_local_rate = env_stats.get("oracle_v2v_chosen_local_rate") if env_stats else None
+        oracle_v2v_chosen_rsu_rate = env_stats.get("oracle_v2v_chosen_rsu_rate") if env_stats else None
+        oracle_v2v_chosen_v2v_rate = env_stats.get("oracle_v2v_chosen_v2v_rate") if env_stats else None
         collab_gain_mean = env_stats.get("v2v_gain_mean") if env_stats else None
         collab_gain_pos_rate = env_stats.get("v2v_gain_pos_rate") if env_stats else None
         collab_gain_pos_mean = env_stats.get("v2v_gain_pos_mean") if env_stats else None
@@ -2698,6 +2787,29 @@ def main():
         if avail_V is None: avail_V = 0.0
         if neighbor_count_mean is None: neighbor_count_mean = 0.0
         if best_v2v_valid_rate is None or not (np.isfinite(best_v2v_valid_rate)): best_v2v_valid_rate = 0.0
+        if best_mode_compare_rate is None or not np.isfinite(best_mode_compare_rate): best_mode_compare_rate = 0.0
+        if best_mode_local_rate is None or not np.isfinite(best_mode_local_rate): best_mode_local_rate = 0.0
+        if best_mode_rsu_rate is None or not np.isfinite(best_mode_rsu_rate): best_mode_rsu_rate = 0.0
+        if best_mode_v2v_rate is None or not np.isfinite(best_mode_v2v_rate): best_mode_v2v_rate = 0.0
+        if oracle_match_rate is None or not np.isfinite(oracle_match_rate): oracle_match_rate = 0.0
+        if oracle_match_eps_abs_rate is None or not np.isfinite(oracle_match_eps_abs_rate): oracle_match_eps_abs_rate = 0.0
+        if oracle_match_eps_rel_rate is None or not np.isfinite(oracle_match_eps_rel_rate): oracle_match_eps_rel_rate = 0.0
+        if action_regret_mean is None or not np.isfinite(action_regret_mean): action_regret_mean = 0.0
+        if action_regret_p50 is None or not np.isfinite(action_regret_p50): action_regret_p50 = 0.0
+        if action_regret_p95 is None or not np.isfinite(action_regret_p95): action_regret_p95 = 0.0
+        if oracle_match_rate_on_task is None or not np.isfinite(oracle_match_rate_on_task): oracle_match_rate_on_task = 0.0
+        if action_regret_mean_on_task is None or not np.isfinite(action_regret_mean_on_task): action_regret_mean_on_task = 0.0
+        if target_match_within_mode_rate is None or not np.isfinite(target_match_within_mode_rate): target_match_within_mode_rate = 0.0
+        if target_regret_within_mode_mean is None or not np.isfinite(target_regret_within_mode_mean): target_regret_within_mode_mean = 0.0
+        if oracle_local_chosen_local_rate is None or not np.isfinite(oracle_local_chosen_local_rate): oracle_local_chosen_local_rate = 0.0
+        if oracle_local_chosen_rsu_rate is None or not np.isfinite(oracle_local_chosen_rsu_rate): oracle_local_chosen_rsu_rate = 0.0
+        if oracle_local_chosen_v2v_rate is None or not np.isfinite(oracle_local_chosen_v2v_rate): oracle_local_chosen_v2v_rate = 0.0
+        if oracle_rsu_chosen_local_rate is None or not np.isfinite(oracle_rsu_chosen_local_rate): oracle_rsu_chosen_local_rate = 0.0
+        if oracle_rsu_chosen_rsu_rate is None or not np.isfinite(oracle_rsu_chosen_rsu_rate): oracle_rsu_chosen_rsu_rate = 0.0
+        if oracle_rsu_chosen_v2v_rate is None or not np.isfinite(oracle_rsu_chosen_v2v_rate): oracle_rsu_chosen_v2v_rate = 0.0
+        if oracle_v2v_chosen_local_rate is None or not np.isfinite(oracle_v2v_chosen_local_rate): oracle_v2v_chosen_local_rate = 0.0
+        if oracle_v2v_chosen_rsu_rate is None or not np.isfinite(oracle_v2v_chosen_rsu_rate): oracle_v2v_chosen_rsu_rate = 0.0
+        if oracle_v2v_chosen_v2v_rate is None or not np.isfinite(oracle_v2v_chosen_v2v_rate): oracle_v2v_chosen_v2v_rate = 0.0
         if best_v2v_rate_mean is None or (isinstance(best_v2v_rate_mean, float) and not np.isfinite(best_v2v_rate_mean)):
             best_v2v_rate_mean = float("nan")
         if collab_gain_pos_rate is not None:
@@ -2798,9 +2910,11 @@ def main():
             _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
             last_value = agent.get_value(obs_list)
             buffer.compute_returns_and_advantages(last_value, last_obs_list=obs_list)
+            oracle_adv_stats = buffer.get_oracle_group_adv_stats()
             update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
             buffer.clear()
             update_stats = getattr(agent, "last_update_stats", {}) or {}
+            update_stats.update(oracle_adv_stats)
         ep_cost_mean = {k: (ep_cost_sum[k] / max(ep_cost_steps, 1)) for k in ep_cost_sum.keys()}
         lagrange_state = lagrange.update_episode(ep_cost_mean, episode)
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
@@ -2825,11 +2939,11 @@ def main():
             _anneal_frac = float(np.clip(getattr(TC, "BIAS_ANNEAL_FRAC", 0.50), 0.05, 1.0))
             _anneal_steps = max(int(_total_plan_steps * _anneal_frac), 1)
             _prog = min(_global_train_steps / float(_anneal_steps), 1.0)
-            _l0 = float(getattr(TC, "LOGIT_BIAS_LOCAL_INIT", 0.2))
+            _l0 = float(getattr(TC, "LOGIT_BIAS_LOCAL_INIT", 0.0))
             _l1 = float(getattr(TC, "LOGIT_BIAS_LOCAL_END", 0.0))
-            _r0 = float(getattr(TC, "LOGIT_BIAS_RSU_INIT", 0.05))
+            _r0 = float(getattr(TC, "LOGIT_BIAS_RSU_INIT", 0.0))
             _r1 = float(getattr(TC, "LOGIT_BIAS_RSU_END", 0.0))
-            _v0 = float(getattr(TC, "LOGIT_BIAS_V2V_INIT", 0.10))
+            _v0 = float(getattr(TC, "LOGIT_BIAS_V2V_INIT", 0.0))
             _v1 = float(getattr(TC, "LOGIT_BIAS_V2V_END", 0.0))
             # 线性插值: bias = init + prog * (end - init)
             TC.LOGIT_BIAS_LOCAL = _l0 + _prog * (_l1 - _l0)
@@ -3009,10 +3123,7 @@ def main():
             "margin_skip_count": int(margin_skip_count) if margin_skip_count is not None else 0,
             "reward_clip_hit_count": int(reward_clip_hit_count) if reward_clip_hit_count is not None else 0,
             "reward_clip_hit_rate": float(reward_clip_hit_rate) if reward_clip_hit_rate is not None and np.isfinite(reward_clip_hit_rate) else 0.0,
-            "abs_ratio_basis": str(
-                abs_ratio_basis
-                or (f"unified_{_unified_reward_mode}" if _is_unified else "default_abs_parts")
-            ),
+            "abs_ratio_basis": str(abs_ratio_basis or ("unified_mainline" if _is_unified else "default_abs_parts")),
             "r_prog_on_task_mean": float(r_prog_on_task_mean) if r_prog_on_task_mean is not None and np.isfinite(r_prog_on_task_mean) else 0.0,
             "r_margin_on_task_mean": float(r_margin_on_task_mean) if r_margin_on_task_mean is not None and np.isfinite(r_margin_on_task_mean) else 0.0,
             "r_time_on_task_mean": float(r_time_on_task_mean) if r_time_on_task_mean is not None and np.isfinite(r_time_on_task_mean) else 0.0,
@@ -3043,6 +3154,7 @@ def main():
             "deadline_miss_rate": deadline_miss_rate,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "illegal_action_ratio": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "v2v_link_break_rate": v2v_link_break_rate if v2v_link_break_rate is not None else 0.0,
             "top_illegal_reason": str(top_illegal_reason or ""),
             "top_illegal_reason_count": int(top_illegal_reason_count or 0),
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
@@ -3091,10 +3203,51 @@ def main():
             "neighbor_count_mean": neighbor_count_mean,
             "best_v2v_rate_mean": best_v2v_rate_mean,
             "best_v2v_valid_rate": best_v2v_valid_rate,
+            "best_mode_compare_rate": best_mode_compare_rate,
+            "best_mode_local_rate": best_mode_local_rate,
+            "best_mode_rsu_rate": best_mode_rsu_rate,
+            "best_mode_v2v_rate": best_mode_v2v_rate,
+            "oracle_match_rate": oracle_match_rate,
+            "oracle_match_eps_abs_rate": oracle_match_eps_abs_rate,
+            "oracle_match_eps_rel_rate": oracle_match_eps_rel_rate,
+            "action_regret_mean": action_regret_mean,
+            "action_regret_p50": action_regret_p50,
+            "action_regret_p95": action_regret_p95,
+            "oracle_match_rate_on_task": oracle_match_rate_on_task,
+            "action_regret_mean_on_task": action_regret_mean_on_task,
+            "target_match_within_mode_rate": target_match_within_mode_rate,
+            "target_regret_within_mode_mean": target_regret_within_mode_mean,
+            "oracle_local_chosen_local_rate": oracle_local_chosen_local_rate,
+            "oracle_local_chosen_rsu_rate": oracle_local_chosen_rsu_rate,
+            "oracle_local_chosen_v2v_rate": oracle_local_chosen_v2v_rate,
+            "oracle_rsu_chosen_local_rate": oracle_rsu_chosen_local_rate,
+            "oracle_rsu_chosen_rsu_rate": oracle_rsu_chosen_rsu_rate,
+            "oracle_rsu_chosen_v2v_rate": oracle_rsu_chosen_v2v_rate,
+            "oracle_v2v_chosen_local_rate": oracle_v2v_chosen_local_rate,
+            "oracle_v2v_chosen_rsu_rate": oracle_v2v_chosen_rsu_rate,
+            "oracle_v2v_chosen_v2v_rate": oracle_v2v_chosen_v2v_rate,
+            "oracle_v2v_chosen_rsu_count": update_stats.get("oracle_v2v_chosen_rsu_count"),
+            "oracle_v2v_chosen_rsu_adv_mean": update_stats.get("oracle_v2v_chosen_rsu_adv_mean"),
+            "oracle_v2v_chosen_rsu_ret_mean": update_stats.get("oracle_v2v_chosen_rsu_ret_mean"),
+            "oracle_v2v_chosen_rsu_rew_mean": update_stats.get("oracle_v2v_chosen_rsu_rew_mean"),
+            "oracle_v2v_chosen_v2v_count": update_stats.get("oracle_v2v_chosen_v2v_count"),
+            "oracle_v2v_chosen_v2v_adv_mean": update_stats.get("oracle_v2v_chosen_v2v_adv_mean"),
+            "oracle_v2v_chosen_v2v_ret_mean": update_stats.get("oracle_v2v_chosen_v2v_ret_mean"),
+            "oracle_v2v_chosen_v2v_rew_mean": update_stats.get("oracle_v2v_chosen_v2v_rew_mean"),
+            "oracle_rsu_chosen_rsu_count": update_stats.get("oracle_rsu_chosen_rsu_count"),
+            "oracle_rsu_chosen_rsu_adv_mean": update_stats.get("oracle_rsu_chosen_rsu_adv_mean"),
+            "oracle_rsu_chosen_rsu_ret_mean": update_stats.get("oracle_rsu_chosen_rsu_ret_mean"),
+            "oracle_rsu_chosen_rsu_rew_mean": update_stats.get("oracle_rsu_chosen_rsu_rew_mean"),
+            "oracle_rsu_chosen_v2v_count": update_stats.get("oracle_rsu_chosen_v2v_count"),
+            "oracle_rsu_chosen_v2v_adv_mean": update_stats.get("oracle_rsu_chosen_v2v_adv_mean"),
+            "oracle_rsu_chosen_v2v_ret_mean": update_stats.get("oracle_rsu_chosen_v2v_ret_mean"),
+            "oracle_rsu_chosen_v2v_rew_mean": update_stats.get("oracle_rsu_chosen_v2v_rew_mean"),
             "v2v_beats_rsu_rate": v2v_beats_rsu_rate,
             "mean_cost_gap_v2v_minus_rsu": mean_cost_gap,
             "mean_cost_rsu": mean_cost_rsu,
             "mean_cost_v2v": mean_cost_v2v,
+            "mode_aux_loss": update_stats.get("mode_aux_loss"),
+            "mode_aux_acc": update_stats.get("mode_aux_acc"),
             # PBRS_KP_V2 diagnostics
             "t_L": t_L if t_L is not None else 0.0,
             "t_R": t_R if t_R is not None else 0.0,
@@ -3192,7 +3345,7 @@ def main():
             "task_duration_mean": task_duration_mean if task_duration_mean is not None else 0.0,
             "task_duration_p95": task_duration_p95 if task_duration_p95 is not None else 0.0,
             "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,
-            "mean_cft_est": mean_cft_est if mean_cft_est is not None else 0.0,
+            "mean_cft_completed": mean_cft_completed if mean_cft_completed is not None else 0.0,
             "episode_time_seconds": episode_time_seconds if episode_time_seconds is not None else 0.0,
             "energy_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
             "energy_p95": energy_norm_p95 if energy_norm_p95 is not None else 0.0,
@@ -3217,9 +3370,6 @@ def main():
             "I_total_p95": I_total_p95 if I_total_p95 is not None else 0.0,
             "I_caused_mean": I_caused_mean if I_caused_mean is not None else 0.0,
             "I_caused_p95": I_caused_p95 if I_caused_p95 is not None else 0.0,
-            "trust_failure_rate": trust_failure_rate if trust_failure_rate is not None else 0.0,
-            "rho_selected_p10": rho_selected_p10 if rho_selected_p10 is not None else 0.0,
-            "uncertainty_selected_p90": uncertainty_selected_p90 if uncertainty_selected_p90 is not None else 0.0,
             # 服务指标
             "tx_created": tx_created,             # TX
             "same_node_no_tx": same_node_no_tx,   # NoTX
@@ -3229,6 +3379,7 @@ def main():
             "time_limit_rate": time_limit_rate if time_limit_rate is not None else 0.0,
             "illegal_action_rate": illegal_action_rate if illegal_action_rate is not None else 0.0,
             "illegal_action_ratio": illegal_action_rate if illegal_action_rate is not None else 0.0,
+            "v2v_link_break_rate": v2v_link_break_rate if v2v_link_break_rate is not None else 0.0,
             "no_task_rate": no_task_rate if no_task_rate is not None else 0.0,
             "on_task_rate": on_task_rate if on_task_rate is not None else 0.0,
             "has_task_available_rate": has_task_available_rate if has_task_available_rate is not None else 0.0,
@@ -3248,6 +3399,8 @@ def main():
             "value_clip_fraction": update_stats.get("value_clip_fraction"),
             "critic_loss_active": update_stats.get("critic_loss_active"),
             "critic_loss_inactive": update_stats.get("critic_loss_inactive"),
+            "mode_aux_loss": update_stats.get("mode_aux_loss"),
+            "mode_aux_acc": update_stats.get("mode_aux_acc"),
             "ppo_epochs_executed": update_stats.get("ppo_epochs_executed"),
             "num_minibatches_executed": update_stats.get("num_minibatches_executed"),
             "mb_kl_max": update_stats.get("mb_kl_max"),
@@ -3368,6 +3521,19 @@ def main():
                 tb.add_scalar("diag/best_v2v_rate_mean", best_v2v_rate_mean, episode)
             if best_v2v_valid_rate is not None:
                 tb.add_scalar("diag/best_v2v_valid_rate", best_v2v_valid_rate, episode)
+            tb.add_scalar("diag/best_mode_compare_rate", best_mode_compare_rate, episode)
+            tb.add_scalar("diag/best_mode_local_rate", best_mode_local_rate, episode)
+            tb.add_scalar("diag/best_mode_rsu_rate", best_mode_rsu_rate, episode)
+            tb.add_scalar("diag/best_mode_v2v_rate", best_mode_v2v_rate, episode)
+            tb.add_scalar("diag/oracle_match_rate", oracle_match_rate, episode)
+            tb.add_scalar("diag/oracle_match_eps_abs_rate", oracle_match_eps_abs_rate, episode)
+            tb.add_scalar("diag/oracle_match_eps_rel_rate", oracle_match_eps_rel_rate, episode)
+            tb.add_scalar("diag/action_regret_mean", action_regret_mean, episode)
+            tb.add_scalar("diag/action_regret_p95", action_regret_p95, episode)
+            tb.add_scalar("diag/target_match_within_mode_rate", target_match_within_mode_rate, episode)
+            tb.add_scalar("diag/oracle_rsu_chosen_v2v_rate", oracle_rsu_chosen_v2v_rate, episode)
+            tb.add_scalar("diag/oracle_v2v_chosen_rsu_rate", oracle_v2v_chosen_rsu_rate, episode)
+            tb.add_scalar("diag/oracle_v2v_chosen_v2v_rate", oracle_v2v_chosen_v2v_rate, episode)
             tb.add_scalar("diag/v2v_beats_rsu_rate", v2v_beats_rsu_rate, episode)
             if mean_cost_gap is not None and np.isfinite(mean_cost_gap):
                 tb.add_scalar("diag/mean_cost_gap_v2v_minus_rsu", mean_cost_gap, episode)
@@ -3414,6 +3580,17 @@ def main():
             "v2v_gain_mean": collab_gain_mean if collab_gain_mean is not None else 0.0,
             "v2v_gain_pos_rate": collab_gain_pos_rate if collab_gain_pos_rate is not None else (collaboration_rate / 100.0),
             "v2v_gain_pos_mean": collab_gain_pos_mean if collab_gain_pos_mean is not None else 0.0,
+            "best_mode_local_rate": best_mode_local_rate,
+            "best_mode_rsu_rate": best_mode_rsu_rate,
+            "best_mode_v2v_rate": best_mode_v2v_rate,
+            "oracle_match_rate": oracle_match_rate,
+            "oracle_match_eps_abs_rate": oracle_match_eps_abs_rate,
+            "oracle_match_eps_rel_rate": oracle_match_eps_rel_rate,
+            "action_regret_mean": action_regret_mean,
+            "action_regret_p95": action_regret_p95,
+            "oracle_rsu_chosen_v2v_rate": oracle_rsu_chosen_v2v_rate,
+            "oracle_v2v_chosen_rsu_rate": oracle_v2v_chosen_rsu_rate,
+            "oracle_v2v_chosen_v2v_rate": oracle_v2v_chosen_v2v_rate,
             "max_agent_reward": max_agent_r,
             "min_agent_reward": min_agent_r,
             "avg_assigned_cpu_ghz": avg_assigned_cpu / 1e9,
@@ -3636,6 +3813,17 @@ def main():
         f"{os.path.join(recorder.model_dir, 'last_model.pth')}",
         flush=True,
     )
+    _save_run_meta({
+        "status": "completed",
+        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "episodes_completed": int(TC.MAX_EPISODES),
+        "best_reward": float(best_reward),
+        "best_success_rate_50ep": float(best_success_rate),
+        "best_model_path": os.path.join(recorder.model_dir, "best_model.pth"),
+        "last_model_path": os.path.join(recorder.model_dir, "last_model.pth"),
+        "metrics_csv_path": metrics_csv_path,
+        "training_stats_csv_path": training_stats_csv,
+    })
 
     # =========================================================================
     # 训练结束：自动绘图 (Auto Plotting)

@@ -120,13 +120,14 @@ def _safe_float(x, default=0.0) -> float:
 
 
 # resource_raw layout in env._get_obs (vec_offloading_env.py):
-# col0 cpu_norm, col1 queue_wait_norm, col2 dist_norm, col3 rate_hint_norm,
-# col9 slack_norm, col10 contact_norm, col11 t_comp_lb_norm, col12 rho, col13 unc
+# col0 cpu_norm, col1 comp_backlog_norm, col2 tx_backlog_norm, col3 dist_norm,
+# col4 rel_x, col5 rel_y, col6 rel_speed_norm, col7 contact_norm,
+# col8 contention_norm, col9 occupancy_norm
 
 def _estimate_target_score_from_obs(obs: Dict, subtask_idx: int, target_idx: int) -> float:
     """Snapshot-only heuristic score (lower is better), using obs explicit fields only.
 
-    Approx score = queue_wait + comp_lb + tx_lb_proxy + trust_penalty + contact_penalty.
+    Approx score = comp_backlog + tx_backlog + comp_lb_proxy + tx_lb_proxy + congestion_penalty.
     This is intentionally lightweight and non-oracle.
     """
     raw = np.asarray(obs.get("resource_raw", []), dtype=np.float32)
@@ -138,12 +139,13 @@ def _estimate_target_score_from_obs(obs: Dict, subtask_idx: int, target_idx: int
     rr = raw[target_idx]
     t = int(ctype[target_idx]) if target_idx < len(ctype) else 0
 
-    queue_wait = _safe_float(rr[1], 1.0)
-    t_comp_lb = _safe_float(rr[11], 1.0)
-    slack_norm = _safe_float(rr[9], 0.0)
-    contact_norm = _safe_float(rr[10], 0.0)
-    rho = _safe_float(rr[12], 1.0)
-    unc = _safe_float(rr[13], 0.0)
+    cpu_norm = max(_safe_float(rr[0], 0.0), 1e-3)
+    comp_backlog = _safe_float(rr[1], 0.0)
+    tx_backlog = _safe_float(rr[2], 0.0)
+    dist_norm = _safe_float(rr[3], 1.0)
+    contact_norm = _safe_float(rr[7], 0.0)
+    contention_norm = _safe_float(rr[8], 0.0)
+    occupancy_norm = _safe_float(rr[9], 0.0)
 
     rem_data_norm = 0.0
     rem_comp_norm = 0.0
@@ -152,19 +154,22 @@ def _estimate_target_score_from_obs(obs: Dict, subtask_idx: int, target_idx: int
         rem_comp_norm = _safe_float(node_x[subtask_idx][0], 0.0)
         rem_data_norm = _safe_float(node_x[subtask_idx][1], 0.0)
 
-    # Local has no input TX. Remote uses previous realized rate or reference rate proxy.
+    comp_lb_proxy = (rem_comp_norm + comp_backlog) / cpu_norm
+
+    # Local has no input TX. Remote uses previous realized rate or distance proxy.
     tx_lb_proxy = 0.0
     if t in (2, 3):
         rate_hint = 0.0
         if target_idx < len(rate_prev):
             rate_hint = max(rate_hint, _safe_float(rate_prev[target_idx], 0.0))
-        rate_hint = max(rate_hint, _safe_float(rr[3], 0.0))
+        if rate_hint <= 1e-6:
+            rate_hint = max(1.0 - dist_norm, 1e-3)
         tx_lb_proxy = rem_data_norm / max(rate_hint, 1e-3)
 
-    # EFT-like snapshot score (obs-only): queue wait + compute lower bound + transmission proxy.
-    # Keep trust/contact available in obs but do not hard-penalize here to avoid collapsing into local-only.
-    _ = (rho, unc, contact_norm, slack_norm, rem_comp_norm)
-    score = (1.0 * queue_wait) + (1.0 * t_comp_lb) + (1.0 * tx_lb_proxy)
+    # EFT-like snapshot score (obs-only): backlog + compute proxy + transmission proxy.
+    score = comp_backlog + tx_backlog + comp_lb_proxy + tx_lb_proxy
+    if t in (2, 3):
+        score += 0.25 * (1.0 - contact_norm) + 0.20 * contention_norm + 0.15 * occupancy_norm
     # Strongly discourage invalid / empty slot types.
     if t <= 0:
         score += 1000.0

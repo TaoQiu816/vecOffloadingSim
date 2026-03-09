@@ -67,6 +67,7 @@ class CpuQueueService:
         """
         remaining = dt
         eps = 1e-9
+        slot_end = time_now + dt
 
         while remaining > eps and queue:
             job = queue[0]
@@ -74,17 +75,25 @@ class CpuQueueService:
                 raise RuntimeError("rem_cycles negative")
             if job.rem_cycles < 0:
                 job.rem_cycles = 0.0
+            cursor = slot_end - remaining
+            ready_time = max(float(getattr(job, "enqueue_time", time_now)), cursor)
+            if ready_time >= slot_end - eps:
+                break
             if job.start_time is None:
-                job.start_time = time_now + (dt - remaining)
+                job.start_time = ready_time
+                cpu_result.started_jobs.append(job)
 
-            can = speed_cycles_per_s * remaining
+            available = max(slot_end - ready_time, 0.0)
+            if available <= eps:
+                break
+            can = speed_cycles_per_s * available
             do = min(job.rem_cycles, can)
             time_used = do / speed_cycles_per_s
 
             job.rem_cycles -= do
             job.step_cycles_done += do
             job.step_time_used += time_used
-            remaining -= time_used
+            remaining = max(slot_end - (ready_time + time_used), 0.0)
             if job.rem_cycles < -1e-9:
                 raise RuntimeError("rem_cycles negative after step")
             if job.rem_cycles < 0:
@@ -102,6 +111,6 @@ class CpuQueueService:
                 cpu_result.cycles_done_rsu_record[rsu_id] = cpu_result.cycles_done_rsu_record.get(rsu_id, 0.0) + do
 
             if job.rem_cycles <= eps:
-                job.finish_time = time_now + (dt - remaining)
+                job.finish_time = ready_time + time_used
                 queue.popleft()
                 cpu_result.completed_jobs.append(job)

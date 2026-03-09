@@ -4,7 +4,7 @@ import os
 def _recompute_derived(Cfg):
     Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "ALL")).upper() == "ALL")
     Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
-    Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
+    Cfg.MAX_TARGETS = 1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS
     if int(getattr(Cfg, "V2V_NUM_RB", 1)) <= 0:
         Cfg.V2V_NUM_RB = 1
     Cfg.V2V_BW_PER_RB = float(Cfg.BW_V2V) / float(Cfg.V2V_NUM_RB)
@@ -67,7 +67,7 @@ def apply_exp_dynamic_config(Cfg, TC):
     Cfg.V2V_TOP_K = 6
     Cfg.USE_BLOCK_FADING = True
     Cfg.V2I_ICI_ENABLED = True
-    Cfg.V2I_RATE_MODEL = "SHARE"
+    Cfg.V2I_RATE_MODEL = "RB_SINR"
     # 通信瓶颈（与之前敲定一致）：V2I 10MHz/5 RB，V2V 20MHz/10 RB
     Cfg.V2I_NUM_RB = 5
     Cfg.V2V_NUM_RB = 10
@@ -108,7 +108,7 @@ def apply_exp_dynamic_config(Cfg, TC):
     # ------------------------------------------------------------------
     # 可选现实特征
     # ------------------------------------------------------------------
-    Cfg.TRUST_ENABLED = True
+    Cfg.TRUST_ENABLED = False
     Cfg.CHAIN_ENABLED = False
 
     # ------------------------------------------------------------------

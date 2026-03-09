@@ -37,19 +37,23 @@ class CPFirstEFTPolicy(EFTPolicy):
         if crit <= 0:
             return float(eft_time)
 
-        # resource_raw layout: col10 contact_norm, col12 rho, col13 uncertainty
+        # 主线 resource_raw(10维): col7 contact_norm, col8 contention, col9 occupancy
         raw = obs.get("resource_raw")
         if raw is None or idx >= len(raw):
             return float(eft_time)
         row = raw[idx]
-        contact_norm = float(np.clip(row[10], 0.0, 1.0))
-        rho = float(np.clip(row[12], 0.0, 1.0))
-        uncertainty = float(np.clip(row[13], 0.0, 1.0))
+        contact_norm = float(np.clip(row[7], 0.0, 1.0))
+        contention = float(np.clip(row[8], 0.0, 1.0))
+        occupancy = float(np.clip(row[9], 0.0, 1.0))
 
-        # CP-aware correction: critical task prefers stable/credible targets.
+        # CP-aware correction: critical task prefers stable / less-congested targets.
         # Keep correction small to preserve EFT primary behavior.
-        w_unc = 0.25
-        w_contact = 0.15
-        w_rho = 0.10
-        correction = crit * (w_unc * uncertainty + w_contact * (1.0 - contact_norm) - w_rho * rho)
+        w_contact = 0.20
+        w_contention = 0.15
+        w_occupancy = 0.10
+        correction = crit * (
+            w_contact * (1.0 - contact_norm)
+            + w_contention * contention
+            + w_occupancy * occupancy
+        )
         return float(eft_time + correction)

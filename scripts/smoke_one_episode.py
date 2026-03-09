@@ -96,26 +96,28 @@ def main():
         ct = np.asarray(sample_obs.get('candidate_types', np.zeros(rr.shape[0])))
         print(f"\n  resource_raw.shape = {rr.shape}")
         print(f"  resource_raw col layout:")
-        print(f"    [9]  slack_norm   range: [{rr[:, 9].min():.4f}, {rr[:, 9].max():.4f}]")
-        print(f"    [10] contact_norm range: [{rr[:, 10].min():.4f}, {rr[:, 10].max():.4f}]")
-        print(f"    [11] t_comp_lb   range: [{rr[:, 11].min():.4f}, {rr[:, 11].max():.4f}]")
-        print(f"    [12] hat_rho     range: [{rr[:, 12].min():.4f}, {rr[:, 12].max():.4f}]")
-        print(f"    [13] uncertainty range: [{rr[:, 13].min():.4f}, {rr[:, 13].max():.4f}]")
+        print(f"    [0] cpu_norm      range: [{rr[:, 0].min():.4f}, {rr[:, 0].max():.4f}]")
+        print(f"    [1] comp_backlog  range: [{rr[:, 1].min():.4f}, {rr[:, 1].max():.4f}]")
+        print(f"    [2] tx_backlog    range: [{rr[:, 2].min():.4f}, {rr[:, 2].max():.4f}]")
+        print(f"    [3] dist_norm     range: [{rr[:, 3].min():.4f}, {rr[:, 3].max():.4f}]")
+        print(f"    [7] contact_norm  range: [{rr[:, 7].min():.4f}, {rr[:, 7].max():.4f}]")
+        print(f"    [8] contention    range: [{rr[:, 8].min():.4f}, {rr[:, 8].max():.4f}]")
+        print(f"    [9] occupancy     range: [{rr[:, 9].min():.4f}, {rr[:, 9].max():.4f}]")
 
         # 验证 Local row
         local_row = rr[0]
-        assert local_row[10] == 1.0, f"Local contact_norm should be 1.0, got {local_row[10]}"
-        assert local_row[12] == 1.0, f"Local hat_rho should be 1.0, got {local_row[12]}"
-        assert local_row[13] == 0.0, f"Local uncertainty should be 0.0, got {local_row[13]}"
-        print("  ✓ Local row layout correct (contact=1, hat_rho=1, unc=0)")
+        assert local_row[7] == 1.0, f"Local contact_norm should be 1.0, got {local_row[7]}"
+        assert local_row[8] == 0.0, f"Local contention should be 0.0, got {local_row[8]}"
+        assert local_row[9] == 0.0, f"Local occupancy should be 0.0, got {local_row[9]}"
+        print("  ✓ Local row layout correct (contact=1, contention=0, occupancy=0)")
 
         # 验证 V2V rows 有效
         v2v_mask = (ct == 3)
         if v2v_mask.any():
-            v2v_rho = rr[v2v_mask, 12]
-            v2v_unc = rr[v2v_mask, 13]
-            print(f"  V2V rows: hat_rho=[{v2v_rho.min():.3f}, {v2v_rho.max():.3f}], "
-                  f"uncertainty=[{v2v_unc.min():.3f}, {v2v_unc.max():.3f}]")
+            v2v_cont = rr[v2v_mask, 8]
+            v2v_occ = rr[v2v_mask, 9]
+            print(f"  V2V rows: contention=[{v2v_cont.min():.3f}, {v2v_cont.max():.3f}], "
+                  f"occupancy=[{v2v_occ.min():.3f}, {v2v_occ.max():.3f}]")
         else:
             print("  (no V2V candidates in final obs)")
 

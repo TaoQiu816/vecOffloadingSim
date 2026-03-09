@@ -14,6 +14,7 @@ DAG完成处理器（集中化状态机更新逻辑）。
 - 同位置EDGE瞬时清零，不入队列
 """
 from typing import TYPE_CHECKING, Dict, Set, Tuple, Optional, List, Any
+import numpy as np
 
 if TYPE_CHECKING:
     from envs.vec_offloading_env import TransferJob, ComputeJob  # type: ignore
@@ -80,6 +81,7 @@ class DagCompletionHandler:
         dag = getattr(vehicle, "task_dag", None)
         if dag is None:
             return created_jobs
+        event_time = float(getattr(job, "finish_time", time_now) if getattr(job, "finish_time", None) is not None else time_now)
         if self._is_stale_job_for_vehicle_dag(job, vehicle):
             return created_jobs
         if not self._valid_subtask_idx(dag, job.subtask_id):
@@ -94,7 +96,7 @@ class DagCompletionHandler:
             
             # [时隙内联动] 尝试入计算队列
             new_job = self._try_enqueue_compute_if_ready(
-                vehicle, job.subtask_id, time_now, veh_cpu_q, rsu_cpu_q, rsus
+                vehicle, job.subtask_id, event_time, veh_cpu_q, rsu_cpu_q, rsus
             )
             if new_job is not None:
                 created_jobs.append(new_job)
@@ -109,7 +111,7 @@ class DagCompletionHandler:
                     vehicle.task_dag.inter_task_transfers[child_id][parent_id]['rem_bytes'] = 0.0
             
             # 调用边到齐检查
-            vehicle.task_dag.step_inter_task_transfers(child_id, 0.0, 0.0)
+            vehicle.task_dag.step_inter_task_transfers(child_id, 0.0, 0.0, time_now=event_time)
             
             # 清除去重标记
             edge_key = (job.owner_vehicle_id, child_id, parent_id)
@@ -117,7 +119,7 @@ class DagCompletionHandler:
             
             # [时隙内联动] 尝试入计算队列
             new_job = self._try_enqueue_compute_if_ready(
-                vehicle, child_id, time_now, veh_cpu_q, rsu_cpu_q, rsus
+                vehicle, child_id, event_time, veh_cpu_q, rsu_cpu_q, rsus
             )
             if new_job is not None:
                 created_jobs.append(new_job)
@@ -164,12 +166,15 @@ class DagCompletionHandler:
                     "owner_vehicle_id": getattr(job, "owner_vehicle_id", -1),
                     "subtask_id": subtask_id, "time": time_now}
         
+        finish_time = float(getattr(job, "finish_time", time_now) if getattr(job, "finish_time", None) is not None else time_now)
+
         # [完成位置落地] 从exec_locations读取位置码写入task_locations
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]
         dag.task_locations[subtask_id] = exec_loc
-        
+        dag.mark_cpu_end(subtask_id, finish_time)
+
         # 调用DAG的_mark_done（解锁后续节点：PENDING→READY）
-        dag._mark_done(subtask_id)
+        dag._mark_done(subtask_id, done_time=finish_time)
         
         # 【关键修复】尝试将新解锁的READY节点入队
         if veh_cpu_q is not None and rsu_cpu_q is not None and rsus is not None:
@@ -179,7 +184,7 @@ class DagCompletionHandler:
                     dag.exec_locations[child_id] is not None):  # 已分配
                     # 尝试入队（会检查input/edge数据是否到齐）
                     self._try_enqueue_compute_if_ready(
-                        vehicle, child_id, time_now, veh_cpu_q, rsu_cpu_q, rsus
+                        vehicle, child_id, finish_time, veh_cpu_q, rsu_cpu_q, rsus
                     )
         
         # 返回事件信息
@@ -188,7 +193,7 @@ class DagCompletionHandler:
             "owner_vehicle_id": job.owner_vehicle_id,
             "subtask_id": subtask_id,
             "exec_location": exec_loc,
-            "time": time_now
+            "time": finish_time
         }
     
     def _try_enqueue_compute_if_ready(self, vehicle: Vehicle, subtask_id: int,
@@ -245,6 +250,13 @@ class DagCompletionHandler:
         # 所有条件满足，创建ComputeJob并入队
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]
         task_comp = dag.total_comp[subtask_id]
+        comm_started = (
+            hasattr(dag, "comm_start_time")
+            and 0 <= subtask_id < len(dag.comm_start_time)
+            and np.isfinite(dag.comm_start_time[subtask_id])
+        )
+        if comm_started:
+            dag.mark_comm_end(subtask_id, time_now)
         
         # 确定执行节点和处理器
         if exec_loc == 'Local':

@@ -23,10 +23,14 @@ Actor-Critic Network Module
 物理偏置设计 (Physics Bias Design):
     双流输入架构：
     - 语义流：编码后的特征 → K/V（学习的表示）
-    - 物理流：原始14维特征 → 物理偏置（显式先验）
+    - 物理流：原始资源特征 → 物理偏置（显式先验）
     
     物理偏置公式：
-        Bias = -λ_dist * Dist_Norm - λ_load * (0.5*Queue_Norm + 0.5*T_finish_Norm)
+        Bias = -0.1*λ_dist * Dist_Norm - λ_load * (0.5*Backlog_Norm + 0.5*Contention_Norm)
+
+    说明：
+        当前 actor 只使用当前时刻可观测的距离、backlog 与竞争状态。
+        因此这里只保留弱距离先验，并将主要偏置放在 backlog / contention 上。
     
     作用：
         - 引导注意力关注近距离、低负载的资源
@@ -64,10 +68,10 @@ class CrossAttentionWithPhysicsBias(nn.Module):
     
     双流输入架构：
         - 语义流：编码后的特征 → K/V（学习的表示）
-        - 物理流：原始14维特征 → 物理偏置（显式先验）
+        - 物理流：原始资源特征 → 物理偏置（显式先验）
     
-    物理偏置公式：
-        Bias = -λ_dist * Dist_Norm - λ_load * (0.5*Queue_Norm + 0.5*T_finish_Norm)
+        物理偏置公式：
+            Bias = -0.1*λ_dist * Dist_Norm - λ_load * (0.5*Backlog_Norm + 0.5*Contention_Norm)
     """
     
     def __init__(self, d_model: int = 128, num_heads: int = 8, dropout: float = 0.1):
@@ -132,17 +136,17 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         
         # 2. 物理流：计算物理偏置（支持消融开关）
         # resource_raw: [B, N_res, RESOURCE_RAW_DIM]
-        # [CPU, Queue, Dist, Rate, Rel_X, Rel_Y, Vel_X, Vel_Y, T_finish_Norm, ...]
+        # [CPU, CompBacklog, TxBacklog, Dist, Rel_X, Rel_Y, RelSpeed, Contact, Contention, Occupancy]
         from configs.train_config import TrainConfig as TC
         if getattr(TC, "USE_PHYSICS_BIAS", True):
-            dist_norm = resource_raw[:, :, 2]  # Dist_Norm
-            load_norm = resource_raw[:, :, 1]  # Queue_Norm
-            finish_norm = resource_raw[:, :, 8]  # T_finish_Norm
-            
-            # Bias = -λ_dist * dist - λ_load * (queue + finish)
+            dist_norm = resource_raw[:, :, 3]  # Dist_Norm
+            backlog_norm = 0.5 * (resource_raw[:, :, 1] + resource_raw[:, :, 2])
+            contention_norm = 0.5 * (resource_raw[:, :, 8] + resource_raw[:, :, 9])
+
+            # 距离只保留弱先验；显式竞争偏置由当前 backlog + contention 驱动。
             # [B, N_res] -> [B, 1, 1, N_res] (广播到多头)
-            fused_load = 0.5 * load_norm + 0.5 * finish_norm
-            bias_phy = -self.lambda_dist * dist_norm - self.lambda_load * fused_load
+            fused_load = 0.5 * backlog_norm + 0.5 * contention_norm
+            bias_phy = -0.1 * self.lambda_dist * dist_norm - self.lambda_load * fused_load
             bias_phy = bias_phy.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, N_res]
             
             # 3. 融合：语义分数 + 物理偏置
@@ -190,10 +194,17 @@ class ActorHead(nn.Module):
         self.d_model = d_model
         self.max_targets = Cfg.MAX_TARGETS
         
-        # Target头（成对特征MLP）
-        # 输入：[h_fused, h_res] 拼接后为 2*d_model
+        pairwise_in_dim = 7 + int(Cfg.RESOURCE_RAW_DIM) + 3  # chosen node_x + resource_raw + candidate type
+        self.pairwise_proj = nn.Sequential(
+            nn.Linear(pairwise_in_dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+        )
+
+        # Target头（显式 node-resource pairwise 特征）
+        # 输入：[h_fused, h_res, h_pair] 拼接后为 3*d_model
         self.target_mlp = nn.Sequential(
-            nn.Linear(d_model * 2, d_model),
+            nn.Linear(d_model * 3, d_model),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(d_model, 1)  # 输出单个logit
@@ -231,6 +242,9 @@ class ActorHead(nn.Module):
     def forward(self, 
                 h_fused: torch.Tensor,
                 h_res: torch.Tensor,
+                node_selected_raw: torch.Tensor,
+                resource_raw: torch.Tensor,
+                candidate_types: Optional[torch.Tensor] = None,
                 action_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -249,9 +263,22 @@ class ActorHead(nn.Module):
         # 1. Target Head：成对拼接 + 批量计算
         # Broadcast h_fused: [B, d] -> [B, N_res, d]
         h_fused_expanded = h_fused.unsqueeze(1).expand(-1, n_res, -1)
-        
-        # 拼接：[B, N_res, 2*d_model]
-        concat_all = torch.cat([h_fused_expanded, h_res], dim=-1)
+
+        node_selected_expanded = node_selected_raw.unsqueeze(1).expand(-1, n_res, -1)
+        if candidate_types is None:
+            type_oh = torch.zeros(
+                (batch_size, n_res, 3),
+                dtype=resource_raw.dtype,
+                device=resource_raw.device,
+            )
+        else:
+            type_idx = torch.clamp(candidate_types.long() - 1, min=0, max=2)
+            type_oh = F.one_hot(type_idx, num_classes=3).to(dtype=resource_raw.dtype, device=resource_raw.device)
+        pair_raw = torch.cat([node_selected_expanded, resource_raw, type_oh], dim=-1)
+        h_pair = self.pairwise_proj(pair_raw)
+
+        # 拼接：[B, N_res, 3*d_model]
+        concat_all = torch.cat([h_fused_expanded, h_res, h_pair], dim=-1)
         
         # 共享MLP计算所有logits：[B, N_res, 1] -> [B, N_res]
         target_logits = self.target_mlp(concat_all).squeeze(-1)
@@ -611,10 +638,12 @@ class ActorCriticNetwork(nn.Module):
     
     def forward_actor(self,
                      dag_features: torch.Tensor,
+                     node_raw: torch.Tensor,
                      resource_encoded: torch.Tensor,
                      resource_raw: torch.Tensor,
                      subtask_index: torch.Tensor,
                      action_mask: torch.Tensor,
+                     candidate_types: Optional[torch.Tensor] = None,
                      resource_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Actor前向传播（Beta分布版）
@@ -640,6 +669,8 @@ class ActorCriticNetwork(nn.Module):
         safe_subtask_index = torch.clamp(subtask_index, min=0)
         indices = safe_subtask_index.unsqueeze(1).unsqueeze(2).expand(-1, -1, dag_features.shape[-1])  # [B, 1, d_model]
         query = torch.gather(dag_features, 1, indices)  # [B, 1, d_model]
+        raw_idx = safe_subtask_index.unsqueeze(1).unsqueeze(2).expand(-1, -1, node_raw.shape[-1])
+        selected_node_raw = torch.gather(node_raw, 1, raw_idx).squeeze(1)
         
         # 2. Cross-Attention（带物理偏置）融合资源特征
         h_fused = self.cross_attention(
@@ -663,6 +694,9 @@ class ActorCriticNetwork(nn.Module):
         target_logits, alpha, beta = self.actor_head(
             h_fused=h_fused,
             h_res=resource_encoded,
+            node_selected_raw=selected_node_raw,
+            resource_raw=resource_raw,
+            candidate_types=candidate_types,
             action_mask=action_mask
         )
         
@@ -726,10 +760,12 @@ class ActorCriticNetwork(nn.Module):
     
     def forward(self,
                 dag_features: torch.Tensor,
+                node_raw: torch.Tensor,
                 resource_encoded: torch.Tensor,
                 resource_raw: torch.Tensor,
                 subtask_index: torch.Tensor,
                 action_mask: torch.Tensor,
+                candidate_types: Optional[torch.Tensor] = None,
                 subtask_mask: Optional[torch.Tensor] = None,
                 task_mask: Optional[torch.Tensor] = None,
                 resource_padding_mask: Optional[torch.Tensor] = None,
@@ -758,8 +794,8 @@ class ActorCriticNetwork(nn.Module):
 
         # Actor
         target_logits, alpha, beta = self.forward_actor(
-            dag_features, resource_encoded, resource_raw,
-            subtask_index, action_mask, resource_padding_mask
+            dag_features, node_raw, resource_encoded, resource_raw,
+            subtask_index, action_mask, candidate_types, resource_padding_mask
         )
         
         # Critic

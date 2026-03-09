@@ -181,7 +181,7 @@ class MAPPOAgent:
         
         return values.cpu().squeeze(-1).numpy()
     
-    def evaluate_actions(self, obs_list: List[Dict], actions: List[Dict]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def evaluate_actions(self, obs_list: List[Dict], actions: List[Dict]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """
         重新评估动作（用于PPO更新）
         
@@ -206,14 +206,15 @@ class MAPPOAgent:
         subtask_actions = torch.tensor(subtask_values, dtype=torch.long, device=self.device)
         target_actions = torch.tensor([a['target'] for a in actions], dtype=torch.long, device=self.device)
         power_actions = torch.tensor([a['power'] for a in actions], dtype=torch.float32, device=self.device)
-        log_probs, entropy, values = self.network.evaluate_actions(
+        log_probs, entropy, values, aux = self.network.evaluate_actions(
             obs_list=obs_list,
             subtask_actions=subtask_actions,
             target_actions=target_actions,
             power_actions=power_actions,
             device=self.device,
+            return_aux=True,
         )
-        return log_probs, values.squeeze(-1), entropy
+        return log_probs, values.squeeze(-1), entropy, aux
     
     def update(self, buffer: RolloutBuffer, batch_size: int = 64) -> float:
         """
@@ -241,6 +242,8 @@ class MAPPOAgent:
         total_critic_loss_active = 0.0
         total_critic_loss_inactive = 0.0
         total_value_norm = 0.0
+        total_mode_aux = 0.0
+        total_mode_aux_acc = 0.0
         total_mask_active = 0.0
         total_mask_count = 0.0
         num_updates = 0
@@ -317,7 +320,7 @@ class MAPPOAgent:
                     critic_masks = torch.ones_like(active_masks)
                 
                 # 重新评估动作
-                log_probs, values, entropy = self.evaluate_actions(obs_list, actions)
+                log_probs, values, entropy, aux = self.evaluate_actions(obs_list, actions)
                 
                 # PPO Clip Loss
                 ratio = torch.exp(log_probs - old_log_probs)
@@ -377,6 +380,33 @@ class MAPPOAgent:
                 returns_var = masked_returns_used.var(unbiased=False) + 1e-8 if masked_returns_used.numel() > 0 else torch.tensor(1.0, device=self.device)
                 value_loss = value_loss_raw_mean / returns_var
                 
+                mode_aux_loss = torch.tensor(0.0, device=self.device)
+                mode_aux_acc = torch.tensor(0.0, device=self.device)
+                if bool(getattr(TC, "USE_ORACLE_MODE_AUX_LOSS", False)):
+                    oracle_mode_ids = torch.tensor(
+                        [int(obs.get("oracle_mode_id", 0) or 0) for obs in obs_list],
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    valid_oracle = (oracle_mode_ids >= 1) & (oracle_mode_ids <= 3) & (actor_masks > 0.0)
+                    if bool(getattr(TC, "ORACLE_MODE_AUX_V2V_ONLY", False)):
+                        valid_oracle = valid_oracle & (oracle_mode_ids == 3)
+                    if torch.any(valid_oracle):
+                        masked_target_logits = aux['masked_target_logits']
+                        candidate_types = aux['candidate_types']
+                        neg_inf = torch.full_like(masked_target_logits, -1e9)
+                        mode_logits = []
+                        for mode_id in (1, 2, 3):
+                            mode_mask = (candidate_types == mode_id)
+                            logits_t = torch.where(mode_mask, masked_target_logits, neg_inf)
+                            mode_logits.append(torch.logsumexp(logits_t, dim=-1))
+                        mode_logits = torch.stack(mode_logits, dim=-1)
+                        mode_targets = oracle_mode_ids[valid_oracle] - 1
+                        mode_logits_valid = mode_logits[valid_oracle]
+                        mode_aux_loss = nn.functional.cross_entropy(mode_logits_valid, mode_targets)
+                        mode_pred = torch.argmax(mode_logits_valid, dim=-1)
+                        mode_aux_acc = (mode_pred == mode_targets).float().mean()
+
                 # Entropy Loss
                 if actor_mask_sum.item() < 1.0:
                     entropy_mean = torch.tensor(0.0, device=self.device)
@@ -400,6 +430,8 @@ class MAPPOAgent:
                 actor_loss_total = policy_loss + TC.ENTROPY_COEF * entropy_loss
                 critic_loss_total = TC.VF_COEF * value_loss
                 loss = actor_loss_total + critic_loss_total
+                if bool(getattr(TC, "USE_ORACLE_MODE_AUX_LOSS", False)):
+                    loss = loss + float(getattr(TC, "ORACLE_MODE_AUX_WEIGHT", 0.0)) * mode_aux_loss
                 
                 # 检查loss是否有效
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -427,6 +459,8 @@ class MAPPOAgent:
                     total_value_pred_std += float(value_pred_std.item())
                     total_critic_loss_active += float(critic_loss_active.item())
                     total_critic_loss_inactive += float(critic_loss_inactive.item())
+                    total_mode_aux += float(mode_aux_loss.item())
+                    total_mode_aux_acc += float(mode_aux_acc.item())
                     num_updates += 1
                 if (
                     target_kl is not None
@@ -471,6 +505,8 @@ class MAPPOAgent:
                 "value_clip_fraction": total_value_clip / num_updates,
                 "critic_loss_active": total_critic_loss_active / num_updates,
                 "critic_loss_inactive": total_critic_loss_inactive / num_updates,
+                "mode_aux_loss": total_mode_aux / num_updates,
+                "mode_aux_acc": total_mode_aux_acc / num_updates,
                 "ppo_epochs_executed": int(ppo_epochs_executed),
                 "num_minibatches_executed": int(num_minibatches_executed),
                 "mb_kl_max": float(mb_kl_max),
@@ -507,6 +543,8 @@ class MAPPOAgent:
                 "value_clip_fraction": 0.0,
                 "critic_loss_active": 0.0,
                 "critic_loss_inactive": 0.0,
+                "mode_aux_loss": 0.0,
+                "mode_aux_acc": 0.0,
                 "ppo_epochs_executed": int(ppo_epochs_executed),
                 "num_minibatches_executed": int(num_minibatches_executed),
                 "mb_kl_max": float(mb_kl_max),

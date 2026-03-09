@@ -53,12 +53,12 @@ class CandidateSetManager:
         rsus_in_range: Optional[List[int]] = None,  # 新增：覆盖范围内的RSU列表
     ) -> Dict:
         max_targets = int(getattr(self.config, "MAX_TARGETS", 2))
-        enable_rsu_selection = getattr(self.config, "ENABLE_RSU_SELECTION", False)
+        enable_rsu_selection = True
         num_rsu = int(getattr(self.config, "NUM_RSU", 3))
         
         # 计算RSU和V2V的索引边界
         rsu_start_idx = 1
-        rsu_end_idx = (1 + num_rsu) if enable_rsu_selection else 2
+        rsu_end_idx = 1 + num_rsu
         v2v_start_idx = rsu_end_idx
         max_neighbors = max(0, max_targets - v2v_start_idx)
         
@@ -71,21 +71,13 @@ class CandidateSetManager:
         types[0] = 1
         mask[0] = True
 
-        if enable_rsu_selection:
-            # 新模式：每个RSU作为独立选项，仅mask覆盖范围内的RSU
-            rsus_available = set(rsus_in_range) if rsus_in_range else set()
-            for rsu_id in range(num_rsu):
-                idx = rsu_start_idx + rsu_id  # index 1,2,3 -> RSU_0,1,2
-                if idx < max_targets:
-                    ids[idx] = rsu_id
-                    types[idx] = 2
-                    mask[idx] = (rsu_id in rsus_available)
-        else:
-            # 旧模式：单一RSU选项（由env选择serving RSU）
-            types[1] = 2
-            if serving_rsu_id is not None:
-                ids[1] = int(serving_rsu_id)
-                mask[1] = True
+        rsus_available = set(rsus_in_range) if rsus_in_range else set()
+        for rsu_id in range(num_rsu):
+            idx = rsu_start_idx + rsu_id
+            if idx < max_targets:
+                ids[idx] = rsu_id
+                types[idx] = 2
+                mask[idx] = (rsu_id in rsus_available)
 
         # V2V candidates
         sorted_info = self._sort_candidates(v2v_candidates)
@@ -105,7 +97,6 @@ class CandidateSetManager:
         else:
             max_k = int(getattr(self.config, "TOPK_K", self.config.MAX_NEIGHBORS))
             selected_info = self._apply_dynamic_filter(sorted_info, max_k=max_k)
-
         used_ids = set()
         v2v_slots: List[Optional[Dict]] = [None] * max_neighbors
         slot_idx = 0

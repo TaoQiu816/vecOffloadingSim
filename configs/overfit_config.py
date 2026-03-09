@@ -5,7 +5,7 @@ def _recompute_derived(Cfg):
     """Recompute a small set of derived config fields after overrides."""
     Cfg.ALL_FEASIBLE = (str(getattr(Cfg, "CANDIDATE_MODE", "ALL")).upper() == "ALL")
     Cfg.MAX_NEIGHBORS = (Cfg.NUM_VEHICLES - 1) if Cfg.ALL_FEASIBLE else max(0, min(Cfg.NUM_VEHICLES - 1, Cfg.V2V_TOP_K))
-    Cfg.MAX_TARGETS = (1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS) if Cfg.ENABLE_RSU_SELECTION else (2 + Cfg.MAX_NEIGHBORS)
+    Cfg.MAX_TARGETS = 1 + Cfg.NUM_RSU + Cfg.MAX_NEIGHBORS
     if int(getattr(Cfg, "V2V_NUM_RB", 1)) <= 0:
         Cfg.V2V_NUM_RB = 1
     Cfg.V2V_BW_PER_RB = float(Cfg.BW_V2V) / float(Cfg.V2V_NUM_RB)
@@ -57,7 +57,7 @@ def apply_overfit_config(Cfg, TC):
     Cfg.V2I_RB_BW_HZ = 20e6
     Cfg.V2I_NUM_RB = 1
     Cfg.V2V_NUM_RB = 1
-    Cfg.V2I_RATE_MODEL = "SHARE"
+    Cfg.V2I_RATE_MODEL = "RB_SINR"
     Cfg.USE_BLOCK_FADING = False
     Cfg.V2I_ICI_ENABLED = False
     Cfg.DOMAIN_RANDOMIZATION = False

@@ -121,17 +121,17 @@ def assert_default_scenario() -> None:
     assert float(Cfg.BW_V2I) == 10e6
     assert float(Cfg.BW_V2V) == 20e6
     assert int(Cfg.V2V_NUM_RB) == 10
-    assert int(Cfg.V2I_NUM_RB) == 55
+    assert int(Cfg.V2I_NUM_RB) == 24
     assert float(Cfg.MIN_VEHICLE_CPU_FREQ) == 0.5e9
     assert float(Cfg.MAX_VEHICLE_CPU_FREQ) == 2.0e9
     assert float(Cfg.MIN_COMP) == 8.0e7 and float(Cfg.MAX_COMP) == 6.0e8
     assert float(Cfg.MIN_DATA) == 8.0e5 and float(Cfg.MAX_DATA) == 6.0e6
     assert float(Cfg.DEADLINE_ALPHA_MIN) == 6.0 and float(Cfg.DEADLINE_ALPHA_MAX) == 9.0
-    assert int(Cfg.RSU_NUM_PROCESSORS) == 4
+    assert int(Cfg.RSU_NUM_PROCESSORS) == 3
     assert str(Cfg.DAG_SOURCE) == "synthetic_small"
     assert int(Cfg.MIN_NODES) == 8 and int(Cfg.MAX_NODES) == 16
     assert str(Cfg.DEADLINE_MODE) == "LB_ALPHA"
-    assert bool(Cfg.TRUST_ENABLED) is True
+    assert bool(Cfg.TRUST_ENABLED) is False
     assert bool(Cfg.CHAIN_ENABLED) is False
     assert bool(Cfg.DOMAIN_RANDOMIZATION) is False
     assert str(Cfg.REWARD_SCHEME) == "UNIFIED"
@@ -140,7 +140,7 @@ def assert_default_scenario() -> None:
     assert bool(Cfg.ALL_FEASIBLE) is True
     assert int(Cfg.MAX_NEIGHBORS) == 19
     assert int(Cfg.MAX_TARGETS) == 23
-    assert int(Cfg.V2I_NUM_RB) == 55
+    assert int(Cfg.V2I_NUM_RB) == 24
     assert abs(float(Cfg.V2V_BW_PER_RB) - float(Cfg.BW_V2V) / float(Cfg.V2V_NUM_RB)) < 1e-9
 
 

@@ -1,0 +1,17 @@
+{
+  "run_id": "mainline_train_gate2_afterfix_20260309_160105",
+  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105",
+  "status": "completed",
+  "created_at": "2026-03-09 16:01:05",
+  "git_commit": "3772fd213692b39dfd28b5aa4b46b981559707c8",
+  "config_hash": "927e742c171c4617493e413cffb67300ea449f8d3ed8553fa79500c0fd33bc8f",
+  "config_snapshot_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/logs/config_snapshot.json",
+  "completed_at": "2026-03-09 16:22:04",
+  "episodes_completed": 100,
+  "best_reward": -1.381795176059493,
+  "best_success_rate_50ep": 0.237,
+  "best_model_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/models/best_model.pth",
+  "last_model_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/models/last_model.pth",
+  "metrics_csv_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/logs/metrics.csv",
+  "training_stats_csv_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/logs/training_stats.csv"
+}

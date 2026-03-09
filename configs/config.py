@@ -146,13 +146,10 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.5 Action Space配置 (Action Space Configuration)
     # -------------------------------------------------------------------------
-    ENABLE_RSU_SELECTION = True  # 是否启用RSU选择自由度
-                                 # True: agent可选择具体RSU_id (action space扩展)
-                                 # False: env自动选择最优RSU (原设计)
-    
-    # MAX_TARGETS = Local(1) + RSU选项 + V2V(MAX_NEIGHBORS)
-    # 定义在此处确保NUM_RSU已定义
-    MAX_TARGETS = (1 + NUM_RSU + MAX_NEIGHBORS) if ENABLE_RSU_SELECTION else (2 + MAX_NEIGHBORS)
+    # 主线固定为 concrete target selection:
+    # Local(1) + specific RSU(NUM_RSU) + specific V2V helper(MAX_NEIGHBORS)
+    ENABLE_RSU_SELECTION = True
+    MAX_TARGETS = 1 + NUM_RSU + MAX_NEIGHBORS
 
     # =========================================================================
     # 2. 通信参数 (Communication Model)
@@ -178,34 +175,30 @@ class SystemConfig:
                             # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
                             # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
 
-    # V2I链路模型开关：
-    # - SHARE: 旧模型（按RSU用户数共享带宽）
-    # - RB_SINR: PRB级建模（RSU内正交 + 跨RSU同RB干扰）
+    # 主线固定为 RB_SINR:
+    # RSU 内 RB 正交 + 超载 round-robin 时分 + 跨 RSU 同 RB 干扰
     V2I_RATE_MODEL = "RB_SINR"
     V2I_RB_BW_HZ = 180e3               # 单RB带宽口径（ETSI/3GPP常用）
-    V2I_NUM_RB = 55         # 10 MHz / 180 kHz ≈ 55 RB（取整后固定）
-    V2I_ICI_ENABLED = True             # 跨RSU同RB干扰（Inter-Cell Interference）
-    V2I_FREQ_REUSE_FACTOR = 1          # 复用因子，1=全复用
+    V2I_NUM_RB = 24         # 主线训练前默认值：压低RSU接入优势，保留RB_SINR竞争
+    V2I_ICI_ENABLED = True             # 轻量跨RSU上行干扰开关
+    V2I_FREQ_REUSE_FACTOR = 1          # reuse=1 表示全频复用
     
     # -------------------------------------------------------------------------
     # 2.2 噪声参数 (Noise Parameters)
     # -------------------------------------------------------------------------
     NOISE_POWER_DENSITY_DBM = -174  # 热噪声功率谱密度 (dBm/Hz) - Thermal noise PSD
     NOISE_FIGURE = 9                # 噪声系数 (dB) - Noise figure
-    NOISE_POWER_DBM = -95.0         # 热噪声功率 (dBm) - Thermal noise power
-                                    # 影响: SNR计算基准，影响速率估计
-                                    # Impact: SNR calculation baseline, affects rate estimation
+    NOISE_POWER_DBM = -95.0         # UNUSED_IN_MAINLINE: 主线信道使用 PSD+NF 计算噪声
+                                    # 仅保留作旧实验/诊断参考，不代表主线执行模型
     
     # -------------------------------------------------------------------------
     # 2.3 发射功率参数 (Transmit Power - FCC Compliant)
     # -------------------------------------------------------------------------
-    TX_POWER_UP_DBM = 20.0      # 上行发射功率 (dBm) ≈ 100mW - Uplink transmit power (文献二)
-                                # 影响: V2I SINR，100mW对齐文献
-                                # Impact: V2I SINR; 100mW aligned with literature
+    TX_POWER_UP_DBM = 20.0      # ESTIMATE_ONLY: 仅供handover参考信号排序/诊断使用
+                                # 主线远程传输实际走统一动作映射 [TX_POWER_MIN_DBM, TX_POWER_MAX_DBM]
 
-    TX_POWER_V2V_DBM = 20.0     # V2V发射功率 (dBm) ≈ 100mW - V2V transmit power (文献二)
-                                # 影响: V2V SINR和干扰强度
-                                # Impact: V2V SINR and interference strength
+    TX_POWER_V2V_DBM = 20.0     # UNUSED_IN_MAINLINE: 主线V2V也走统一动作映射功率
+                                # 保留仅为旧实验兼容，不代表主线执行模型
 
     TX_POWER_MIN_DBM = 13.0     # 功控下限 (dBm) - Power control lower bound [审计调优v2]
                                 # 影响: 扩大功率范围，增强功率梯度可见性
@@ -215,27 +208,24 @@ class SystemConfig:
                                 # 影响: 避免SNR过早饱和，保持功率梯度
                                 # Impact: Prevents SNR saturation; maintains power gradient
     
-    
     # -------------------------------------------------------------------------
     # 2.4 路径损耗模型 (Path Loss Model - Log-Distance)
     # 公式: PL(d) = PL_ALPHA + 10 * PL_BETA * log10(d/d_0)
     # -------------------------------------------------------------------------
-    PL_ALPHA_V2I = 28.0     # V2I参考路损 (dB) - V2I reference path loss
-                            # 影响: V2I链路预算基准
-                            # Impact: V2I link budget baseline
+    PL_ALPHA_V2I = 28.0     # UNUSED_IN_MAINLINE: 主线信道不使用该截距参数
+                            # 当前主线路损实现见 envs/modules/channel.py 中 beta0 * d^{-alpha}
     
     PL_BETA_V2I = 2.5       # V2I路损指数 - V2I path loss exponent (LOS environment)
                             # 影响: V2I衰减速率，2.5为LOS标准
                             # Impact: V2I attenuation rate; 2.5 is standard for LOS
     
-    PL_ALPHA_V2V = 28.0     # V2V参考路损 (dB) - V2V reference path loss
+    PL_ALPHA_V2V = 28.0     # UNUSED_IN_MAINLINE: 主线V2V也不使用该截距参数
     PL_BETA_V2V = 3.3       # V2V路损指数 - V2V path loss exponent (仍高于V2I=2.5，保持更差链路)
                             # 影响: V2V衰减速率，3.5模拟NLOS遮挡/干扰
                             # Impact: V2V attenuation rate; 3.5 models NLOS obstruction/interference
     
-    V2V_INTERFERENCE_DBM = -95.0  # V2V背景干扰 (dBm) - V2V background interference
-                                  # 影响: V2V SINR，降低V2V链路质量
-                                  # Impact: V2V SINR; degrades V2V link quality
+    V2V_INTERFERENCE_DBM = -95.0  # ESTIMATE_ONLY: 仅供单链路估计/诊断fallback使用
+                                  # 主线多链路V2V干扰来自 same-RB reuse 的显式干扰和
     
     V2V_RANGE = 250.0       # V2V通信半径 (m) - V2V communication range
                             # 影响: 邻居发现范围，DVTP等文献常用值
@@ -258,7 +248,7 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 2.5.3 信誉外生过程 (Reputation / Trust External Process)
     # -------------------------------------------------------------------------
-    TRUST_ENABLED = True            # 是否启用信誉外生过程
+    TRUST_ENABLED = False           # 主线不使用 trust/risk 奖励
     TRUST_P_RELIABLE_RANGE = (0.90, 1.0)  # 可靠节点 p_j 范围（无恶意场景：高可靠性）
     TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围（RELIABLE_PROB=1.0时不生效）
     # [类型化可靠性覆盖] 若非None，则按节点类型覆盖上面的混合分布采样：
@@ -329,7 +319,14 @@ class SystemConfig:
                                     # 影响: 异构性上界，强车可作为V2V卸载目标
                                     # Impact: Heterogeneity upper bound, strong vehicles as V2V targets
 
-    F_RSU = 10.0e9          # RSU 单核 CPU 频率 (Hz) - RSU per-core CPU frequency (10 GHz)
+    VEH_CPU_DIST_MODE = "uniform"   # uniform | bimodal_helper
+    VEH_CPU_HELPER_PROB = 0.25      # bimodal_helper模式下helper车辆占比
+    VEH_CPU_WEAK_MIN = 1.0e9        # 弱/普通车算力下界 (Hz)
+    VEH_CPU_WEAK_MAX = 1.8e9        # 弱/普通车算力上界 (Hz)
+    VEH_CPU_HELPER_MIN = 3.2e9      # helper车算力下界 (Hz)
+    VEH_CPU_HELPER_MAX = 4.0e9      # helper车算力上界 (Hz)
+
+    F_RSU = 8.0e9           # 主线训练前默认值：适度压低RSU算力优势
                             # 语义：多核时每核同频，单任务占一核，执行时间 = cycles/F_RSU
                             # Impact: RSU computing advantage significant but not absolute
     
@@ -560,6 +557,10 @@ class SystemConfig:
     _VEHICLE_MAX_WAIT = VEHICLE_QUEUE_CYCLES_LIMIT / MIN_VEHICLE_CPU_FREQ
     NORM_MAX_WAIT_TIME = max(_RSU_MAX_WAIT, _VEHICLE_MAX_WAIT) * 1.2
 
+    # Snapshot oracle / regret diagnostics
+    SNAPSHOT_ORACLE_EPS_ABS = 0.01   # 近最优绝对阈值（秒）
+    SNAPSHOT_ORACLE_EPS_REL = 0.05   # 近最优相对阈值（5%）
+
     # =========================================================================
     # 6. 奖励函数参数 (Reward Function - Delta CFT Mode)
     # =========================================================================
@@ -714,32 +715,14 @@ class SystemConfig:
     P_SUCC = 1.0                    # 成功奖励指数 p_s
     P_FAIL = 1.0                    # 失败惩罚指数 p_f
     # 每步 Step-wise
-    W_TIME = 0.35                   # 时间推进惩罚权重 w_t（成功率/时延优先）
+    W_TIME = 0.35                   # 时间推进惩罚权重 w_t（保守默认；更大尺度需经中长程验证后再固化）
     DT_IDLE = 0.01                  # 时间项最小步长，dt_used=max(dt,DT_IDLE) 防止dt=0套利
-    W_PROGRESS = 0.10               # 事后进度差分奖励权重（低幅度，避免单路径快速塌缩）
-    PROGRESS_REWARD_MODE = "DELTA_SLACK"  # DELTA_CFT_ABS(长期为负,口径错误) / DELTA_SLACK(=dCFT_rem,正值正确)
-    PROGRESS_REF_SECONDS = 0.20     # 进度差分归一化尺度（秒）; 0.30→0.20: discrimination 1.5x↑, r_prog/ep≈4.2<r_term=4.55
-    # Deadline margin shaping（latency-centric阶段主稠密项）
-    # 不要求权重和=1；按训练日志中的实际绝对贡献占比(abs_ratio_*)调参。
-    # 本阶段只优先调这两个旋钮：W_MARGIN_SHAPING 与 MARGIN_CLIP_C。
-    # 当前短程验证后建议：先将默认值设为折中方案 W_MARGIN_SHAPING=0.30（MARGIN_CLIP_C=0.20）。
-    # 调参门控（中后期参考，不是硬约束）：
-    # - abs_ratio_r_margin过低：增大W_MARGIN_SHAPING，或减小MARGIN_CLIP_C（先小步调W）
-    # - r_margin_norm大量饱和到±1：增大MARGIN_CLIP_C
-    # - r_margin_norm长期接近0：减小MARGIN_CLIP_C（必要时再增大W）
-    # 兼容旧实验：将 W_MARGIN_SHAPING 设为 0.0 时，行为退化回旧版（仅新增日志字段）。
-    W_MARGIN_SHAPING = 0.30         # 裕量差分稠密奖励权重；设为0可关闭
-    MARGIN_CLIP_C = 0.20            # 裕量差分归一化尺度 c（r_margin_norm=clip(delta_m/c,-1,1)）
-    UNIFIED_MAIN_REWARD_MODE = "margin_term_illegal"
-                                    # 可切换主奖励聚合:
-                                    # - margin_term_illegal: 当前主线（r_margin + r_term + r_illegal）
-                                    # - time_margin_term_illegal_interf: 方案A（r_time + r_margin + r_term + r_illegal + r_interf）
+    # 主奖励固定为:
+    # 真实时间推进 + 终局成功/失败 + 轻量能耗/真实干扰 + illegal
     W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
     P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I
     P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
-    W_RISK = 0.01                   # 信誉风险惩罚权重 w_risk (0.04→0.01: risk/r_time比从7.9x降至2x)
-    P_RISK = 1.5                    # 信誉风险惩罚指数 p_risk
     W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
     # E_ref / I_ref
     # 奖励中能耗项仅统计 INPUT_TX 发射能耗（comm_queue_service: energy = p_tx * time_used）。
@@ -750,8 +733,6 @@ class SystemConfig:
     # EMA能耗下界: 必须 >= E_REF_UNIFIED，防止policy全-Local时energy_ref漂移到1e-8，
     # 导致任何远程发射都触发max-clip，彻底摧毁功率控制梯度。
     REWARD_REF_ENERGY_MIN = 0.02    # = E_REF_UNIFIED，锚定物理上界（P_MAX × DT）
-    REWARD_REF_RISK_MIN = 0.05      # 风险参考尺度下界
-    RISK_REF_UNIFIED_INIT = 0.25    # 风险参考尺度初值（warmup起点）
     REWARD_REF_EMA_ALPHA = 0.05     # 奖励参考尺度EMA平滑系数
     REWARD_REF_EMA_CAP = 1e3        # 奖励参考尺度EMA上界
     REWARD_REF_WARMUP_EPISODES = 200  # 前N个episode更新EMA，之后冻结
@@ -763,8 +744,8 @@ class SystemConfig:
     INTERF_RATIO_CLIP_UNIFIED = 3.0
     REWARD_SCALE_E_RATIO_CAP = 1.5   # 训练前尺度核验用：energy_norm上界假设
     # PBRS
-    ENABLE_PBRS = False             # 默认关闭PBRS，避免LB势函数导致Local即时偏置
-    PBRS_BETA = 0.02                # PBRS 系数 beta（仅ENABLE_PBRS=True时生效）
+    ENABLE_PBRS = False             # 主线固定关闭 PBRS
+    PBRS_BETA = 0.02                # 仅供 archive/diagnostics 对照
     PBRS_GAMMA = 0.99               # PBRS 折扣 gamma
     PBRS_Q = 1.0                    # Phi 指数 q=1（线性势能，简化参数；q=1.2与1.0行为接近）
     PBRS_EPS = 1e-3                 # Phi 下界 eps
@@ -811,11 +792,17 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 14           # 资源原始特征维度 (14列)
-                                    # [0] cpu  [1] queue_wait  [2] dist  [3] rate
-                                    # [4] rel_x  [5] rel_y  [6] vel_x  [7] vel_y
-                                    # [8] t_finish_norm  [9] slack_norm  [10] contact_norm
-                                    # [11] t_comp_lb  [12] hat_rho  [13] uncertainty
+    RESOURCE_RAW_DIM = 10           # 资源原始特征维度 (10列)
+                                    # [0] cpu_norm
+                                    # [1] comp_backlog_norm
+                                    # [2] tx_backlog_norm
+                                    # [3] dist_norm
+                                    # [4] rel_x
+                                    # [5] rel_y
+                                    # [6] rel_speed_norm
+                                    # [7] contact_norm
+                                    # [8] contention_norm
+                                    # [9] occupancy_norm
 
     # -------------------------------------------------------------------------
     # 8.1 通信等待时间归一化 (CommWait Normalization)

@@ -1,8 +1,10 @@
 """
 Queue-aware EFT Policy (Earliest Finish Time).
 
-接口约束:
-- 仅输出 target/power，不参与子任务选择（与环境动作接口一致）。
+主线口径:
+- 仅输出 target/power，不参与子任务选择。
+- 只依赖当前主线 observation 中的真实可观测量:
+  rate_prev / resource_raw(10维) / candidate_types。
 """
 
 import numpy as np
@@ -44,23 +46,46 @@ class EFTPolicy:
         a_power = np.log(p_req / max(self._p_min_w, 1e-30)) / log_ratio
         return float(np.clip(a_power, 0.0, 1.0))
 
-    def _obs_comp_lb(self, obs: Dict, idx: int) -> Optional[float]:
+    def _obs_cpu_hz(self, obs: Dict, idx: int) -> Optional[float]:
         raw = obs.get("resource_raw")
         if raw is None:
             return None
         try:
             if idx >= len(raw):
                 return None
-            return float(max(raw[idx][11], 0.0) * 10.0)
+            cpu_norm = float(max(raw[idx][0], 0.0))
+            return float(max(cpu_norm * Cfg.NORM_MAX_CPU, 1e-6))
         except Exception:
             return None
+
+    def _obs_backlog_cycles(self, obs: Dict, idx: int) -> Optional[float]:
+        raw = obs.get("resource_raw")
+        if raw is None:
+            return None
+        try:
+            if idx >= len(raw):
+                return None
+            backlog_norm = float(max(raw[idx][1], 0.0))
+            return float(max(backlog_norm * Cfg.NORM_MAX_COMP, 0.0))
+        except Exception:
+            return None
+
+    def _obs_comp_lb(self, obs: Dict, idx: int, task_comp: Optional[float] = None) -> Optional[float]:
+        cpu_hz = self._obs_cpu_hz(obs, idx)
+        backlog_cycles = self._obs_backlog_cycles(obs, idx)
+        if cpu_hz is None or backlog_cycles is None:
+            return None
+        total_cycles = float(backlog_cycles + max(float(task_comp or 0.0), 0.0))
+        return float(total_cycles / max(cpu_hz, 1e-6))
 
     def _obs_distance(self, obs: Dict, idx: int, ctype: int) -> Optional[float]:
         raw = obs.get("resource_raw")
         if raw is None:
             return None
         try:
-            d_norm = float(raw[idx][2])
+            if idx >= len(raw):
+                return None
+            d_norm = float(raw[idx][3])
         except Exception:
             return None
         if ctype == 2:
@@ -81,20 +106,6 @@ class EFTPolicy:
         except Exception:
             pass
 
-        # Fallback: resource_raw reference-rate channel.
-        raw = obs.get("resource_raw")
-        try:
-            if raw is not None and idx < len(raw):
-                rn = float(raw[idx][3])
-                if ctype == 2:
-                    return float(max(rn * Cfg.NORM_MAX_RATE_V2I, 1e-9))
-                if ctype == 3:
-                    log_max = float(getattr(self.env, "_v2v_ref_log_max", 0.0))
-                    if log_max > 1e-12:
-                        return float(max(np.expm1(np.clip(rn, 0.0, 1.0) * log_max), 1e-9))
-                    return float(max(rn * Cfg.NORM_MAX_RATE_V2V, 1e-9))
-        except Exception:
-            pass
         return None
 
     def _estimate_rate(self, obs: Dict, idx: int, ctype: int, vehicle, target_pos, link_type: str, p_dbm: float) -> float:
@@ -129,7 +140,7 @@ class EFTPolicy:
         return float(task_data_bits / max(rate_bps, 1e-6))
 
     def _eft_local(self, vehicle, task_comp: float, obs: Dict) -> float:
-        comp_lb = self._obs_comp_lb(obs, 0)
+        comp_lb = self._obs_comp_lb(obs, 0, task_comp=task_comp)
         if comp_lb is not None:
             return float(max(comp_lb, 0.0))
         backlog = self.env._get_veh_queue_load(vehicle.id)
@@ -148,7 +159,7 @@ class EFTPolicy:
         t_tx = self._tx_time_seconds(task_data, rate)
         comm_wait = self.env._compute_comm_wait(vehicle.id).get("total_v2i", 0.0)
 
-        comp_lb = self._obs_comp_lb(obs, idx)
+        comp_lb = self._obs_comp_lb(obs, idx, task_comp=task_comp)
         if comp_lb is None:
             rsu_backlog = self.env._get_rsu_queue_load(rsu_id)
             comp_lb = (task_comp + rsu_backlog) / max(rsu.cpu_freq, 1e-6)
@@ -169,7 +180,7 @@ class EFTPolicy:
         t_tx = self._tx_time_seconds(task_data, rate)
         comm_wait = self.env._compute_comm_wait(vehicle.id).get("total_v2v", 0.0)
 
-        comp_lb = self._obs_comp_lb(obs, idx)
+        comp_lb = self._obs_comp_lb(obs, idx, task_comp=task_comp)
         if comp_lb is None:
             nbr_backlog = self.env._get_veh_queue_load(target_veh.id)
             comp_lb = (task_comp + nbr_backlog) / max(target_veh.cpu_freq, 1e-6)

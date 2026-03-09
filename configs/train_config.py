@@ -269,23 +269,13 @@ class TrainConfig:
     # Logit Bias (用于解决动作空间不平衡问题)
     # Logit Bias (Addresses action space imbalance caused by V2V numerical advantage)
     # -------------------------------------------------------------------------
-    USE_LOGIT_BIAS = True   # 是否启用Logit偏置 - Enable logit bias for action balancing
-                            # 影响: 对抗V2V数量优势（11个V2V vs 1个Local + 1个RSU）
-                            #       强制Agent探索Local和RSU选项，防止"只选V2V"的退化策略
-                            # Impact: Counters V2V numerical advantage (11 V2V vs 1 Local + 1 RSU)
-                            #       Forces agent to explore Local and RSU; prevents "V2V-only" degenerate policy
+    USE_LOGIT_BIAS = True   # 主线仅保留“动作空间基数校正”；不再使用显式模式鼓励项
+    USE_ORACLE_MODE_AUX_LOSS = False  # 主线默认关闭：oracle mode辅助损失会直接鼓励某类模式选择，仅保留为消融项
+    ORACLE_MODE_AUX_WEIGHT = 0.10     # 辅助损失权重；仅在显式开启USE_ORACLE_MODE_AUX_LOSS时生效
+    ORACLE_MODE_AUX_V2V_ONLY = False  # 仅在snapshot oracle判为V2V时施加辅助监督；默认关闭以保持主线行为不变
     
-    LOGIT_BIAS_RSU = 0.0    # RSU先验: 0.05→0.0, 不再人为强化RSU（方向与减少过载目标相悖）
-                            # 数学推导: 动作空间 1 Local + 1 RSU + 5 V2V (V2V减少到5)
-                            #   要使 P(RSU) = P(Local) = P(V2V_total) = 1/3
-                            #   需要 b = ln(5) ≈ 1.6094
-                            # Impact: Adapted for new action space with 5 V2V options
-    
-    LOGIT_BIAS_LOCAL = 0.10  # Local先验: 0.0→0.10, 早期激励Local探索，与V2V对等; 原0.0导致Local始终无正向激励
-                            # 数学推导: 与RSU相同，确保初始状态三类动作均衡
-                            #   无Bias时: Local 14.3%, RSU 14.3%, V2V 71.4%
-                            #   有Bias=1.6时: Local 33.3%, RSU 33.3%, V2V 33.3%
-                            # Impact: Adapted for new action space with 5 V2V options
+    LOGIT_BIAS_RSU = 0.0    # 主线不使用RSU显式先验
+    LOGIT_BIAS_LOCAL = 0.0  # 主线不使用Local显式先验
     
     # -------------------------------------------------------------------------
     # Bias退火参数 (Bias Annealing) [适应短期训练]
@@ -311,14 +301,16 @@ class TrainConfig:
                                # Impact: LOGIT_BIAS_LOCAL will not go below this value, maintains Local exploration
 
     # V2V 探索 bias（确保 early training 中 V2V tx 发生，使干扰惩罚与功率可学习）
-    LOGIT_BIAS_V2V_INIT = 0.10  # V2V 轻微探索先验
-    LOGIT_BIAS_V2V_END = 0.0    # 论文固定版：末段先验归零，避免锁死
+    LOGIT_BIAS_V2V_INIT = 0.0   # 主线不使用V2V显式探索先验
+    LOGIT_BIAS_V2V_END = 0.0
     LOGIT_BIAS_V2V_ANNEAL_STEPS = 0  # 由统一类别退火日程控制
-    _logit_bias_v2v_current = 0.10  # 运行时动态值（由 train.py 更新）
+    LOGIT_BIAS_V2V_SIZE_CORR_COEF = 1.0  # V2V类别规模校正系数；1.0表示完整-log(nV)校正
+    LOGIT_BIAS_V2V_SIZE_CORR_CAP = 0     # 0表示不截断nV；>0时使用min(nV, cap)做规模校正
+    _logit_bias_v2v_current = 0.0   # 运行时动态值（由 train.py 更新）
 
     # 论文固定版类别退火：前期轻先验，后期全部归零（不依赖分支/模式开关）
-    LOGIT_BIAS_LOCAL_INIT = 0.10  # 0.0→0.10，与V2V_INIT对等，激励Local早期探索
-    LOGIT_BIAS_RSU_INIT = 0.0    # 0.05→0.0，去掉对RSU的先验强化
+    LOGIT_BIAS_LOCAL_INIT = 0.0
+    LOGIT_BIAS_RSU_INIT = 0.0
     BIAS_ANNEAL_FRAC = 0.50  # 在训练前50%步数内线性退火到0
     LOGIT_BIAS_LOCAL_END = 0.0
     LOGIT_BIAS_LOCAL_ANNEAL_STEPS = 0

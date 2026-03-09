@@ -1,0 +1,58 @@
+{
+  "reward_scheme": "UNIFIED",
+  "reward_params": {
+    "REWARD_ALPHA": 1.5,
+    "REWARD_BETA": 0.1,
+    "REWARD_GAMMA": 0.99,
+    "T_REF": 0.7,
+    "PHI_CLIP": 5.0,
+    "SHAPE_CLIP": 10.0,
+    "R_CLIP": 40.0,
+    "LAT_ALPHA": 2.0
+  },
+  "timeout_params": {
+    "TIMEOUT_PENALTY_WEIGHT": 1.0,
+    "TIMEOUT_STEEPNESS": 3.0,
+    "TIMEOUT_L1": 1.5,
+    "TIMEOUT_L2": 1.5,
+    "TIMEOUT_O0": 0.2,
+    "TIMEOUT_K": 3.0
+  },
+  "energy_power_params": {
+    "ENERGY_LAMBDA_PBRS": 0.0,
+    "ENERGY_LAMBDA": 0.03,
+    "POWER_LAMBDA": 0.015,
+    "E_REF": 1.0,
+    "E_CLIP": 10.0,
+    "DELTA_CFT_ENERGY_WEIGHT": 0.2
+  },
+  "energy_lambda_raw_fields": {
+    "ENERGY_LAMBDA_PBRS": 0.0,
+    "ENERGY_LAMBDA": 0.03,
+    "POWER_LAMBDA": 0.015,
+    "E_REF": 1.0,
+    "E_CLIP": 10.0,
+    "DELTA_CFT_ENERGY_WEIGHT": 0.2
+  },
+  "energy_lambda_effective": {
+    "name": "DELTA_CFT_ENERGY_WEIGHT",
+    "value": 0.2
+  },
+  "ppo_params": {
+    "TARGET_KL": 0.05,
+    "MAX_GRAD_NORM": 1.0,
+    "CLIP_PARAM": 0.25,
+    "LR_ACTOR": 0.0002,
+    "LR_CRITIC": 0.0005
+  },
+  "run": {
+    "SEED": "123",
+    "RUN_ID": "mainline_train_gate2_afterfix_20260309_160105",
+    "RUN_DIR": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105",
+    "REWARD_JSONL_PATH": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/mainline_train_gate2_afterfix_20260309_160105/logs/env_reward.jsonl",
+    "DEVICE_NAME": "cpu",
+    "GIT_COMMIT": "3772fd213692b39dfd28b5aa4b46b981559707c8"
+  },
+  "git_commit": "3772fd213692b39dfd28b5aa4b46b981559707c8",
+  "config_hash": "927e742c171c4617493e413cffb67300ea449f8d3ed8553fa79500c0fd33bc8f"
+}

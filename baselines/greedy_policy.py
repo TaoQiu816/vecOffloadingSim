@@ -1,10 +1,10 @@
 """
 贪婪卸载策略 (Greedy Offloading Policy)
 
-策略描述：
-- 在合法目标中选择“估计完成时间”最小的目标（单步贪婪）
-- 估计口径与环境保持一致：bits/bps、cycles/Hz、基础队列等待
-- 功率控制：保持最大功率（与原策略一致）
+主线口径：
+- 在合法目标中选择当前一步估计完成时间最小的目标。
+- 只使用主线 observation 的真实可观测量和环境当前队列状态。
+- 功率控制保持最大值，作为当前主线的简单强基线。
 """
 
 import numpy as np
@@ -40,19 +40,6 @@ class GreedyPolicy:
         except Exception:
             pass
 
-        raw = obs.get("resource_raw")
-        try:
-            if raw is not None and idx < len(raw):
-                rn = float(raw[idx][3])
-                if ctype == 2:
-                    return float(max(rn * Cfg.NORM_MAX_RATE_V2I, 1e-9))
-                if ctype == 3:
-                    log_max = float(getattr(self.env, "_v2v_ref_log_max", 0.0))
-                    if log_max > 1e-12:
-                        return float(max(np.expm1(np.clip(rn, 0.0, 1.0) * log_max), 1e-9))
-                    return float(max(rn * Cfg.NORM_MAX_RATE_V2V, 1e-9))
-        except Exception:
-            pass
         return None
 
     def _estimate_rate(self, obs: Dict, idx: int, ctype: int, vehicle, target_pos, link_type: str) -> float:
@@ -115,21 +102,13 @@ class GreedyPolicy:
                 actions.append(act)
                 continue
             
-            # 选择估计完成时间最小目标（贪婪一步）
-            # 仅在低信誉/高不确定度场景下才触发远端回退，避免退化为纯本地。
-            # 在先验信誉尚未收敛（rho≈0.5）时更保守地启用远端，
-            # 仅当远端估计时延显著优于本地才切换，避免20ep校准阶段被高失败尾部拖垮。
-            remote_switch_margin = 0.50
+            # 选择估计完成时间最小目标（贪婪一步）。
             scores = []
-            local_score = float("inf")
-            local_target = None
             for target_idx in valid_targets:
                 cand_type = int(candidate_types[target_idx]) if candidate_types is not None and target_idx < len(candidate_types) else 0
                 if cand_type == 1:  # Local
                     queue_cycles = float(self.env._get_veh_queue_load(vehicle.id))
                     score = (task_comp + queue_cycles) / max(float(vehicle.cpu_freq), 1e-6)
-                    local_score = float(score)
-                    local_target = int(target_idx)
                 elif cand_type == 2:  # RSU
                     rsu_id = None
                     if candidate_ids is not None and target_idx < len(candidate_ids):
@@ -141,17 +120,9 @@ class GreedyPolicy:
                         q_wait = float(self.env._compute_comm_wait(vehicle.id).get("total_v2i", 0.0))
                         rate = self._estimate_rate(obs, target_idx, 2, vehicle, rsu.position, "V2I")
                         t_tx = self._tx_time_seconds(task_data, rate)
-                        # 使用最短处理器等待时间（多核正确建模），而非全量cycles之和
                         t_rsu_wait = float(self.env._get_rsu_queue_wait_time(rsu_id))
                         t_comp = task_comp / max(float(rsu.cpu_freq), 1e-6)
                         score = q_wait + t_tx + t_rsu_wait + t_comp
-                        # 信誉风险保守修正：rho低时放大远端代价（与环境口径一致，不改动力学）
-                        rho = 1.0
-                        if obs.get("resource_raw") is not None and target_idx < obs["resource_raw"].shape[0] and obs["resource_raw"].shape[1] >= 13:
-                            rho = float(np.clip(obs["resource_raw"][target_idx, 12], 0.05, 1.0))
-                        score = score / rho
-                        if rho < 0.70:
-                            score *= 1.5
                 elif cand_type == 3:  # V2V
                     neighbor_id = None
                     if candidate_ids is not None and target_idx < len(candidate_ids):
@@ -169,12 +140,6 @@ class GreedyPolicy:
                             nbr_q_cycles = float(self.env._get_veh_queue_load(neighbor_id))
                             t_comp = (task_comp + nbr_q_cycles) / max(float(neighbor_vehicle.cpu_freq), 1e-6)
                             score = q_wait + t_tx + t_comp
-                            rho = 1.0
-                            if obs.get("resource_raw") is not None and target_idx < obs["resource_raw"].shape[0] and obs["resource_raw"].shape[1] >= 13:
-                                rho = float(np.clip(obs["resource_raw"][target_idx, 12], 0.05, 1.0))
-                            score = score / rho
-                            if rho < 0.70:
-                                score *= 1.5
                 else:
                     score = float("inf")
                 scores.append(float(score))
@@ -182,32 +147,6 @@ class GreedyPolicy:
             # 选择估计完成时间最小的目标
             best_idx = int(np.argmin(scores)) if len(scores) > 0 else 0
             best_target = valid_targets[best_idx]
-            best_score = float(scores[best_idx]) if len(scores) > 0 else float("inf")
-            best_type = int(candidate_types[best_target]) if candidate_types is not None and best_target < len(candidate_types) else 0
-            best_rho = 1.0
-            best_unc = 0.0
-            if (
-                obs.get("resource_raw") is not None
-                and 0 <= int(best_target) < obs["resource_raw"].shape[0]
-                and obs["resource_raw"].shape[1] >= 13
-            ):
-                best_rho = float(np.clip(obs["resource_raw"][int(best_target), 12], 0.05, 1.0))
-            if (
-                obs.get("resource_raw") is not None
-                and 0 <= int(best_target) < obs["resource_raw"].shape[0]
-                and obs["resource_raw"].shape[1] >= 14
-            ):
-                best_unc = float(np.clip(obs["resource_raw"][int(best_target), 13], 0.0, 1.0))
-
-            # 条件回退：仅在低信誉/高不确定度时要求远端显著优于本地
-            if local_target is not None and best_type in (2, 3):
-                trust_bad = (best_rho < 0.70) or (best_unc > 0.75)
-                if (
-                    (not np.isfinite(best_score))
-                    or (trust_bad and best_score >= (1.0 - remote_switch_margin) * local_score)
-                ):
-                    best_target = int(local_target)
-            
             # 使用最大功率
             act = {
                 'target': int(best_target),

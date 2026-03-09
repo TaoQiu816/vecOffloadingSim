@@ -1,12 +1,12 @@
 """
 [奖励函数] envs/rl/reward_functions.py
-Unified Reward: 少项 + 非线性 + 无量纲 + 外部性内生化; PBRS 默认 ON
+Unified Reward: 少项 + 非线性 + 无量纲 + 外部性内生化; PBRS 默认 OFF
 
 终局: succ  +R_s * ((Td-Tf)/Td)^p_s
       fail  -R_f * ((Tf-Td)/Td)^p_f
 
 每步: -w_t*(dt/Td) - w_e*(E_tx/E_ref)^p_e - w_I*(I_caused/I_ref)^p_I
-      - w_risk*(1-rho_target)^p_risk * 1_remote - w_ill*illegal
+      - w_ill*illegal
 
 PBRS: r_pbrs = beta*(gamma*Phi(s') - Phi(s))
       Phi = -(eps + LB/Td)^q
@@ -60,9 +60,7 @@ def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt,
 
 def compute_unified_step_reward(
     dt, Td, E_tx, I_caused, illegal,
-    is_remote=False, rho_target=1.0,
-    E_ref=None, I_ref=None, risk_ref=None,
-    r_prog=0.0,
+    E_ref=None, I_ref=None,
 ):
     """
     每步奖励（不含终局和 PBRS）。
@@ -81,8 +79,6 @@ def compute_unified_step_reward(
     p_e = getattr(Cfg, 'P_ENERGY', 1.0)
     w_I = getattr(Cfg, 'W_INTERF', 0.2)
     p_I = getattr(Cfg, 'P_INTERF', 1.0)
-    w_risk = getattr(Cfg, 'W_RISK', 0.0)
-    p_risk = getattr(Cfg, 'P_RISK', 1.0)
     w_ill = getattr(Cfg, 'W_ILLEGAL', 2.0)
 
     if E_ref is None:
@@ -101,7 +97,6 @@ def compute_unified_step_reward(
 
     dt_used = float(max(float(np.nan_to_num(dt, nan=0.0, posinf=0.0, neginf=0.0)), 0.0))
     r_time = -w_t * (dt_used / Td)
-    r_prog = float(np.nan_to_num(r_prog, nan=0.0, posinf=0.0, neginf=0.0))
     energy_ratio = max(E_tx, 0.0) / E_ref
     energy_ratio_clip = float(getattr(Cfg, "ENERGY_RATIO_CLIP_UNIFIED", 3.0))
     if energy_ratio_clip > 0.0:
@@ -112,24 +107,14 @@ def compute_unified_step_reward(
     if ratio_clip > 0.0:
         interf_ratio = min(interf_ratio, ratio_clip)
     r_interf = -w_I * (interf_ratio ** p_I)
-    rho_target = float(np.clip(rho_target, 0.0, 1.0))
-    risk_gap = (1.0 - rho_target)
-    risk_ref_val = 1.0 if risk_ref is None else max(float(risk_ref), 1e-6)
-    risk_ratio = max(risk_gap, 0.0) / risk_ref_val
-    risk_ratio_clip = float(getattr(Cfg, "RISK_RATIO_CLIP_UNIFIED", 3.0))
-    if risk_ratio_clip > 0.0:
-        risk_ratio = min(risk_ratio, risk_ratio_clip)
-    r_risk = -w_risk * (risk_ratio ** p_risk) if bool(is_remote) else 0.0
     r_illegal = -w_ill * float(illegal)
 
-    r_step = r_time + r_prog + r_energy + r_interf + r_risk + r_illegal
+    r_step = r_time + r_energy + r_interf + r_illegal
 
     return float(r_step), {
         'r_time': float(r_time),
-        'r_prog': float(r_prog),
         'r_energy': float(r_energy),
         'r_interf': float(r_interf),
-        'r_risk': float(r_risk),
         'r_illegal': float(r_illegal),
         'dt_used': float(dt_used),
         'energy_norm': float(energy_ratio),
@@ -137,9 +122,6 @@ def compute_unified_step_reward(
         'I_caused': float(I_caused),
         'I_ref_used': float(I_ref),
         'interf_ratio': float(interf_ratio),
-        'risk_ratio': float(risk_ratio),
-        'rho_target': float(rho_target),
-        'is_remote': bool(is_remote),
     }
 
 
@@ -166,8 +148,9 @@ def compute_unified_terminal_reward(success, Tf, Td):
         margin = max((Td - Tf) / Td, 0.0)
         r_term = R_s * (margin ** p_s)
     else:
-        overtime = max((Tf - Td) / Td, 0.0)
-        r_term = -R_f * (overtime ** p_f)
+        # 任何真实失败都应承担终局惩罚；若超过deadline，再按超时程度加重。
+        fail_ratio = max(Tf / Td, 1.0)
+        r_term = -R_f * (fail_ratio ** p_f)
 
     return float(r_term), {
         'success': bool(success),
