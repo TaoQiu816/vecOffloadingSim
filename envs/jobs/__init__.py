@@ -77,6 +77,11 @@ class TransferJob:
         # 本step统计
         self.step_time_used = 0.0
         self.step_bytes_sent = 0.0
+        self.suspended = False
+        self.suspend_reason = None
+        self.suspend_time = None
+        self.handover_wait_steps = 0
+        self.abort_reason = None
 
     def get_unique_key(self):
         """

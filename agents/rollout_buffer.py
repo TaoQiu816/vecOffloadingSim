@@ -61,16 +61,41 @@ class RolloutBuffer:
         self.dones_buffer = []     # [T] 每步是标量
         self.active_masks_buffer = []  # [T] 每步是长度N_t的数组 (0/1)
         self.agent_ids_buffer = []  # [T] 每步是长度N_t的数组（尽量使用稳定车辆ID）
+        self.decision_steps_buffer = []  # [T] 每步是长度N_t的数组（对应decision发生的物理步）
+        self.interval_steps_buffer = []  # [T] 每步是长度N_t的数组（decision间隔物理步数）
+        self.bootstrap_cont_buffer = []  # [T] 每步是长度N_t的数组（0/1，是否允许bootstrap）
+        self.bootstrap_values_buffer = []  # [T] 每步是长度N_t的数组
+        self.bootstrap_cost_power_values_buffer = []  # [T] 每步是长度N_t的数组
+        self.bootstrap_cost_trust_values_buffer = []  # [T] 每步是长度N_t的数组
+        self.cost_power_buffer = []   # [T] 每步是长度N_t的数组
+        self.cost_trust_buffer = []   # [T] 每步是长度N_t的数组
+        self.cost_power_values_buffer = []  # [T] 每步是长度N_t的数组
+        self.cost_trust_values_buffer = []  # [T] 每步是长度N_t的数组
         
         # GAE计算结果 - 列表形式
         self.advantages_buffer = []  # [T] 每步是长度N_t的数组
         self.returns_buffer = []     # [T] 每步是长度N_t的数组
+        self.cost_power_advantages_buffer = []
+        self.cost_power_returns_buffer = []
+        self.cost_trust_advantages_buffer = []
+        self.cost_trust_returns_buffer = []
         
     def add(self, obs_list: List[Dict], actions: List[Dict],
             rewards: List[float], values: np.ndarray,
             log_probs: np.ndarray, done: bool,
             terminated: bool = None, truncated: bool = None,
-            active_masks: List[int] = None):
+            active_masks: List[int] = None,
+            agent_ids: np.ndarray = None,
+            decision_steps: np.ndarray = None,
+            interval_steps: np.ndarray = None,
+            bootstrap_cont: np.ndarray = None,
+            bootstrap_values: np.ndarray = None,
+            cost_power: List[float] = None,
+            cost_trust: List[float] = None,
+            cost_power_values: np.ndarray = None,
+            cost_trust_values: np.ndarray = None,
+            bootstrap_cost_power_values: np.ndarray = None,
+            bootstrap_cost_trust_values: np.ndarray = None):
         """
         添加一步数据
         
@@ -85,7 +110,6 @@ class RolloutBuffer:
             truncated: 是否时间截断
         """
         self.obs_list_buffer.append(obs_list)
-        self.agent_ids_buffer.append(self._extract_agent_ids(obs_list))
         # 动作字典按原样透传，支持扩展键（如 subtask/target/power）
         if isinstance(actions, list):
             self.actions_buffer.append([
@@ -107,8 +131,24 @@ class RolloutBuffer:
         if isinstance(log_probs, torch.Tensor):
             log_probs = log_probs.cpu().numpy()
             
-        self.values_buffer.append(values.astype(np.float32).flatten())
-        self.log_probs_buffer.append(log_probs.astype(np.float32).flatten())
+        values_arr = values.astype(np.float32).flatten()
+        log_probs_arr = log_probs.astype(np.float32).flatten()
+        self.values_buffer.append(values_arr)
+        self.log_probs_buffer.append(log_probs_arr)
+        self.agent_ids_buffer.append(self._to_array(agent_ids, rewards, dtype=np.int64))
+        self.decision_steps_buffer.append(self._to_array(decision_steps, rewards, dtype=np.int32))
+        interval_arr = self._to_array(interval_steps, rewards, dtype=np.int32)
+        if interval_arr.size > 0:
+            interval_arr = np.maximum(interval_arr, 1)
+        self.interval_steps_buffer.append(interval_arr)
+        self.bootstrap_cont_buffer.append(self._to_array(bootstrap_cont, rewards))
+        self.bootstrap_values_buffer.append(self._to_array(bootstrap_values, rewards))
+        self.cost_power_buffer.append(self._to_array(cost_power, rewards))
+        self.cost_trust_buffer.append(self._to_array(cost_trust, rewards))
+        self.cost_power_values_buffer.append(self._to_array(cost_power_values, rewards))
+        self.cost_trust_values_buffer.append(self._to_array(cost_trust_values, rewards))
+        self.bootstrap_cost_power_values_buffer.append(self._to_array(bootstrap_cost_power_values, rewards))
+        self.bootstrap_cost_trust_values_buffer.append(self._to_array(bootstrap_cost_trust_values, rewards))
 
         # active mask (1=有效决策，0=no_task/无决策)
         if active_masks is None:
@@ -137,6 +177,22 @@ class RolloutBuffer:
                 'terminated': done,
                 'truncated': False
             })
+
+    @staticmethod
+    def _to_array(values, ref, dtype=np.float32) -> np.ndarray:
+        if values is None:
+            return np.zeros_like(ref, dtype=dtype)
+        if isinstance(values, torch.Tensor):
+            values = values.cpu().numpy()
+        if isinstance(values, list):
+            values = np.array(values, dtype=dtype)
+        elif not isinstance(values, np.ndarray):
+            values = np.array([values], dtype=dtype)
+        out = values.astype(dtype).flatten()
+        ref_arr = np.asarray(ref).flatten()
+        if out.shape != ref_arr.shape:
+            out = np.zeros_like(ref_arr, dtype=dtype)
+        return out
     
     @staticmethod
     def _extract_agent_ids(obs_list: List[Dict]) -> np.ndarray:
@@ -145,12 +201,14 @@ class RolloutBuffer:
         for idx, obs in enumerate(obs_list or []):
             aid = None
             if isinstance(obs, dict):
-                rid = obs.get("resource_ids")
-                try:
-                    if rid is not None and len(rid) > 0:
-                        aid = int(np.asarray(rid).reshape(-1)[0])
-                except Exception:
-                    aid = None
+                for key in ("agent_id", "vehicle_id"):
+                    if obs.get(key) is None:
+                        continue
+                    try:
+                        aid = int(obs.get(key))
+                        break
+                    except Exception:
+                        aid = None
             if aid is None:
                 aid = int(idx)
             ids.append(aid)
@@ -169,7 +227,13 @@ class RolloutBuffer:
                 out[aid] = float(values[i])
         return out
 
-    def compute_returns_and_advantages(self, last_value: np.ndarray, last_obs_list: List[Dict] = None):
+    def compute_returns_and_advantages(
+        self,
+        last_value: np.ndarray,
+        last_obs_list: List[Dict] = None,
+        last_cost_power_value: np.ndarray = None,
+        last_cost_trust_value: np.ndarray = None,
+    ):
         """
         计算GAE优势函数和returns
         支持动态车辆数量
@@ -187,52 +251,82 @@ class RolloutBuffer:
         # 清空之前的计算结果
         self.advantages_buffer = []
         self.returns_buffer = []
+        self.cost_power_advantages_buffer = []
+        self.cost_power_returns_buffer = []
+        self.cost_trust_advantages_buffer = []
+        self.cost_trust_returns_buffer = []
         
         # 为每个时间步预分配advantages数组
         for t in range(T):
             N_t = len(self.rewards_buffer[t])
             self.advantages_buffer.append(np.zeros(N_t, dtype=np.float32))
             self.returns_buffer.append(np.zeros(N_t, dtype=np.float32))
+            self.cost_power_advantages_buffer.append(np.zeros(N_t, dtype=np.float32))
+            self.cost_power_returns_buffer.append(np.zeros(N_t, dtype=np.float32))
+            self.cost_trust_advantages_buffer.append(np.zeros(N_t, dtype=np.float32))
+            self.cost_trust_returns_buffer.append(np.zeros(N_t, dtype=np.float32))
         
-        # 基于稳定agent id计算GAE；若agent在下一步不存在，则该链条在此处截断（不bootstrap）。
-        value_maps = []
+        trajectories: Dict[int, List[Tuple[int, int, int]]] = {}
         for t in range(T):
             ids_t = self.agent_ids_buffer[t] if t < len(self.agent_ids_buffer) else np.arange(len(self.values_buffer[t]))
-            value_maps.append(self._build_value_map(ids_t, self.values_buffer[t]))
-
-        if last_obs_list is not None:
-            last_agent_ids = self._extract_agent_ids(last_obs_list)
-        elif self.agent_ids_buffer:
-            last_agent_ids = self.agent_ids_buffer[-1]
-        else:
-            last_agent_ids = np.arange(len(last_value), dtype=np.int64)
-        last_value_map = self._build_value_map(last_agent_ids, last_value)
-
-        gae_state: Dict[int, float] = {}
-        for t in reversed(range(T)):
-            rewards_t = self.rewards_buffer[t]
-            values_t = self.values_buffer[t]
-            ids_t = self.agent_ids_buffer[t] if t < len(self.agent_ids_buffer) else np.arange(len(rewards_t))
-            done_info = self.dones_buffer[t]
-            if isinstance(done_info, dict):
-                terminated = bool(done_info.get('terminated', False))
-            else:
-                terminated = bool(done_info)
-            next_map = last_value_map if t == T - 1 else value_maps[t + 1]
-
-            n_cur = min(len(rewards_t), len(values_t), len(ids_t))
+            decision_steps_t = self.decision_steps_buffer[t] if t < len(self.decision_steps_buffer) else np.arange(len(ids_t))
+            n_cur = min(len(ids_t), len(decision_steps_t), len(self.values_buffer[t]))
             for i in range(n_cur):
                 aid = int(ids_t[i])
-                reward = float(rewards_t[i])
-                value = float(values_t[i])
-                present_next = (aid in next_map)
-                next_value = float(next_map.get(aid, 0.0))
-                next_non_terminal = (1.0 - float(terminated)) * (1.0 if present_next else 0.0)
-                prev_gae = gae_state.get(aid, 0.0) if present_next else 0.0
-                delta = reward + self.gamma * next_value * next_non_terminal - value
-                gae = delta + self.gamma * self.gae_lambda * next_non_terminal * prev_gae
+                trajectories.setdefault(aid, []).append((int(decision_steps_t[i]), t, i))
+
+        for samples in trajectories.values():
+            samples.sort(key=lambda item: (item[0], item[1], item[2]))
+            next_adv = 0.0
+            next_cost_power_adv = 0.0
+            next_cost_trust_adv = 0.0
+            for pos in reversed(range(len(samples))):
+                _, t, i = samples[pos]
+                interval = int(max(self.interval_steps_buffer[t][i], 1)) if t < len(self.interval_steps_buffer) else 1
+                gamma_eff = float(self.gamma ** interval)
+                gae_eff = float((self.gamma * self.gae_lambda) ** interval)
+                reward = float(self.rewards_buffer[t][i])
+                value = float(self.values_buffer[t][i])
+                cost_power = float(self.cost_power_buffer[t][i])
+                cost_power_value = float(self.cost_power_values_buffer[t][i])
+                cost_trust = float(self.cost_trust_buffer[t][i])
+                cost_trust_value = float(self.cost_trust_values_buffer[t][i])
+
+                if pos + 1 < len(samples):
+                    _, next_t, next_i = samples[pos + 1]
+                    cont = 1.0
+                    next_value = float(self.values_buffer[next_t][next_i])
+                    next_cost_power_value = float(self.cost_power_values_buffer[next_t][next_i])
+                    next_cost_trust_value = float(self.cost_trust_values_buffer[next_t][next_i])
+                else:
+                    cont = float(self.bootstrap_cont_buffer[t][i]) if t < len(self.bootstrap_cont_buffer) else 0.0
+                    next_value = float(self.bootstrap_values_buffer[t][i]) if t < len(self.bootstrap_values_buffer) else 0.0
+                    next_cost_power_value = (
+                        float(self.bootstrap_cost_power_values_buffer[t][i])
+                        if t < len(self.bootstrap_cost_power_values_buffer) else 0.0
+                    )
+                    next_cost_trust_value = (
+                        float(self.bootstrap_cost_trust_values_buffer[t][i])
+                        if t < len(self.bootstrap_cost_trust_values_buffer) else 0.0
+                    )
+                    next_adv = 0.0
+                    next_cost_power_adv = 0.0
+                    next_cost_trust_adv = 0.0
+
+                delta = reward + cont * gamma_eff * next_value - value
+                gae = delta + cont * gae_eff * next_adv
                 self.advantages_buffer[t][i] = gae
-                gae_state[aid] = float(gae)
+                next_adv = float(gae)
+
+                delta_cost_power = cost_power + cont * gamma_eff * next_cost_power_value - cost_power_value
+                gae_cost_power = delta_cost_power + cont * gae_eff * next_cost_power_adv
+                self.cost_power_advantages_buffer[t][i] = gae_cost_power
+                next_cost_power_adv = float(gae_cost_power)
+
+                delta_cost_trust = cost_trust + cont * gamma_eff * next_cost_trust_value - cost_trust_value
+                gae_cost_trust = delta_cost_trust + cont * gae_eff * next_cost_trust_adv
+                self.cost_trust_advantages_buffer[t][i] = gae_cost_trust
+                next_cost_trust_adv = float(gae_cost_trust)
         
         # 计算returns = advantages + values
         for t in range(T):
@@ -242,6 +336,10 @@ class RolloutBuffer:
             min_N = min(N_adv, N_val)
             self.returns_buffer[t] = self.advantages_buffer[t][:min_N] + self.values_buffer[t][:min_N]
             self.advantages_buffer[t] = self.advantages_buffer[t][:min_N]
+            self.cost_power_returns_buffer[t] = self.cost_power_advantages_buffer[t][:min_N] + self.cost_power_values_buffer[t][:min_N]
+            self.cost_power_advantages_buffer[t] = self.cost_power_advantages_buffer[t][:min_N]
+            self.cost_trust_returns_buffer[t] = self.cost_trust_advantages_buffer[t][:min_N] + self.cost_trust_values_buffer[t][:min_N]
+            self.cost_trust_advantages_buffer[t] = self.cost_trust_advantages_buffer[t][:min_N]
     
     def get_batches(self, batch_size: int, active_only: bool = False) -> Generator[Dict, None, None]:
         """
@@ -263,6 +361,12 @@ class RolloutBuffer:
         flat_returns = []
         flat_active_masks = []
         flat_values = []
+        flat_cost_power_advantages = []
+        flat_cost_power_returns = []
+        flat_cost_power_values = []
+        flat_cost_trust_advantages = []
+        flat_cost_trust_returns = []
+        flat_cost_trust_values = []
         
         for t in range(T):
             N_t = len(self.obs_list_buffer[t])
@@ -274,6 +378,12 @@ class RolloutBuffer:
                 flat_returns.append(self.returns_buffer[t][n])
                 flat_active_masks.append(self.active_masks_buffer[t][n])
                 flat_values.append(self.values_buffer[t][n])
+                flat_cost_power_advantages.append(self.cost_power_advantages_buffer[t][n])
+                flat_cost_power_returns.append(self.cost_power_returns_buffer[t][n])
+                flat_cost_power_values.append(self.cost_power_values_buffer[t][n])
+                flat_cost_trust_advantages.append(self.cost_trust_advantages_buffer[t][n])
+                flat_cost_trust_returns.append(self.cost_trust_returns_buffer[t][n])
+                flat_cost_trust_values.append(self.cost_trust_values_buffer[t][n])
         
         total_samples = len(flat_obs_list)
         
@@ -286,6 +396,12 @@ class RolloutBuffer:
         flat_returns = np.array(flat_returns, dtype=np.float32)
         flat_active_masks = np.array(flat_active_masks, dtype=np.float32)
         flat_values = np.array(flat_values, dtype=np.float32)
+        flat_cost_power_advantages = np.array(flat_cost_power_advantages, dtype=np.float32)
+        flat_cost_power_returns = np.array(flat_cost_power_returns, dtype=np.float32)
+        flat_cost_power_values = np.array(flat_cost_power_values, dtype=np.float32)
+        flat_cost_trust_advantages = np.array(flat_cost_trust_advantages, dtype=np.float32)
+        flat_cost_trust_returns = np.array(flat_cost_trust_returns, dtype=np.float32)
+        flat_cost_trust_values = np.array(flat_cost_trust_values, dtype=np.float32)
         
         # 归一化advantages（优先使用active样本）
         active_idx = flat_active_masks > 0.0
@@ -297,6 +413,15 @@ class RolloutBuffer:
             adv_std = flat_advantages.std()
         if adv_std > 1e-8:
             flat_advantages = (flat_advantages - adv_mean) / (adv_std + 1e-8)
+        if np.any(active_idx):
+            cp_mean = flat_cost_power_advantages[active_idx].mean()
+            cp_std = flat_cost_power_advantages[active_idx].std()
+            ct_mean = flat_cost_trust_advantages[active_idx].mean()
+            ct_std = flat_cost_trust_advantages[active_idx].std()
+            if cp_std > 1e-8:
+                flat_cost_power_advantages = (flat_cost_power_advantages - cp_mean) / (cp_std + 1e-8)
+            if ct_std > 1e-8:
+                flat_cost_trust_advantages = (flat_cost_trust_advantages - ct_mean) / (ct_std + 1e-8)
         
         # 训练采样索引：可选仅采 active 样本，避免 idle/no-task 样本污染更新
         if active_only:
@@ -326,6 +451,12 @@ class RolloutBuffer:
                 'returns': flat_returns[batch_indices],
                 'active_masks': flat_active_masks[batch_indices],
                 'old_values': flat_values[batch_indices],
+                'cost_power_advantages': flat_cost_power_advantages[batch_indices],
+                'cost_power_returns': flat_cost_power_returns[batch_indices],
+                'old_cost_power_values': flat_cost_power_values[batch_indices],
+                'cost_trust_advantages': flat_cost_trust_advantages[batch_indices],
+                'cost_trust_returns': flat_cost_trust_returns[batch_indices],
+                'old_cost_trust_values': flat_cost_trust_values[batch_indices],
             }
             
             yield batch
@@ -342,6 +473,20 @@ class RolloutBuffer:
         self.returns_buffer.clear()
         self.active_masks_buffer.clear()
         self.agent_ids_buffer.clear()
+        self.decision_steps_buffer.clear()
+        self.interval_steps_buffer.clear()
+        self.bootstrap_cont_buffer.clear()
+        self.bootstrap_values_buffer.clear()
+        self.bootstrap_cost_power_values_buffer.clear()
+        self.bootstrap_cost_trust_values_buffer.clear()
+        self.cost_power_buffer.clear()
+        self.cost_trust_buffer.clear()
+        self.cost_power_values_buffer.clear()
+        self.cost_trust_values_buffer.clear()
+        self.cost_power_advantages_buffer.clear()
+        self.cost_power_returns_buffer.clear()
+        self.cost_trust_advantages_buffer.clear()
+        self.cost_trust_returns_buffer.clear()
 
     def get_active_stats(self) -> Tuple[int, int]:
         """

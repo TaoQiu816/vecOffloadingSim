@@ -45,7 +45,7 @@ import argparse
 import subprocess
 from pathlib import Path
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -71,15 +71,16 @@ from utils.train_helpers import (
 )
 
 
-BASELINE_POLICIES = ["Random", "Local-Only", "Greedy", "Oracle-Min", "EFT", "CP-EFT", "LB-Greedy", "Static"]
+BASELINE_POLICIES = ["Local-Only", "Greedy", "EFT", "CP-EFT"]
 
 TRAINING_STATS_FIELDS = [
-    "episode", "steps", "wall_time", "sim_time",
+    "episode", "steps", "physical_steps", "decision_steps", "active_decision_ratio", "wall_time", "sim_time",
     "termination_reason_raw", "termination_reason_bucket",
     "reward_mean", "reward_total", "episode_reward", "reward_p95", "reward_abs_mean",
     "vehicle_sr", "task_sr", "subtask_sr",
     "task_duration_mean", "task_duration_p95", "completed_tasks",
     "mean_cft_completed", "episode_time_seconds",
+    "mean_r_prog", "mean_r_term", "mean_cost_power", "mean_cost_trust",
     "energy_mean", "energy_p95", "t_tx_mean", "dT_eff_mean",
     "deadline_misses", "deadline_miss_rate",
     "ratio_local", "ratio_rsu", "ratio_v2v",
@@ -90,16 +91,14 @@ TRAINING_STATS_FIELDS = [
     "time_limit_rate", "illegal_action_rate", "illegal_action_ratio", "no_task_rate", "on_task_rate", "has_task_available_rate",
     "v2v_link_break_rate",
     "unified_illegal_trigger_rate", "hard_trigger_rate",
-    # UNIFIED latency-centric reward audit (keep training_stats.csv aligned with metrics.csv)
-    "r_margin", "r_margin_raw", "r_margin_norm",
-    "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term", "abs_ratio_r_margin",
-    "margin_valid_count", "margin_skip_count",
+    "abs_ratio_r_time", "abs_ratio_r_energy", "abs_ratio_r_interf", "abs_ratio_r_term",
     "reward_clip_hit_count", "reward_clip_hit_rate",
     "abs_ratio_basis",
-    "r_prog_on_task_mean", "r_margin_on_task_mean", "r_time_on_task_mean",
-    "r_prog_on_task_abs_mean", "r_margin_on_task_abs_mean", "r_time_on_task_abs_mean",
-    "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_margin", "abs_ratio_on_task_r_time", "abs_ratio_on_task_r_term",
+    "r_prog_on_task_mean",
+    "r_prog_on_task_abs_mean",
+    "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_term",
     "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
+    "cost_power_value_loss", "cost_trust_value_loss", "lambda_power", "lambda_trust",
     "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
     "critic_loss_active", "critic_loss_inactive", "mode_aux_loss", "mode_aux_acc",
     "ppo_epochs_executed", "num_minibatches_executed", "mb_kl_max", "mb_kl_p95",
@@ -136,6 +135,7 @@ BASELINE_STATS_FIELDS = [
     "ratio_local", "ratio_rsu", "ratio_v2v",
     "decision_frac_local", "decision_frac_rsu", "decision_frac_v2v",
     "avg_power", "power_ratio_mean", "power_ratio_p95",
+    "mean_cost_power", "mean_cost_trust",
     "episode_time_seconds", "mean_cft_completed",
     "act_seconds", "makespan_seconds",
     "task_duration_mean", "task_duration_p95",
@@ -158,6 +158,158 @@ def get_training_stats_fields() -> List[str]:
 
 def get_baseline_stats_fields() -> List[str]:
     return list(BASELINE_STATS_FIELDS)
+
+
+def _build_agent_metric_map(agent_ids, values) -> Dict[int, float]:
+    out: Dict[int, float] = {}
+    values_arr = np.asarray(values, dtype=np.float32).flatten()
+    if agent_ids is None:
+        return out
+    n = min(len(agent_ids), len(values_arr))
+    for idx in range(n):
+        out[int(agent_ids[idx])] = float(values_arr[idx])
+    return out
+
+
+def _make_pending_decision_sample(
+    agent_id: int,
+    decision_step: int,
+    obs: Dict[str, Any],
+    action: Dict[str, Any],
+    value: float,
+    log_prob: float,
+    cost_power_value: float,
+    cost_trust_value: float,
+) -> Dict[str, Any]:
+    return {
+        "agent_id": int(agent_id),
+        "decision_step": int(decision_step),
+        "obs": dict(obs) if isinstance(obs, dict) else obs,
+        "action": dict(action) if isinstance(action, dict) else action,
+        "value": float(value),
+        "log_prob": float(log_prob),
+        "cost_power_value": float(cost_power_value),
+        "cost_trust_value": float(cost_trust_value),
+        "reward": 0.0,
+        "cost_power": 0.0,
+        "cost_trust": 0.0,
+        "interval_steps": 0,
+    }
+
+
+def _accumulate_pending_decision_samples(
+    pending_samples: Dict[int, Dict[str, Any]],
+    reward_map: Dict[int, float],
+    cost_power_map: Dict[int, float],
+    cost_trust_map: Dict[int, float],
+    gamma: float,
+):
+    for agent_id, sample in pending_samples.items():
+        discount = float(gamma ** int(sample["interval_steps"]))
+        sample["reward"] += discount * float(reward_map.get(agent_id, 0.0))
+        sample["cost_power"] += discount * float(cost_power_map.get(agent_id, 0.0))
+        sample["cost_trust"] += discount * float(cost_trust_map.get(agent_id, 0.0))
+        sample["interval_steps"] += 1
+
+
+def _finalize_pending_decision_samples(
+    pending_samples: Dict[int, Dict[str, Any]],
+    agent_ids: List[int],
+    bootstrap_value_map: Dict[int, float],
+    bootstrap_cost_power_value_map: Dict[int, float],
+    bootstrap_cost_trust_value_map: Dict[int, float],
+    bootstrap_cont: float,
+) -> List[Dict[str, Any]]:
+    finalized = []
+    for agent_id in agent_ids:
+        sample = pending_samples.pop(int(agent_id), None)
+        if sample is None:
+            continue
+        finalized.append({
+            **sample,
+            "bootstrap_cont": float(bootstrap_cont),
+            "bootstrap_value": float(bootstrap_value_map.get(int(agent_id), 0.0)),
+            "bootstrap_cost_power_value": float(bootstrap_cost_power_value_map.get(int(agent_id), 0.0)),
+            "bootstrap_cost_trust_value": float(bootstrap_cost_trust_value_map.get(int(agent_id), 0.0)),
+        })
+    return finalized
+
+
+def _add_decision_samples_to_buffer(
+    buffer,
+    obs_list=None,
+    actions=None,
+    rewards=None,
+    values=None,
+    log_probs=None,
+    done=False,
+    terminated=False,
+    truncated=False,
+    decision_mask=None,
+    cost_power=None,
+    cost_trust=None,
+    cost_power_values=None,
+    cost_trust_values=None,
+    samples: Optional[List[Dict[str, Any]]] = None,
+):
+    if samples is None:
+        decision_idx = [idx for idx, flag in enumerate(decision_mask or []) if bool(flag)]
+        if not decision_idx:
+            return 0
+        values_arr = np.asarray(values)
+        log_probs_arr = np.asarray(log_probs)
+        cost_power_values_arr = np.asarray(cost_power_values)
+        cost_trust_values_arr = np.asarray(cost_trust_values)
+        samples = []
+        for idx in decision_idx:
+            samples.append({
+                "agent_id": int(idx),
+                "decision_step": 0,
+                "obs": obs_list[idx],
+                "action": actions[idx],
+                "reward": float(rewards[idx]),
+                "value": float(values_arr[idx]),
+                "log_prob": float(log_probs_arr[idx]),
+                "interval_steps": 1,
+                "bootstrap_cont": 0.0 if terminated else 1.0,
+                "bootstrap_value": 0.0,
+                "cost_power": float(cost_power[idx]),
+                "cost_trust": float(cost_trust[idx]),
+                "cost_power_value": float(cost_power_values_arr[idx]),
+                "cost_trust_value": float(cost_trust_values_arr[idx]),
+                "bootstrap_cost_power_value": 0.0,
+                "bootstrap_cost_trust_value": 0.0,
+            })
+    if not samples:
+        return 0
+
+    buffer.add(
+        [sample["obs"] for sample in samples],
+        [sample["action"] for sample in samples],
+        [sample["reward"] for sample in samples],
+        np.asarray([sample["value"] for sample in samples], dtype=np.float32),
+        np.asarray([sample["log_prob"] for sample in samples], dtype=np.float32),
+        bool(done),
+        terminated=bool(terminated),
+        truncated=bool(truncated),
+        active_masks=[1] * len(samples),
+        agent_ids=np.asarray([sample["agent_id"] for sample in samples], dtype=np.int64),
+        decision_steps=np.asarray([sample["decision_step"] for sample in samples], dtype=np.int32),
+        interval_steps=np.asarray([sample["interval_steps"] for sample in samples], dtype=np.int32),
+        bootstrap_cont=np.asarray([sample["bootstrap_cont"] for sample in samples], dtype=np.float32),
+        bootstrap_values=np.asarray([sample["bootstrap_value"] for sample in samples], dtype=np.float32),
+        cost_power=[sample["cost_power"] for sample in samples],
+        cost_trust=[sample["cost_trust"] for sample in samples],
+        cost_power_values=np.asarray([sample["cost_power_value"] for sample in samples], dtype=np.float32),
+        cost_trust_values=np.asarray([sample["cost_trust_value"] for sample in samples], dtype=np.float32),
+        bootstrap_cost_power_values=np.asarray(
+            [sample["bootstrap_cost_power_value"] for sample in samples], dtype=np.float32
+        ),
+        bootstrap_cost_trust_values=np.asarray(
+            [sample["bootstrap_cost_trust_value"] for sample in samples], dtype=np.float32
+        ),
+    )
+    return len(samples)
 
 
 def _get_git_commit() -> str:
@@ -1276,9 +1428,14 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         last_info = info
         ep_reward += sum(rewards) / len(rewards)
         total_steps += 1
+        decision_mask = list((info or {}).get("decision_step_mask", []))
+        if len(decision_mask) != len(actions):
+            decision_mask = [True] * len(actions)
         
         # 统计决策分布
         for i, act in enumerate(actions):
+            if i >= len(decision_mask) or not bool(decision_mask[i]):
+                continue
             target = int(act.get("target", 0))
 
             # Prefer candidate_types metadata for correct multi-RSU accounting.
@@ -1365,6 +1522,10 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0.0
 
     epm = last_info.get("episode_metrics", {}) if last_info else {}
+    if epm:
+        frac_local = float(epm.get("decision_frac_local", frac_local))
+        frac_rsu = float(epm.get("decision_frac_rsu", frac_rsu))
+        frac_v2v = float(epm.get("decision_frac_v2v", frac_v2v))
     episode_time_seconds = epm.get("episode_time_seconds")
     time_limit_rate = epm.get("time_limit_rate")
     deadline_miss_rate = epm.get("deadline_miss_rate")
@@ -1384,6 +1545,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     chain_risk_cost_total = epm.get("chain_risk_cost_total")
     illegal_action_rate = epm.get("illegal_action_rate")
     v2v_link_break_rate = epm.get("v2v_link_break_rate")
+    mean_cost_power = epm.get("mean_cost_power")
+    mean_cost_trust = epm.get("mean_cost_trust")
     no_task_rate = epm.get("no_task_rate")
     on_task_rate = epm.get("on_task_rate")
     has_task_available_rate = epm.get("has_task_available_rate")
@@ -1411,6 +1574,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'avg_power': avg_power,
         'power_ratio_mean': power_ratio_mean,
         'power_ratio_p95': power_ratio_p95,
+        'mean_cost_power': float(mean_cost_power) if mean_cost_power is not None else None,
+        'mean_cost_trust': float(mean_cost_trust) if mean_cost_trust is not None else None,
         'avg_queue_len': avg_veh_queue,
         'avg_rsu_queue': avg_rsu_queue,
         'episode_time_seconds': float(episode_time_seconds) if episode_time_seconds is not None else None,
@@ -1885,6 +2050,9 @@ def main():
     metrics_fields = [
         "episode",
         "steps",
+        "physical_steps",
+        "decision_steps",
+        "active_decision_ratio",
         "elapsed_sec",
         "seed",
         "terminated",
@@ -1904,12 +2072,16 @@ def main():
         # UNIFIED component/audit (dominance check)
         "r_time",
         "r_prog",
+        "mean_r_prog",
         "r_interf",
         "r_risk",
         "r_illegal",
         "r_pbrs",
         "r_term",
+        "mean_r_term",
         "r_step",
+        "mean_cost_power",
+        "mean_cost_trust",
         "r_margin",
         "r_margin_raw",
         "r_margin_norm",
@@ -2026,6 +2198,10 @@ def main():
         "clip_frac",
         "policy_loss",
         "value_loss",
+        "cost_power_value_loss",
+        "cost_trust_value_loss",
+        "lambda_power",
+        "lambda_trust",
         "total_loss",
         "grad_norm",
         "policy_entropy",
@@ -2235,13 +2411,17 @@ def main():
         }
         terminated = False
         truncated = False
-        ep_cost_sum = {"energy": 0.0, "interf": 0.0, "risk": 0.0}
+        ep_cost_sum = {"power": 0.0, "trust": 0.0}
         ep_cost_steps = 0
+        physical_steps = 0
+        decision_steps = 0
+        pending_decision_samples: Dict[int, Dict[str, Any]] = {}
 
         # Rollout循环
         for step in range(hyperparams['max_steps_per_ep']):
             training_state["current_step"] = step
             _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
+            step_agent_ids = [int(v.id) for v in env.vehicles]
             # 智能体决策
             action_dict = agent.select_action(obs_list, deterministic=False)
             actions = action_dict['actions']
@@ -2253,10 +2433,18 @@ def main():
             reward_snapshot = _snapshot_reward_stats(env) if log_step_metrics else {}
             next_obs_list, rewards, terminated, truncated, info = env.step(actions)
             done = terminated or truncated
-            train_rewards, step_cost = lagrange.penalize_step(rewards, actions, obs_list, info)
-            for _k in ep_cost_sum.keys():
-                ep_cost_sum[_k] += float(step_cost.get(_k, 0.0))
-            ep_cost_steps += 1
+            train_rewards = list(rewards)
+            step_cost_power = list((info or {}).get("cost_power", [0.0] * len(train_rewards)))
+            step_cost_trust = list((info or {}).get("cost_trust", [0.0] * len(train_rewards)))
+            if len(step_cost_power) != len(train_rewards):
+                step_cost_power = [0.0] * len(train_rewards)
+            if len(step_cost_trust) != len(train_rewards):
+                step_cost_trust = [0.0] * len(train_rewards)
+            if len(step_cost_power) > 0:
+                ep_cost_sum["power"] += float(np.mean(step_cost_power))
+                ep_cost_sum["trust"] += float(np.mean(step_cost_trust))
+                ep_cost_steps += 1
+            physical_steps += 1
 
             # 统计
             stats["agent_rewards_sum"] += sum(train_rewards)
@@ -2264,6 +2452,10 @@ def main():
             active_mask = info.get("active_agent_mask")
             if not active_mask or len(active_mask) != len(train_rewards):
                 active_mask = [1] * len(train_rewards)
+            decision_mask = info.get("decision_step_mask")
+            if not decision_mask or len(decision_mask) != len(train_rewards):
+                decision_mask = active_mask
+            decision_steps += int(np.sum(np.asarray(decision_mask, dtype=np.int32)))
             oracle_step_info = info.get("oracle_step_info") if isinstance(info, dict) else None
             if isinstance(oracle_step_info, list):
                 mode_map = {"local": 1, "rsu": 2, "v2v": 3}
@@ -2285,17 +2477,66 @@ def main():
                     stats["agent_rewards_per_veh"][agent_idx] = 0.0
                 stats["agent_rewards_per_veh"][agent_idx] += r
 
-            # [修复] 存入Buffer时分离terminated和truncated
-            buffer.add(
-                obs_list,
-                actions,
-                train_rewards,
-                values,
-                log_probs,
-                done,
-                terminated=terminated,
-                truncated=truncated,
-                active_masks=active_mask,
+            decision_idx = [idx for idx, flag in enumerate(decision_mask) if bool(flag) and idx < len(step_agent_ids)]
+            decision_agent_ids = [int(step_agent_ids[idx]) for idx in decision_idx]
+            current_value_map = _build_agent_metric_map(step_agent_ids, values)
+            current_cost_power_value_map = _build_agent_metric_map(
+                step_agent_ids,
+                action_dict.get("cost_power_values", np.zeros(len(values), dtype=np.float32)),
+            )
+            current_cost_trust_value_map = _build_agent_metric_map(
+                step_agent_ids,
+                action_dict.get("cost_trust_values", np.zeros(len(values), dtype=np.float32)),
+            )
+
+            flushed_samples = _finalize_pending_decision_samples(
+                pending_samples=pending_decision_samples,
+                agent_ids=decision_agent_ids,
+                bootstrap_value_map=current_value_map,
+                bootstrap_cost_power_value_map=current_cost_power_value_map,
+                bootstrap_cost_trust_value_map=current_cost_trust_value_map,
+                bootstrap_cont=1.0,
+            )
+            if flushed_samples:
+                _add_decision_samples_to_buffer(
+                    buffer=buffer,
+                    done=False,
+                    terminated=False,
+                    truncated=False,
+                    samples=flushed_samples,
+                )
+
+            values_arr = np.asarray(values, dtype=np.float32).flatten()
+            log_probs_arr = np.asarray(log_probs, dtype=np.float32).flatten()
+            cost_power_values_arr = np.asarray(
+                action_dict.get("cost_power_values", np.zeros(len(values), dtype=np.float32)),
+                dtype=np.float32,
+            ).flatten()
+            cost_trust_values_arr = np.asarray(
+                action_dict.get("cost_trust_values", np.zeros(len(values), dtype=np.float32)),
+                dtype=np.float32,
+            ).flatten()
+            for idx in decision_idx:
+                pending_decision_samples[int(step_agent_ids[idx])] = _make_pending_decision_sample(
+                    agent_id=int(step_agent_ids[idx]),
+                    decision_step=int(step),
+                    obs=obs_list[idx],
+                    action=actions[idx],
+                    value=float(values_arr[idx]),
+                    log_prob=float(log_probs_arr[idx]),
+                    cost_power_value=float(cost_power_values_arr[idx]),
+                    cost_trust_value=float(cost_trust_values_arr[idx]),
+                )
+
+            reward_map = _build_agent_metric_map(step_agent_ids, train_rewards)
+            cost_power_map = _build_agent_metric_map(step_agent_ids, step_cost_power)
+            cost_trust_map = _build_agent_metric_map(step_agent_ids, step_cost_trust)
+            _accumulate_pending_decision_samples(
+                pending_samples=pending_decision_samples,
+                reward_map=reward_map,
+                cost_power_map=cost_power_map,
+                cost_trust_map=cost_trust_map,
+                gamma=float(buffer.gamma),
             )
 
             # 过程统计
@@ -2413,8 +2654,44 @@ def main():
             if done:
                 break
 
-        if not (terminated or truncated):
+        rollout_cut = not (terminated or truncated)
+        if rollout_cut:
             env._log_episode_stats(False, True)
+
+        if pending_decision_samples:
+            final_terminated = bool(terminated)
+            final_truncated = bool(truncated or rollout_cut)
+            final_agent_ids = list(pending_decision_samples.keys())
+            if final_terminated:
+                final_value_map: Dict[int, float] = {}
+                final_cost_power_value_map: Dict[int, float] = {}
+                final_cost_trust_value_map: Dict[int, float] = {}
+                final_bootstrap_cont = 0.0
+            else:
+                _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
+                last_values = agent.get_value(obs_list)
+                last_cost_power_values, last_cost_trust_values = agent.get_cost_values(obs_list)
+                final_step_agent_ids = [int(v.id) for v in env.vehicles]
+                final_value_map = _build_agent_metric_map(final_step_agent_ids, last_values)
+                final_cost_power_value_map = _build_agent_metric_map(final_step_agent_ids, last_cost_power_values)
+                final_cost_trust_value_map = _build_agent_metric_map(final_step_agent_ids, last_cost_trust_values)
+                final_bootstrap_cont = 1.0
+            final_samples = _finalize_pending_decision_samples(
+                pending_samples=pending_decision_samples,
+                agent_ids=final_agent_ids,
+                bootstrap_value_map=final_value_map,
+                bootstrap_cost_power_value_map=final_cost_power_value_map,
+                bootstrap_cost_trust_value_map=final_cost_trust_value_map,
+                bootstrap_cont=final_bootstrap_cont,
+            )
+            if final_samples:
+                _add_decision_samples_to_buffer(
+                    buffer=buffer,
+                    done=True,
+                    terminated=final_terminated,
+                    truncated=final_truncated,
+                    samples=final_samples,
+                )
 
         # Episode结束后的分析与更新
         total_steps = step + 1
@@ -2909,14 +3186,25 @@ def main():
         else:
             _attach_global_state(obs_list, _build_ctde_global_state(env, obs_list, last_step_info))
             last_value = agent.get_value(obs_list)
-            buffer.compute_returns_and_advantages(last_value, last_obs_list=obs_list)
+            last_cost_power_value, last_cost_trust_value = agent.get_cost_values(obs_list)
+            buffer.compute_returns_and_advantages(
+                last_value,
+                last_obs_list=obs_list,
+                last_cost_power_value=last_cost_power_value,
+                last_cost_trust_value=last_cost_trust_value,
+            )
             oracle_adv_stats = buffer.get_oracle_group_adv_stats()
             update_loss = agent.update(buffer, batch_size=TC.MINI_BATCH_SIZE)
+            ep_cost_mean = {k: (ep_cost_sum[k] / max(ep_cost_steps, 1)) for k in ep_cost_sum.keys()}
+            agent.update_duals(ep_cost_mean.get("power", 0.0), ep_cost_mean.get("trust", 0.0))
             buffer.clear()
             update_stats = getattr(agent, "last_update_stats", {}) or {}
             update_stats.update(oracle_adv_stats)
         ep_cost_mean = {k: (ep_cost_sum[k] / max(ep_cost_steps, 1)) for k in ep_cost_sum.keys()}
-        lagrange_state = lagrange.update_episode(ep_cost_mean, episode)
+        lagrange_state = {
+            "power": float(getattr(agent, "lambda_power", 0.0)),
+            "trust": float(getattr(agent, "lambda_trust", 0.0)),
+        }
         policy_entropy_val = update_stats.get("policy_entropy", update_stats.get("entropy"))
         if policy_entropy_val is None:
             policy_entropy_val = 0.0
@@ -3023,8 +3311,8 @@ def main():
             )
             if lagrange.enabled:
                 print(
-                    f"  [CMDP] lambda(E/I/R)=({lagrange_state['energy']:.3f}/{lagrange_state['interf']:.3f}/{lagrange_state['risk']:.3f}) "
-                    f"cost(E/I/R)=({ep_cost_mean['energy']:.3f}/{ep_cost_mean['interf']:.3f}/{ep_cost_mean['risk']:.3f})",
+                    f"  [CMDP] lambda(P/T)=({lagrange_state['power']:.3f}/{lagrange_state['trust']:.3f}) "
+                    f"cost(P/T)=({ep_cost_mean['power']:.3f}/{ep_cost_mean['trust']:.3f})",
                     flush=True,
                 )
 
@@ -3032,6 +3320,9 @@ def main():
             # episode metadata
             "episode": episode,
             "steps": env_stats.get("episode_steps", total_steps) if env_stats else total_steps,
+            "physical_steps": int(env_stats.get("physical_steps", physical_steps)) if env_stats else int(physical_steps),
+            "decision_steps": int(env_stats.get("decision_steps", decision_steps)) if env_stats else int(decision_steps),
+            "active_decision_ratio": float(env_stats.get("active_decision_ratio", decision_steps / max(physical_steps, 1))) if env_stats else float(decision_steps / max(physical_steps, 1)),
             "elapsed_sec": duration,
             "seed": env_stats.get("seed", Cfg.SEED) if env_stats else Cfg.SEED,
             "terminated": terminated_flag,
@@ -3055,12 +3346,16 @@ def main():
             # UNIFIED component/audit (dominance check)
             "r_time": float(r_time_mean) if r_time_mean is not None and np.isfinite(r_time_mean) else 0.0,
             "r_prog": float(r_prog_mean) if r_prog_mean is not None and np.isfinite(r_prog_mean) else 0.0,
+            "mean_r_prog": float(env_stats.get("mean_r_prog", r_prog_mean if r_prog_mean is not None else 0.0)) if env_stats else float(r_prog_mean if r_prog_mean is not None else 0.0),
             "r_interf": float(r_interf_mean) if r_interf_mean is not None and np.isfinite(r_interf_mean) else 0.0,
             "r_risk": float(r_risk_mean) if r_risk_mean is not None and np.isfinite(r_risk_mean) else 0.0,
             "r_illegal": float(r_illegal_mean) if r_illegal_mean is not None and np.isfinite(r_illegal_mean) else 0.0,
             "r_pbrs": float(r_pbrs_mean) if r_pbrs_mean is not None and np.isfinite(r_pbrs_mean) else 0.0,
             "r_term": float(r_term_mean) if r_term_mean is not None and np.isfinite(r_term_mean) else 0.0,
+            "mean_r_term": float(env_stats.get("mean_r_term", r_term_mean if r_term_mean is not None else 0.0)) if env_stats else float(r_term_mean if r_term_mean is not None else 0.0),
             "r_step": float(r_step_mean) if r_step_mean is not None and np.isfinite(r_step_mean) else 0.0,
+            "mean_cost_power": float(env_stats.get("mean_cost_power", ep_cost_mean.get("power", 0.0))) if env_stats else float(ep_cost_mean.get("power", 0.0)),
+            "mean_cost_trust": float(env_stats.get("mean_cost_trust", ep_cost_mean.get("trust", 0.0))) if env_stats else float(ep_cost_mean.get("trust", 0.0)),
             "r_margin": float(r_margin_mean) if r_margin_mean is not None and np.isfinite(r_margin_mean) else 0.0,
             "r_margin_raw": float(r_margin_raw_mean) if r_margin_raw_mean is not None and np.isfinite(r_margin_raw_mean) else 0.0,
             "r_margin_norm": float(r_margin_norm_mean) if r_margin_norm_mean is not None and np.isfinite(r_margin_norm_mean) else 0.0,
@@ -3194,6 +3489,10 @@ def main():
             "value_loss": update_stats.get("value_loss"),
             "value_loss_raw_mean": update_stats.get("value_loss_raw_mean", update_stats.get("value_loss")),
             "normalized_value_loss": update_stats.get("normalized_value_loss"),
+            "cost_power_value_loss": update_stats.get("cost_power_value_loss"),
+            "cost_trust_value_loss": update_stats.get("cost_trust_value_loss"),
+            "lambda_power": update_stats.get("lambda_power"),
+            "lambda_trust": update_stats.get("lambda_trust"),
             "total_loss": update_stats.get("loss", update_loss),
             "grad_norm": update_stats.get("grad_norm"),
             # diagnostics
@@ -3327,6 +3626,9 @@ def main():
             # 基本信息
             "episode": episode,
             "steps": total_steps,
+            "physical_steps": int(env_stats.get("physical_steps", physical_steps)) if env_stats else int(physical_steps),
+            "decision_steps": int(env_stats.get("decision_steps", decision_steps)) if env_stats else int(decision_steps),
+            "active_decision_ratio": float(env_stats.get("active_decision_ratio", decision_steps / max(physical_steps, 1))) if env_stats else float(decision_steps / max(physical_steps, 1)),
             "wall_time": duration,
             "sim_time": total_steps * Cfg.DT,
             "termination_reason_raw": termination_reason,
@@ -3347,6 +3649,10 @@ def main():
             "completed_tasks": completed_tasks_count if completed_tasks_count is not None else 0,
             "mean_cft_completed": mean_cft_completed if mean_cft_completed is not None else 0.0,
             "episode_time_seconds": episode_time_seconds if episode_time_seconds is not None else 0.0,
+            "mean_r_prog": float(env_stats.get("mean_r_prog", r_prog_mean if r_prog_mean is not None else 0.0)) if env_stats else float(r_prog_mean if r_prog_mean is not None else 0.0),
+            "mean_r_term": float(env_stats.get("mean_r_term", r_term_mean if r_term_mean is not None else 0.0)) if env_stats else float(r_term_mean if r_term_mean is not None else 0.0),
+            "mean_cost_power": float(env_stats.get("mean_cost_power", ep_cost_mean.get("power", 0.0))) if env_stats else float(ep_cost_mean.get("power", 0.0)),
+            "mean_cost_trust": float(env_stats.get("mean_cost_trust", ep_cost_mean.get("trust", 0.0))) if env_stats else float(ep_cost_mean.get("trust", 0.0)),
             "energy_mean": energy_norm_mean if energy_norm_mean is not None else 0.0,
             "energy_p95": energy_norm_p95 if energy_norm_p95 is not None else 0.0,
             "t_tx_mean": t_tx_mean if t_tx_mean is not None else 0.0,
@@ -3393,6 +3699,10 @@ def main():
             "entropy": update_stats.get("policy_entropy", update_stats.get("entropy")),
             "approx_kl": update_stats.get("approx_kl"),
             "clip_frac": update_stats.get("clip_fraction"),
+            "cost_power_value_loss": update_stats.get("cost_power_value_loss"),
+            "cost_trust_value_loss": update_stats.get("cost_trust_value_loss"),
+            "lambda_power": update_stats.get("lambda_power"),
+            "lambda_trust": update_stats.get("lambda_trust"),
             "grad_norm": update_stats.get("grad_norm"),
             "active_ratio": update_stats.get("active_ratio"),
             "actor_update_active_frac": update_stats.get("actor_update_active_frac"),
@@ -3665,6 +3975,8 @@ def main():
                     "avg_power": baseline_metrics['avg_power'],
                     "power_ratio_mean": baseline_metrics.get('power_ratio_mean'),
                     "power_ratio_p95": baseline_metrics.get('power_ratio_p95'),
+                    "mean_cost_power": baseline_metrics.get('mean_cost_power'),
+                    "mean_cost_trust": baseline_metrics.get('mean_cost_trust'),
                     "episode_time_seconds": baseline_metrics.get('episode_time_seconds'),
                     "mean_cft_est": baseline_metrics.get('mean_cft_est'),
                     "mean_cft_completed": baseline_metrics.get('mean_cft_completed'),

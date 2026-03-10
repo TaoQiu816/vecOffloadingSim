@@ -238,6 +238,13 @@ class TrainConfig:
 
     USE_VALUE_TARGET_NORM = True   # 是否对Value target做归一化（仅训练侧）
                                    # 影响: 稳定critic尺度，但不改变环境奖励
+    COST_VF_COEF = 0.5
+    DUAL_LR = 0.02
+    DUAL_MAX = 5.0
+    DUAL_POWER_INIT = 0.0
+    DUAL_TRUST_INIT = 0.0
+    COST_BUDGET_POWER = 0.010
+    COST_BUDGET_TRUST = 0.006
 
     MIN_ACTIVE_SAMPLES = 64  # active样本低于阈值时跳过更新（防止过高方差）
     CRITIC_SOFT_ACTIVE_MASK = True

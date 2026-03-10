@@ -59,7 +59,7 @@ def test_environment_reset_step():
                 target = int(np.random.choice(valid_actions))
             else:
                 target = 0
-            actions.append({'target': target, 'power': 0.5})
+            actions.append({'subtask': int(ob.get('subtask_index', 0)), 'target': target, 'power': 0.5})
 
         obs_list, rewards, terminated, truncated, info = env.step(actions)
 
@@ -110,10 +110,18 @@ def test_network_backward_pass():
     inputs['status'][:, 0] = 1
 
     # 前向传播
-    target_logits, alpha, beta, values = network.forward(**inputs)
+    subtask_logits, target_logits, alpha, beta, values, cost_power_values, cost_trust_values = network.forward(**inputs)
 
     # 计算简单loss
-    loss = target_logits.mean() + alpha.mean() + beta.mean() + values.mean()
+    loss = (
+        subtask_logits.mean()
+        + target_logits.mean()
+        + alpha.mean()
+        + beta.mean()
+        + values.mean()
+        + cost_power_values.mean()
+        + cost_trust_values.mean()
+    )
 
     # 反向传播
     loss.backward()
@@ -365,7 +373,7 @@ def test_evaluate_actions_consistency():
     old_log_probs = result['log_probs']
 
     # 重新评估
-    new_log_probs, values, entropy = agent.evaluate_actions(obs_list, actions)
+    new_log_probs, values, cost_power_values, cost_trust_values, entropy, _ = agent.evaluate_actions(obs_list, actions)
 
     # 验证log_probs接近（允许小误差由于数值精度）
     old_log_probs_tensor = torch.tensor(old_log_probs)
@@ -382,6 +390,8 @@ def test_evaluate_actions_consistency():
     # 验证没有NaN
     assert not torch.isnan(new_log_probs).any(), "new_log_probs contains NaN"
     assert not torch.isnan(values).any(), "values contains NaN"
+    assert not torch.isnan(cost_power_values).any(), "cost_power_values contains NaN"
+    assert not torch.isnan(cost_trust_values).any(), "cost_trust_values contains NaN"
     assert not torch.isnan(entropy).any(), "entropy contains NaN"
 
     print(f"✓ test_evaluate_actions_consistency passed (max diff={diff:.6f})")

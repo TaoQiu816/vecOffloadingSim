@@ -220,20 +220,26 @@ def test_network_forward_consistency():
     inputs['status'][:, 0] = 1  # READY
 
     with torch.no_grad():
-        target_logits, alpha, beta, values = network.forward(**inputs)
+        subtask_logits, target_logits, alpha, beta, values, cost_power_values, cost_trust_values = network.forward(**inputs)
 
     # 验证输出形状
+    assert subtask_logits.shape == (batch_size, max_nodes), \
+        f"subtask_logits shape mismatch: {subtask_logits.shape}"
     assert target_logits.shape == (batch_size, max_targets), \
         f"target_logits shape mismatch: {target_logits.shape}"
     assert alpha.shape == (batch_size, 1), f"alpha shape mismatch: {alpha.shape}"
     assert beta.shape == (batch_size, 1), f"beta shape mismatch: {beta.shape}"
     assert values.shape == (batch_size, 1), f"values shape mismatch: {values.shape}"
+    assert cost_power_values.shape == (batch_size, 1), f"cost_power_values shape mismatch: {cost_power_values.shape}"
+    assert cost_trust_values.shape == (batch_size, 1), f"cost_trust_values shape mismatch: {cost_trust_values.shape}"
 
     # 验证没有 NaN
     assert not torch.isnan(target_logits).any(), "target_logits contains NaN"
     assert not torch.isnan(alpha).any(), "alpha contains NaN"
     assert not torch.isnan(beta).any(), "beta contains NaN"
     assert not torch.isnan(values).any(), "values contains NaN"
+    assert not torch.isnan(cost_power_values).any(), "cost_power_values contains NaN"
+    assert not torch.isnan(cost_trust_values).any(), "cost_trust_values contains NaN"
 
     # 验证 alpha, beta > 1 (Beta分布参数)
     assert (alpha > 1).all(), f"alpha should be > 1, got min={alpha.min()}"
@@ -282,11 +288,13 @@ def test_mappo_agent_evaluate_actions():
     actions = [{'target': 0, 'power': 0.5} for _ in range(batch_size)]
 
     # 调用 evaluate_actions
-    log_probs, values, entropy = agent.evaluate_actions(obs_list, actions)
+    log_probs, values, cost_power_values, cost_trust_values, entropy, _ = agent.evaluate_actions(obs_list, actions)
 
     # 验证输出
     assert log_probs.shape == (batch_size,), f"log_probs shape: {log_probs.shape}"
     assert values.shape == (batch_size,), f"values shape: {values.shape}"
+    assert cost_power_values.shape == (batch_size,), f"cost_power_values shape: {cost_power_values.shape}"
+    assert cost_trust_values.shape == (batch_size,), f"cost_trust_values shape: {cost_trust_values.shape}"
     assert entropy.shape == (batch_size,), f"entropy shape: {entropy.shape}"
 
     # 验证没有 NaN

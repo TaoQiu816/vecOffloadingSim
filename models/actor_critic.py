@@ -632,6 +632,36 @@ class ActorCriticNetwork(nn.Module):
                 use_commwait_direct=use_commwait_direct,
                 commwait_dim=commwait_dim,
             )
+        if use_simplified_critic:
+            self.cost_power_head = SimplifiedCriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
+            self.cost_trust_head = SimplifiedCriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
+        else:
+            self.cost_power_head = CriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
+            self.cost_trust_head = CriticHead(
+                d_model,
+                use_subtask_cond=use_subtask_cond_critic,
+                use_no_ready_embed=use_no_ready_embed,
+                use_commwait_direct=use_commwait_direct,
+                commwait_dim=commwait_dim,
+            )
         
         # Layer Norm（用于Cross-Attention后）
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
@@ -714,7 +744,8 @@ class ActorCriticNetwork(nn.Module):
         """
         return self.subtask_head(dag_features)
     
-    def forward_critic(self,
+    def _run_critic(self,
+                      head: nn.Module,
                       dag_features: torch.Tensor,
                       subtask_index: Optional[torch.Tensor] = None,
                       subtask_mask: Optional[torch.Tensor] = None,
@@ -735,9 +766,8 @@ class ActorCriticNetwork(nn.Module):
             value: [Batch, 1], 状态价值估计
         """
         if self.use_simplified_critic:
-            # 简化版Critic需要资源特征
             assert resource_features is not None, "Simplified critic requires resource_features"
-            value = self.critic_head(
+            value = head(
                 dag_features,
                 resource_features,
                 task_mask=task_mask,
@@ -747,8 +777,7 @@ class ActorCriticNetwork(nn.Module):
                 ready_mask=subtask_mask,
             )
         else:
-            # 原版Critic只需要DAG特征
-            value = self.critic_head(
+            value = head(
                 dag_features,
                 subtask_index=None,
                 commwait_extra=commwait_extra,
@@ -757,6 +786,46 @@ class ActorCriticNetwork(nn.Module):
             )
         
         return value
+
+    def forward_critic(self,
+                      dag_features: torch.Tensor,
+                      subtask_index: Optional[torch.Tensor] = None,
+                      subtask_mask: Optional[torch.Tensor] = None,
+                      commwait_extra: Optional[torch.Tensor] = None,
+                      resource_features: Optional[torch.Tensor] = None,
+                      task_mask: Optional[torch.Tensor] = None,
+                      resource_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        value = self._run_critic(
+            self.critic_head,
+            dag_features,
+            subtask_index,
+            subtask_mask,
+            commwait_extra,
+            resource_features,
+            task_mask,
+            resource_mask,
+        )
+        cost_power = self._run_critic(
+            self.cost_power_head,
+            dag_features,
+            subtask_index,
+            subtask_mask,
+            commwait_extra,
+            resource_features,
+            task_mask,
+            resource_mask,
+        )
+        cost_trust = self._run_critic(
+            self.cost_trust_head,
+            dag_features,
+            subtask_index,
+            subtask_mask,
+            commwait_extra,
+            resource_features,
+            task_mask,
+            resource_mask,
+        )
+        return value, cost_power, cost_trust
     
     def forward(self,
                 dag_features: torch.Tensor,
@@ -769,7 +838,7 @@ class ActorCriticNetwork(nn.Module):
                 subtask_mask: Optional[torch.Tensor] = None,
                 task_mask: Optional[torch.Tensor] = None,
                 resource_padding_mask: Optional[torch.Tensor] = None,
-                commwait_extra: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                commwait_extra: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（同时计算Actor和Critic）（Beta分布版）
         
@@ -799,8 +868,8 @@ class ActorCriticNetwork(nn.Module):
         )
         
         # Critic
-        value = self.forward_critic(
+        value, cost_power_value, cost_trust_value = self.forward_critic(
             dag_features, subtask_index, subtask_mask, commwait_extra, resource_encoded, task_mask, resource_padding_mask
         )
         
-        return subtask_logits, target_logits, alpha, beta, value
+        return subtask_logits, target_logits, alpha, beta, value, cost_power_value, cost_trust_value

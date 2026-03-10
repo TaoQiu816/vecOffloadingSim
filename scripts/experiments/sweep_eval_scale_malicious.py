@@ -130,7 +130,7 @@ def evaluate_single_mappo_episode(
     for _ in range(int(getattr(TC, "MAX_STEPS", 0))):
         current_obs_list = obs_list
         with torch.no_grad():
-            subtask_actions, target_actions, power_actions, _, _ = net.get_action_and_value(
+            subtask_actions, target_actions, power_actions, _, _, _, _ = net.get_action_and_value(
                 obs_list, deterministic=True, device=device
             )
         subtask_actions = subtask_actions.detach().cpu().numpy()

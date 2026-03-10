@@ -97,6 +97,8 @@ class DAGTask:
         self._is_failed = False
         self.fail_reason = None  # 失败原因：'deadline'/'overflow'/'illegal'/'unfinished'
         self.timeout_logged = False  # 用于死因诊断，避免重复打印
+        self.retry_count = np.zeros(self.num_subtasks, dtype=np.int32)
+        self.last_subtask_fail_reason = [None] * self.num_subtasks
 
         # [P03新增] 任务完成时间记录（用于deadline检查）
         # 当所有子任务完成时，记录相对于start_time的完成时间
@@ -224,6 +226,32 @@ class DAGTask:
         """
         self._is_failed = True
         self.fail_reason = reason
+
+    def mark_retryable(self, subtask_id: int, reason: str = "link_break", restore_input: bool = True):
+        """
+        将子任务恢复为可重试状态，并重新开放调度。
+
+        语义：
+        - 不直接判整张 DAG 失败
+        - 清空既有执行位置，允许重新选择目标
+        - 若当前实现不支持断点续传，则输入量恢复为原始输入量
+        """
+        if subtask_id < 0 or subtask_id >= self.num_subtasks:
+            return False
+        if self.status[subtask_id] == 3:
+            return False
+
+        self.retry_count[subtask_id] += 1
+        self.last_subtask_fail_reason[subtask_id] = reason
+        self.status[subtask_id] = 1
+        self.exec_locations[subtask_id] = None
+        self.task_locations[subtask_id] = None
+        self.waiting_for_data[subtask_id] = False
+        if restore_input:
+            self.rem_data[subtask_id] = float(self.total_data[subtask_id])
+        self.rem_comp[subtask_id] = max(float(self.rem_comp[subtask_id]), 0.0)
+        self.mark_ready(subtask_id, self.start_time)
+        return True
 
     def get_subtask_exec_location(self, subtask_id: int) -> str:
         """

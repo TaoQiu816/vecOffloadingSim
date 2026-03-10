@@ -192,6 +192,24 @@ class TrustManager:
         uncertainty = 1.0 / max(total, 1e-9)
         return float(hat_rho), float(uncertainty)
 
+    def get_trust_stats(self, node_key, z: float = None):
+        """
+        返回 (mean, uncertainty, lcb)。
+
+        lcb 使用 Beta 后验的正态近似下界，供主线的可行性掩码与风险成本使用。
+        """
+        a = float(self.beta_a.get(node_key, 1.0))
+        b = float(self.beta_b.get(node_key, 1.0))
+        total = max(a + b, 1e-9)
+        mean = a / total
+        uncertainty = 1.0 / total
+        var = (a * b) / max((total ** 2) * (total + 1.0), 1e-9)
+        std = float(np.sqrt(max(var, 0.0)))
+        if z is None:
+            z = float(getattr(Cfg, "TRUST_LCB_Z", 1.0))
+        lcb = float(np.clip(mean - float(z) * std, 0.0, 1.0))
+        return float(mean), float(uncertainty), lcb
+
     def get_stats(self):
         """获取 episode 统计"""
         mal_count = sum(1 for v in self.is_malicious.values() if v)

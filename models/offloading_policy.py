@@ -423,7 +423,7 @@ class OffloadingPolicyNetwork(nn.Module):
                 rate_prev: Optional[torch.Tensor] = None,
                 serving_rsu_onehot: Optional[torch.Tensor] = None,
                 global_state: Optional[torch.Tensor] = None,
-                candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                candidate_types: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         完整前向传播（Beta分布版本）
 
@@ -530,7 +530,7 @@ class OffloadingPolicyNetwork(nn.Module):
         commwait_extra = global_state
         
         # 7. Actor-Critic输出
-        subtask_logits, target_logits, alpha, beta, value = self.actor_critic(
+        subtask_logits, target_logits, alpha, beta, value, cost_power_value, cost_trust_value = self.actor_critic(
             dag_features=dag_features,
             node_raw=node_x,
             resource_encoded=resource_encoded,
@@ -538,18 +538,18 @@ class OffloadingPolicyNetwork(nn.Module):
             subtask_index=subtask_index,
             action_mask=action_mask,
             candidate_types=candidate_types,
-            subtask_mask=subtask_mask,
+            subtask_mask=subtask_mask if subtask_mask is not None else node_valid_mask,
             task_mask=node_valid_mask,
             resource_padding_mask=resource_padding_mask,
             commwait_extra=commwait_extra,
         )
         
-        return subtask_logits, target_logits, alpha, beta, value
+        return subtask_logits, target_logits, alpha, beta, value, cost_power_value, cost_trust_value
     
     def get_action_and_value(self,
                             obs_list: List[Dict],
                             deterministic: bool = False,
-                            device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                            device='cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         从观测获取动作和价值（用于训练和推理）
         
@@ -569,7 +569,7 @@ class OffloadingPolicyNetwork(nn.Module):
         inputs = self.prepare_inputs(obs_list, device)
         
         # 2. 前向传播
-        subtask_logits, target_logits, alpha, beta, values_env = self.forward(
+        subtask_logits, target_logits, alpha, beta, values_env, cost_power_values, cost_trust_values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -606,7 +606,7 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_subtask = subtask_dist.log_prob(subtask_actions)
 
         # 2.6 使用 sampled subtask 重算 target/power/value（value 允许使用 sampled subtask 作为条件）
-        _, target_logits, alpha, beta, values_env = self.forward(
+        _, target_logits, alpha, beta, values_env, cost_power_values, cost_trust_values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -687,7 +687,7 @@ class OffloadingPolicyNetwork(nn.Module):
         # 5. 联合log概率
         log_probs = log_prob_subtask + log_prob_target + log_prob_power
         
-        return subtask_actions, target_actions, power_actions, log_probs, values_env
+        return subtask_actions, target_actions, power_actions, log_probs, values_env, cost_power_values, cost_trust_values
     
     def evaluate_actions(self,
                         obs_list: List[Dict],
@@ -715,7 +715,7 @@ class OffloadingPolicyNetwork(nn.Module):
         inputs = self.prepare_inputs(obs_list, device)
         
         # 2. 前向传播
-        subtask_logits, _, _, _, values = self.forward(
+        subtask_logits, _, _, _, values, cost_power_values, cost_trust_values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -749,7 +749,7 @@ class OffloadingPolicyNetwork(nn.Module):
         entropy_subtask = subtask_dist.entropy()
 
         # 再以给定 subtask 评估 target/power/value（自回归一致性）
-        _, target_logits, alpha, beta, values = self.forward(
+        _, target_logits, alpha, beta, values, cost_power_values, cost_trust_values = self.forward(
             node_x=inputs['node_x'],
             adj=inputs['adj'],
             status=inputs['status'],
@@ -815,11 +815,13 @@ class OffloadingPolicyNetwork(nn.Module):
         entropy = entropy_subtask + entropy_target + entropy_power
         
         if not return_aux:
-            return log_probs, entropy, values
+            return log_probs, entropy, values, cost_power_values, cost_trust_values
 
         aux = {
             'masked_target_logits': masked_logits,
             'candidate_types': inputs['candidate_types'],
             'action_mask': inputs['action_mask'],
+            'cost_power_values': cost_power_values,
+            'cost_trust_values': cost_trust_values,
         }
-        return log_probs, entropy, values, aux
+        return log_probs, entropy, values, cost_power_values, cost_trust_values, aux

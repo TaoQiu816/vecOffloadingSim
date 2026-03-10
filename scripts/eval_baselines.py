@@ -134,7 +134,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
             current_obs = obs_list
             if use_network:
                 with torch.no_grad():
-                    subtask_actions, target_actions, power_actions, _, _ = policy.get_action_and_value(
+                    subtask_actions, target_actions, power_actions, _, _, _, _ = policy.get_action_and_value(
                         obs_list, deterministic=True, device='cpu'
                     )
                     subtask_actions = subtask_actions.numpy()

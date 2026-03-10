@@ -35,7 +35,7 @@ class LocalOnlyPolicy:
             # 始终选择本地执行 (target=0)
             act = {
                 'target': 0,
-                'power': 1.0  # 本地执行不需要传输，功率设为最大值
+                'power': 0.0  # 本地执行不需要传输
             }
             act = attach_subtask(obs, act)
             if "obs_stamp" in obs:

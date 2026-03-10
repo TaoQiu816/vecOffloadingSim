@@ -167,19 +167,17 @@ class SystemConfig:
     
     C_LIGHT = 3e8           # 光速 (m/s) - Speed of light
     
-    BW_V2I = 10.0e6         # V2I带宽 (Hz) - V2I bandwidth (10 MHz, 拥挤Uu上行切片)
-                            # 影响: V2I最大速率上限，20MHz对齐文献实际吞吐
-                            # Impact: V2I max rate limit; 20 MHz aligned with literature throughput
+    BW_V2I = 10.0e6         # V2I带宽 (Hz) - V2I bandwidth (10 MHz)
+                            # 主线: RB_SINR + 每RSU内竞争 + ICI
 
-    BW_V2V = 20.0e6         # V2V带宽 (Hz) - V2V bandwidth (20 MHz, 释放PC5直连带宽红利)
-                            # 影响: V2V最大速率上限，低于V2I以模拟边链劣势
-                            # Impact: V2V max rate limit; lower than V2I to model sidelink disadvantage
+    BW_V2V = 20.0e6         # V2V带宽 (Hz) - V2V bandwidth (20 MHz)
+                            # 主线: resource-pool / RB reuse + same-RB interference
 
     # 主线固定为 RB_SINR:
     # RSU 内 RB 正交 + 超载 round-robin 时分 + 跨 RSU 同 RB 干扰
     V2I_RATE_MODEL = "RB_SINR"
     V2I_RB_BW_HZ = 180e3               # 单RB带宽口径（ETSI/3GPP常用）
-    V2I_NUM_RB = 24         # 主线训练前默认值：压低RSU接入优势，保留RB_SINR竞争
+    V2I_NUM_RB = 24         # 主线默认：RB_SINR 竞争口径
     V2I_ICI_ENABLED = True             # 轻量跨RSU上行干扰开关
     V2I_FREQ_REUSE_FACTOR = 1          # reuse=1 表示全频复用
     
@@ -244,11 +242,13 @@ class SystemConfig:
     HO_FREEZE_STEPS = 2            # 切换后冻结步数（V2I 速率=0）
     HO_HYST_DB = 3.0               # 滞回门限 (dB)，新 RSU 参考信号须超过当前+此值
     MIN_RSU_STAY_STEPS = 5         # 最小驻留步数，切换后至少驻留此步数才可再切换
+    V2I_HANDOVER_DELAY_STEPS = 2
+    MAX_V2V_RETRY = 2
 
     # -------------------------------------------------------------------------
     # 2.5.3 信誉外生过程 (Reputation / Trust External Process)
     # -------------------------------------------------------------------------
-    TRUST_ENABLED = False           # 主线不使用 trust/risk 奖励
+    TRUST_ENABLED = True            # 主线启用 trust 风险约束与可行性掩码
     TRUST_P_RELIABLE_RANGE = (0.90, 1.0)  # 可靠节点 p_j 范围（无恶意场景：高可靠性）
     TRUST_P_UNRELIABLE_RANGE = (0.3, 0.7) # 不可靠节点 p_j 范围（RELIABLE_PROB=1.0时不生效）
     # [类型化可靠性覆盖] 若非None，则按节点类型覆盖上面的混合分布采样：
@@ -260,6 +260,8 @@ class SystemConfig:
     TRUST_PRIOR_B = 1.0             # Beta 先验 b（uncertainty=1/5=0.2，随证据快速收敛）
     TRUST_DELAY_STEPS = 3           # 证据延迟步数 tau_rep_steps
     TRUST_RESET_PER_EPISODE = True  # 每 episode 重采样隐藏可靠性
+    TRUST_LCB_Z = 1.0
+    TRUST_LCB_MIN = 0.35
 
     # [Chain x Trust] 将信誉证据延迟与链确认时延耦合（不引入共识/打包/费用，只用proxy时延）
     # 当 CHAIN_ENABLED=True 且此开关打开时：
@@ -326,7 +328,7 @@ class SystemConfig:
     VEH_CPU_HELPER_MIN = 3.2e9      # helper车算力下界 (Hz)
     VEH_CPU_HELPER_MAX = 4.0e9      # helper车算力上界 (Hz)
 
-    F_RSU = 8.0e9           # 主线训练前默认值：适度压低RSU算力优势
+    F_RSU = 8.0e9           # 主线默认 RSU CPU 频率
                             # 语义：多核时每核同频，单任务占一核，执行时间 = cycles/F_RSU
                             # Impact: RSU computing advantage significant but not absolute
     
@@ -500,8 +502,8 @@ class SystemConfig:
     # 可选模式：deadline = alpha * Tmin + slack
     # 其中 Tmin = CP_total / f_max（物理下界）
     # 在保持均值3.0不变的前提下收窄方差，降低episode间任务难度波动（场景更均衡）
-    DEADLINE_ALPHA_MIN = 6.0
-    DEADLINE_ALPHA_MAX = 9.0
+    DEADLINE_ALPHA_MIN = 4.0
+    DEADLINE_ALPHA_MAX = 6.0
     
     DEADLINE_LB_EPS = 0.02              # 物理下界裕量 eps
                                         # deadline ≥ (1+eps) × LB0 保证不先天不可行
@@ -724,6 +726,14 @@ class SystemConfig:
     W_INTERF = 0.03                 # 干扰惩罚权重 w_I
     P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
     W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
+    REWARD_PROGRESS_TNORM = 2.5
+    REWARD_PROGRESS_RMAX = 1.0
+    R_SUCCESS_ANCHOR = 3.0
+    ALPHA_SUCCESS = 2.0
+    R_FAIL_ANCHOR = 3.0
+    ALPHA_FAIL = 2.0
+    ALPHA_MISS = 2.0
+    MISS_CAP = 1.0
     # E_ref / I_ref
     # 奖励中能耗项仅统计 INPUT_TX 发射能耗（comm_queue_service: energy = p_tx * time_used）。
     # 实测上界: P_MAX_WATT * DT = 0.1995W * 0.1s ≈ 0.02J。将 E_REF 设为与上界同量级，
@@ -792,7 +802,7 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 10           # 资源原始特征维度 (10列)
+    RESOURCE_RAW_DIM = 15           # 资源原始特征维度
                                     # [0] cpu_norm
                                     # [1] comp_backlog_norm
                                     # [2] tx_backlog_norm
@@ -803,6 +813,11 @@ class SystemConfig:
                                     # [7] contact_norm
                                     # [8] contention_norm
                                     # [9] occupancy_norm
+                                    # [10] trust_mean
+                                    # [11] trust_uncertainty
+                                    # [12] trust_lcb
+                                    # [13] contact_survival_slack
+                                    # [14] v2i_coverage_handover_risk
 
     # -------------------------------------------------------------------------
     # 8.1 通信等待时间归一化 (CommWait Normalization)

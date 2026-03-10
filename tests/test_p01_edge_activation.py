@@ -38,8 +38,8 @@ def test_edge_activation_in_same_step():
     for step in range(20):
         # 构造简单动作：全部本地执行（简化测试）
         actions = []
-        for v in env.vehicles:
-            actions.append({'target': 0, 'power': 0.5})  # Local
+        for i, _ in enumerate(env.vehicles):
+            actions.append({'subtask': int(obs[i].get('subtask_index', 0)), 'target': 0, 'power': 0.5})  # Local
 
         # 记录step前的pending边数量
         pending_edges_before = 0
@@ -85,7 +85,7 @@ def test_edge_activation_idempotency():
     obs, _ = env.reset(seed=123)
 
     # 执行一步，产生一些pending边
-    actions = [{'target': 1, 'power': 0.5} for _ in env.vehicles]  # RSU
+    actions = [{'subtask': int(obs[i].get('subtask_index', 0)), 'target': 1, 'power': 0.5} for i, _ in enumerate(env.vehicles)]  # RSU
 
     try:
         env.step(actions)

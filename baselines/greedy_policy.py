@@ -77,7 +77,7 @@ class GreedyPolicy:
             dag = vehicle.task_dag
             subtask_idx = dag.get_top_priority_task() if dag is not None else None
             if subtask_idx is None or dag.is_finished or dag.is_failed:
-                act = {'target': 0, 'power': 1.0}
+                act = {'target': 0, 'power': 0.0}
                 act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
@@ -95,7 +95,7 @@ class GreedyPolicy:
             
             if len(valid_targets) == 0:
                 # 如果没有合法目标，默认选择本地执行
-                act = {'target': 0, 'power': 1.0}
+                act = {'target': 0, 'power': 0.0}
                 act = attach_subtask(obs, act, preferred=subtask_idx)
                 if "obs_stamp" in obs:
                     act["obs_stamp"] = int(obs["obs_stamp"])
@@ -150,7 +150,7 @@ class GreedyPolicy:
             # 使用最大功率
             act = {
                 'target': int(best_target),
-                'power': 1.0
+                'power': 0.0 if int(best_target) == 0 else 1.0
             }
             act = attach_subtask(obs, act, preferred=subtask_idx)
             if "obs_stamp" in obs:

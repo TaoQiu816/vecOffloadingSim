@@ -4,7 +4,7 @@ Queue-aware EFT Policy (Earliest Finish Time).
 主线口径:
 - 仅输出 target/power，不参与子任务选择。
 - 只依赖当前主线 observation 中的真实可观测量:
-  rate_prev / resource_raw(10维) / candidate_types。
+  rate_prev / resource_raw(当前主线布局) / candidate_types。
 """
 
 import numpy as np

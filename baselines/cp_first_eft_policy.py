@@ -37,7 +37,7 @@ class CPFirstEFTPolicy(EFTPolicy):
         if crit <= 0:
             return float(eft_time)
 
-        # 主线 resource_raw(10维): col7 contact_norm, col8 contention, col9 occupancy
+        # 主线 resource_raw 当前布局: col7 contact_norm, col8 contention, col9 occupancy
         raw = obs.get("resource_raw")
         if raw is None or idx >= len(raw):
             return float(eft_time)

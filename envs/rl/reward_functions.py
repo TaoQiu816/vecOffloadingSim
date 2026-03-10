@@ -1,213 +1,113 @@
-"""
-[奖励函数] envs/rl/reward_functions.py
-Unified Reward: 少项 + 非线性 + 无量纲 + 外部性内生化; PBRS 默认 OFF
-
-终局: succ  +R_s * ((Td-Tf)/Td)^p_s
-      fail  -R_f * ((Tf-Td)/Td)^p_f
-
-每步: -w_t*(dt/Td) - w_e*(E_tx/E_ref)^p_e - w_I*(I_caused/I_ref)^p_I
-      - w_ill*illegal
-
-PBRS: r_pbrs = beta*(gamma*Phi(s') - Phi(s))
-      Phi = -(eps + LB/Td)^q
-      LB 只能用快照下界（不得用未来）
-
-旧接口 compute_absolute_reward 保留兼容。
-"""
-
 import numpy as np
+
 from configs.config import SystemConfig as Cfg
 
 
-# ============================================================
-# 旧接口（向后兼容，保留 LEGACY/PBRS_KP_V2 调用路径）
-# ============================================================
-
-def compute_absolute_reward(dT_rem, t_tx, power_ratio, dt, p_max_watt,
-                           reward_min, reward_max,
-                           hard_triggered=False, illegal_action=False):
-    """旧 Delta-CFT 奖励（保持兼容）"""
-    dT_clipped = float(np.clip(
-        float(np.nan_to_num(dT_rem, nan=0.0, posinf=0.0, neginf=0.0)),
-        Cfg.DELTA_CFT_CLIP_MIN, Cfg.DELTA_CFT_CLIP_MAX
-    ))
-    dT_eff = dT_clipped - float(dt)
-    t_tx_clipped = float(np.clip(np.nan_to_num(t_tx, nan=0.0), 0.0, dt))
-
-    p_watt = float(np.nan_to_num(p_max_watt, nan=0.0))
-    p_circuit = float(getattr(Cfg, "P_CIRCUIT_WATT", 0.0))
-    p_tx = float(np.nan_to_num(power_ratio, nan=0.0)) * p_watt
-    e_step = (p_tx + p_circuit) * float(dt)
-    e_max = max((p_watt + p_circuit) * float(dt), 1e-12)
-    energy_norm = float(np.clip(e_step / e_max, 0.0, 1.0))
-
-    if hard_triggered or illegal_action:
-        reward = reward_min
-    else:
-        reward = (Cfg.DELTA_CFT_SCALE * dT_clipped -
-                 Cfg.DELTA_CFT_ENERGY_WEIGHT * energy_norm)
-    reward = float(np.clip(reward, reward_min, reward_max))
-
-    return reward, {
-        "dT": dT_clipped, "dT_eff": dT_eff,
-        "energy_norm": energy_norm, "t_tx": t_tx_clipped, "dt_used": float(dt),
-    }
+def clip_reward(reward, config=None):
+    cfg = config or Cfg
+    return float(np.clip(float(reward), cfg.REWARD_MIN, cfg.REWARD_MAX))
 
 
-# ============================================================
-# 新统一奖励
-# ============================================================
+def compute_progress_reward(phi_prev, phi_curr, t_norm=None, rmax=None):
+    if t_norm is None:
+        t_norm = float(max(getattr(Cfg, "REWARD_PROGRESS_TNORM", 1.0), 1e-6))
+    if rmax is None:
+        rmax = float(max(getattr(Cfg, "REWARD_PROGRESS_RMAX", 2.0), 1e-6))
+    delta = (float(phi_prev) - float(phi_curr)) / t_norm
+    return float(np.clip(delta, -rmax, rmax))
 
-def compute_unified_step_reward(
-    dt, Td, E_tx, I_caused, illegal,
-    E_ref=None, I_ref=None,
-):
-    """
-    每步奖励（不含终局和 PBRS）。
 
-    口径约定（论文固定版）:
-    - E_tx: 仅 INPUT_TX 能耗（可控）
-    - I_caused: 仅 INPUT_TX 造成干扰（可控）
-
-    Returns:
-        (reward_step, info_dict)
-    """
-    if Td <= 0:
-        Td = 1.0
-    w_t = getattr(Cfg, 'W_TIME', 0.5)
-    w_e = getattr(Cfg, 'W_ENERGY', 0.3)
-    p_e = getattr(Cfg, 'P_ENERGY', 1.0)
-    w_I = getattr(Cfg, 'W_INTERF', 0.2)
-    p_I = getattr(Cfg, 'P_INTERF', 1.0)
-    w_ill = getattr(Cfg, 'W_ILLEGAL', 2.0)
-
-    if E_ref is None:
-        E_ref = getattr(Cfg, 'E_REF_UNIFIED', Cfg.P_MAX_WATT * Cfg.DT)
-    if I_ref is None:
-        d0 = getattr(Cfg, 'I_REF_D0', Cfg.V2V_RANGE / 2.0)
-        beta0 = 10 ** (getattr(Cfg, 'BETA_0_DB', -30) / 10.0)
-        g_d0 = beta0 * (max(d0, 1.0) ** (-Cfg.PL_BETA_V2V))
-        I_ref = Cfg.P_MAX_WATT * g_d0
-
-    E_ref = max(E_ref, 1e-12)
-    # Keep unified interference term numerically stable: tiny I_ref can make
-    # (I_caused / I_ref)^p explode and dominate optimization.
-    I_ref_floor = float(getattr(Cfg, "I_REF_MIN_UNIFIED", 1e-12))
-    I_ref = max(I_ref, I_ref_floor, 1e-12)
-
-    dt_used = float(max(float(np.nan_to_num(dt, nan=0.0, posinf=0.0, neginf=0.0)), 0.0))
-    r_time = -w_t * (dt_used / Td)
-    energy_ratio = max(E_tx, 0.0) / E_ref
-    energy_ratio_clip = float(getattr(Cfg, "ENERGY_RATIO_CLIP_UNIFIED", 3.0))
-    if energy_ratio_clip > 0.0:
-        energy_ratio = min(energy_ratio, energy_ratio_clip)
-    r_energy = -w_e * (energy_ratio ** p_e)
-    interf_ratio = max(I_caused, 0.0) / I_ref
-    ratio_clip = float(getattr(Cfg, "INTERF_RATIO_CLIP_UNIFIED", 0.0))
-    if ratio_clip > 0.0:
-        interf_ratio = min(interf_ratio, ratio_clip)
-    r_interf = -w_I * (interf_ratio ** p_I)
-    r_illegal = -w_ill * float(illegal)
-
-    r_step = r_time + r_energy + r_interf + r_illegal
-
+def compute_unified_step_reward(r_prog, illegal=False):
+    r_illegal = -float(getattr(Cfg, "W_ILLEGAL", 30.0)) if illegal else 0.0
+    r_step = float(r_prog) + float(r_illegal)
     return float(r_step), {
-        'r_time': float(r_time),
-        'r_energy': float(r_energy),
-        'r_interf': float(r_interf),
-        'r_illegal': float(r_illegal),
-        'dt_used': float(dt_used),
-        'energy_norm': float(energy_ratio),
-        'E_tx': float(E_tx),
-        'I_caused': float(I_caused),
-        'I_ref_used': float(I_ref),
-        'interf_ratio': float(interf_ratio),
+        "r_prog": float(r_prog),
+        "r_illegal": float(r_illegal),
+        "r_step": float(r_step),
     }
 
 
-def compute_unified_terminal_reward(success, Tf, Td):
-    """
-    终局奖励。
+def compute_failure_severity(finish_time, deadline, remaining_ratio=1.0, unrecoverable=False):
+    if deadline <= 0:
+        deadline = 1.0
+    miss_ratio = max((float(finish_time) - float(deadline)) / float(deadline), 0.0)
+    severity = max(float(remaining_ratio), miss_ratio)
+    if unrecoverable:
+        severity = max(severity, 1.0)
+    return float(np.clip(severity, 0.0, float(getattr(Cfg, "MISS_CAP", 2.0))))
 
-    Args:
-        success: bool
-        Tf: 实际完成时间
-        Td: deadline
 
-    Returns:
-        (reward_terminal, info_dict)
-    """
-    if Td <= 0:
-        Td = 1.0
-    R_s = getattr(Cfg, 'R_SUCC', 10.0)
-    R_f = getattr(Cfg, 'R_FAIL', 10.0)
-    p_s = getattr(Cfg, 'P_SUCC', 1.0)
-    p_f = getattr(Cfg, 'P_FAIL', 1.5)
+def compute_unified_terminal_reward(success, finish_time, deadline, severity_fail=0.0):
+    if deadline <= 0:
+        deadline = 1.0
+    finish_time = float(max(finish_time, 0.0))
+    deadline = float(deadline)
+    r_success = float(getattr(Cfg, "R_SUCCESS_ANCHOR", 12.0))
+    alpha_success = float(getattr(Cfg, "ALPHA_SUCCESS", 6.0))
+    r_fail = float(getattr(Cfg, "R_FAIL_ANCHOR", 12.0))
+    alpha_fail = float(getattr(Cfg, "ALPHA_FAIL", 6.0))
+    alpha_miss = float(getattr(Cfg, "ALPHA_MISS", 6.0))
+    miss_cap = float(getattr(Cfg, "MISS_CAP", 2.0))
 
-    if success:
-        margin = max((Td - Tf) / Td, 0.0)
-        r_term = R_s * (margin ** p_s)
+    if success and finish_time <= deadline:
+        early_ratio = np.clip((deadline - finish_time) / deadline, 0.0, 1.0)
+        r_term = r_success + alpha_success * early_ratio
+        term_type = "success"
+    elif finish_time > deadline:
+        miss_ratio = np.clip((finish_time - deadline) / deadline, 0.0, miss_cap)
+        r_term = -(r_fail + alpha_miss * miss_ratio)
+        term_type = "miss"
     else:
-        # 任何真实失败都应承担终局惩罚；若超过deadline，再按超时程度加重。
-        fail_ratio = max(Tf / Td, 1.0)
-        r_term = -R_f * (fail_ratio ** p_f)
+        sev = np.clip(float(severity_fail), 0.0, miss_cap)
+        r_term = -(r_fail + alpha_fail * sev)
+        term_type = "fail"
 
     return float(r_term), {
-        'success': bool(success),
-        'Tf': float(Tf),
-        'Td': float(Td),
-        'r_terminal': float(r_term),
+        "r_term": float(r_term),
+        "finish_time": finish_time,
+        "deadline": deadline,
+        "term_type": term_type,
     }
 
 
-def compute_unified_pbrs(phi_prev, phi_next, terminated=False):
-    """
-    PBRS: r = beta * (gamma * Phi(s') - Phi(s))
-
-    当 terminated=True 时 Phi(s') = 0（吸收态）。
-
-    Returns:
-        float: PBRS 增量奖励
-    """
-    beta = getattr(Cfg, 'PBRS_BETA', 0.1)
-    gamma = getattr(Cfg, 'PBRS_GAMMA', 0.99)
-    clip = getattr(Cfg, 'PBRS_PHI_CLIP_UNIFIED', 5.0)
-
-    if terminated:
-        phi_next = 0.0
-    delta = gamma * phi_next - phi_prev
-    delta = float(np.clip(delta, -clip, clip))
-    return beta * delta
+def compute_cost_power(tx_energy, dt=None, e_ref=None):
+    if dt is None:
+        dt = float(max(getattr(Cfg, "DT", 0.1), 1e-6))
+    if e_ref is None:
+        e_ref = float(max(getattr(Cfg, "E_REF_UNIFIED", 1.0), 1e-9))
+    return float(np.clip(float(max(tx_energy, 0.0)) / e_ref, 0.0, 10.0))
 
 
-def compute_phi_lb(LB, Td):
-    """
-    Phi = -(eps + LB/Td)^q
-
-    Args:
-        LB: 关键路径下界时间 (秒)
-        Td: deadline (秒)
-
-    Returns:
-        float: 势值 (<=0)
-    """
-    if Td <= 0:
-        Td = 1.0
-    eps = getattr(Cfg, 'PBRS_EPS', 1e-3)
-    q = getattr(Cfg, 'PBRS_Q', 0.5)
-    clip = getattr(Cfg, 'PBRS_PHI_CLIP_UNIFIED', 5.0)
-    phi = -((eps + max(LB, 0.0) / Td) ** q)
-    return float(np.clip(phi, -clip, 0.0))
+def compute_cost_trust(trust_lcb):
+    return float(np.clip(1.0 - float(np.clip(trust_lcb, 0.0, 1.0)), 0.0, 1.0))
 
 
-def clip_reward(reward, config=None):
-    if config is None:
-        config = Cfg
-    return float(np.clip(reward, config.REWARD_MIN, config.REWARD_MAX))
+def compute_absolute_reward(*args, **kwargs):
+    dT_rem = float(kwargs.get("dT_rem", args[0] if len(args) > 0 else 0.0))
+    dt = float(kwargs.get("dt", args[3] if len(args) > 3 else getattr(Cfg, "DT", 0.1)))
+    reward_min = float(kwargs.get("reward_min", getattr(Cfg, "REWARD_MIN", -10.0)))
+    reward_max = float(kwargs.get("reward_max", getattr(Cfg, "REWARD_MAX", 10.0)))
+    reward = float(np.clip(dT_rem - dt, reward_min, reward_max))
+    return reward, {"dT": dT_rem, "dt_used": dt}
+
+
+def compute_unified_pbrs(*args, **kwargs):
+    return 0.0
+
+
+def compute_phi_lb(*args, **kwargs):
+    return 0.0
 
 
 __all__ = [
-    'compute_absolute_reward', 'clip_reward',
-    'compute_unified_step_reward', 'compute_unified_terminal_reward',
-    'compute_unified_pbrs', 'compute_phi_lb',
+    "clip_reward",
+    "compute_progress_reward",
+    "compute_unified_step_reward",
+    "compute_failure_severity",
+    "compute_unified_terminal_reward",
+    "compute_cost_power",
+    "compute_cost_trust",
+    "compute_absolute_reward",
+    "compute_unified_pbrs",
+    "compute_phi_lb",
 ]
