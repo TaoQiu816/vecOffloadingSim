@@ -107,6 +107,8 @@ TRAINING_STATS_FIELDS = [
     "bias_rsu", "bias_local",
 ]
 
+LEGACY_UNUSED = float("nan")
+
 REQUIRED_COMPARE_COLUMNS = [
     "illegal_action_rate",
     "no_task_rate",
@@ -169,6 +171,23 @@ def _build_agent_metric_map(agent_ids, values) -> Dict[int, float]:
     for idx in range(n):
         out[int(agent_ids[idx])] = float(values_arr[idx])
     return out
+
+
+def _finite_or_default(value: Any, default: float) -> float:
+    try:
+        v = float(value)
+    except Exception:
+        return float(default)
+    if not np.isfinite(v):
+        return float(default)
+    return float(v)
+
+
+def _moving_average(values: deque, default: float) -> float:
+    if not values:
+        return float(default)
+    arr = np.asarray(list(values), dtype=np.float64)
+    return float(np.mean(arr)) if arr.size > 0 else float(default)
 
 
 def _make_pending_decision_sample(
@@ -2010,6 +2029,11 @@ def main():
     best_reward = -float('inf')
     best_success_rate = 0.0  # 用于保存最佳模型
     recent_success_rates = deque(maxlen=50)  # 最近50轮的成功率
+    recent_deadline_miss_rates = deque(maxlen=50)
+    recent_time_limit_rates = deque(maxlen=50)
+    recent_real_cfts = deque(maxlen=50)
+    recent_illegal_action_rates = deque(maxlen=50)
+    best_model_key = None
     best_success_episode = 0
     best_model_path = os.path.join(recorder.model_dir, "best_model.pth")
     late_guard_enable = bool(getattr(TC, "LATE_GUARD_ENABLE", False))
@@ -2764,9 +2788,6 @@ def main():
         subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
         v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
         
-        # 更新成功率历史（用于最佳模型保存）
-        recent_success_rates.append(task_success_rate)
-
         if Cfg.DEBUG_ASSERT_METRICS:
             for name, val in [
                 ("veh_success_rate", veh_success_rate),
@@ -3022,6 +3043,8 @@ def main():
             abs_sum = 0.0
 
         def _abs_ratio(key: str) -> float:
+            if _is_unified and key in ("r_time", "r_interf", "r_pbrs", "r_margin"):
+                return LEGACY_UNUSED
             v = abs_parts.get(key)
             if abs_sum <= 0.0 or v is None or not np.isfinite(v):
                 return 0.0
@@ -3059,38 +3082,65 @@ def main():
         collab_gain_mean = env_stats.get("v2v_gain_mean") if env_stats else None
         collab_gain_pos_rate = env_stats.get("v2v_gain_pos_rate") if env_stats else None
         collab_gain_pos_mean = env_stats.get("v2v_gain_pos_mean") if env_stats else None
+        if _is_unified:
+            r_time_mean = LEGACY_UNUSED
+            r_interf_mean = LEGACY_UNUSED
+            r_pbrs_mean = LEGACY_UNUSED
+            r_margin_mean = LEGACY_UNUSED
+            r_margin_raw_mean = LEGACY_UNUSED
+            r_margin_norm_mean = LEGACY_UNUSED
+            r_margin_abs_mean = LEGACY_UNUSED
+            r_time_abs_mean = LEGACY_UNUSED
+            r_interf_abs_mean = LEGACY_UNUSED
+            r_pbrs_abs_mean = LEGACY_UNUSED
+            r_margin_on_task_mean = LEGACY_UNUSED
+            r_time_on_task_mean = LEGACY_UNUSED
+            r_margin_on_task_abs_mean = LEGACY_UNUSED
+            r_time_on_task_abs_mean = LEGACY_UNUSED
+            abs_ratio_on_task_r_margin = LEGACY_UNUSED
+            abs_ratio_on_task_r_time = LEGACY_UNUSED
+            best_mode_compare_rate = LEGACY_UNUSED
+            best_mode_local_rate = LEGACY_UNUSED
+            best_mode_rsu_rate = LEGACY_UNUSED
+            best_mode_v2v_rate = LEGACY_UNUSED
+            oracle_match_rate = LEGACY_UNUSED
+            oracle_match_eps_abs_rate = LEGACY_UNUSED
+            oracle_match_eps_rel_rate = LEGACY_UNUSED
+            action_regret_mean = LEGACY_UNUSED
+            action_regret_p50 = LEGACY_UNUSED
+            action_regret_p95 = LEGACY_UNUSED
+            oracle_match_rate_on_task = LEGACY_UNUSED
+            action_regret_mean_on_task = LEGACY_UNUSED
+            target_match_within_mode_rate = LEGACY_UNUSED
+            target_regret_within_mode_mean = LEGACY_UNUSED
+            oracle_local_chosen_local_rate = LEGACY_UNUSED
+            oracle_local_chosen_rsu_rate = LEGACY_UNUSED
+            oracle_local_chosen_v2v_rate = LEGACY_UNUSED
+            oracle_rsu_chosen_local_rate = LEGACY_UNUSED
+            oracle_rsu_chosen_rsu_rate = LEGACY_UNUSED
+            oracle_rsu_chosen_v2v_rate = LEGACY_UNUSED
+            oracle_v2v_chosen_local_rate = LEGACY_UNUSED
+            oracle_v2v_chosen_rsu_rate = LEGACY_UNUSED
+            oracle_v2v_chosen_v2v_rate = LEGACY_UNUSED
         if avail_L is None: avail_L = 0.0
         if avail_R is None: avail_R = 0.0
         if avail_V is None: avail_V = 0.0
         if neighbor_count_mean is None: neighbor_count_mean = 0.0
         if best_v2v_valid_rate is None or not (np.isfinite(best_v2v_valid_rate)): best_v2v_valid_rate = 0.0
-        if best_mode_compare_rate is None or not np.isfinite(best_mode_compare_rate): best_mode_compare_rate = 0.0
-        if best_mode_local_rate is None or not np.isfinite(best_mode_local_rate): best_mode_local_rate = 0.0
-        if best_mode_rsu_rate is None or not np.isfinite(best_mode_rsu_rate): best_mode_rsu_rate = 0.0
-        if best_mode_v2v_rate is None or not np.isfinite(best_mode_v2v_rate): best_mode_v2v_rate = 0.0
-        if oracle_match_rate is None or not np.isfinite(oracle_match_rate): oracle_match_rate = 0.0
-        if oracle_match_eps_abs_rate is None or not np.isfinite(oracle_match_eps_abs_rate): oracle_match_eps_abs_rate = 0.0
-        if oracle_match_eps_rel_rate is None or not np.isfinite(oracle_match_eps_rel_rate): oracle_match_eps_rel_rate = 0.0
-        if action_regret_mean is None or not np.isfinite(action_regret_mean): action_regret_mean = 0.0
-        if action_regret_p50 is None or not np.isfinite(action_regret_p50): action_regret_p50 = 0.0
-        if action_regret_p95 is None or not np.isfinite(action_regret_p95): action_regret_p95 = 0.0
-        if oracle_match_rate_on_task is None or not np.isfinite(oracle_match_rate_on_task): oracle_match_rate_on_task = 0.0
-        if action_regret_mean_on_task is None or not np.isfinite(action_regret_mean_on_task): action_regret_mean_on_task = 0.0
-        if target_match_within_mode_rate is None or not np.isfinite(target_match_within_mode_rate): target_match_within_mode_rate = 0.0
-        if target_regret_within_mode_mean is None or not np.isfinite(target_regret_within_mode_mean): target_regret_within_mode_mean = 0.0
-        if oracle_local_chosen_local_rate is None or not np.isfinite(oracle_local_chosen_local_rate): oracle_local_chosen_local_rate = 0.0
-        if oracle_local_chosen_rsu_rate is None or not np.isfinite(oracle_local_chosen_rsu_rate): oracle_local_chosen_rsu_rate = 0.0
-        if oracle_local_chosen_v2v_rate is None or not np.isfinite(oracle_local_chosen_v2v_rate): oracle_local_chosen_v2v_rate = 0.0
-        if oracle_rsu_chosen_local_rate is None or not np.isfinite(oracle_rsu_chosen_local_rate): oracle_rsu_chosen_local_rate = 0.0
-        if oracle_rsu_chosen_rsu_rate is None or not np.isfinite(oracle_rsu_chosen_rsu_rate): oracle_rsu_chosen_rsu_rate = 0.0
-        if oracle_rsu_chosen_v2v_rate is None or not np.isfinite(oracle_rsu_chosen_v2v_rate): oracle_rsu_chosen_v2v_rate = 0.0
-        if oracle_v2v_chosen_local_rate is None or not np.isfinite(oracle_v2v_chosen_local_rate): oracle_v2v_chosen_local_rate = 0.0
-        if oracle_v2v_chosen_rsu_rate is None or not np.isfinite(oracle_v2v_chosen_rsu_rate): oracle_v2v_chosen_rsu_rate = 0.0
-        if oracle_v2v_chosen_v2v_rate is None or not np.isfinite(oracle_v2v_chosen_v2v_rate): oracle_v2v_chosen_v2v_rate = 0.0
         if best_v2v_rate_mean is None or (isinstance(best_v2v_rate_mean, float) and not np.isfinite(best_v2v_rate_mean)):
             best_v2v_rate_mean = float("nan")
         if collab_gain_pos_rate is not None:
             collaboration_rate = collab_gain_pos_rate * 100.0
+        mean_real_cft_episode = float("inf")
+        if completed_tasks_count and completed_tasks_count > 0:
+            mean_real_cft_episode = _finite_or_default(mean_cft_completed, float("inf"))
+            if not np.isfinite(mean_real_cft_episode) or mean_real_cft_episode <= 0.0:
+                mean_real_cft_episode = _finite_or_default(task_duration_mean, float("inf"))
+        recent_success_rates.append(_finite_or_default(task_success_rate, 0.0))
+        recent_deadline_miss_rates.append(_finite_or_default(deadline_miss_rate, 1.0))
+        recent_time_limit_rates.append(_finite_or_default(time_limit_rate, 1.0))
+        recent_real_cfts.append(mean_real_cft_episode)
+        recent_illegal_action_rates.append(_finite_or_default(illegal_action_rate, 1.0))
         for name, val in (("avail_L", avail_L), ("avail_R", avail_R), ("avail_V", avail_V), ("neighbor_count_mean", neighbor_count_mean)):
             if not np.isfinite(val):
                 if name == "neighbor_count_mean":
@@ -3344,21 +3394,21 @@ def main():
             "deadline_seconds": deadline_seconds,
             "critical_path_cycles": critical_path_cycles,
             # UNIFIED component/audit (dominance check)
-            "r_time": float(r_time_mean) if r_time_mean is not None and np.isfinite(r_time_mean) else 0.0,
+            "r_time": LEGACY_UNUSED if _is_unified else (float(r_time_mean) if r_time_mean is not None and np.isfinite(r_time_mean) else 0.0),
             "r_prog": float(r_prog_mean) if r_prog_mean is not None and np.isfinite(r_prog_mean) else 0.0,
             "mean_r_prog": float(env_stats.get("mean_r_prog", r_prog_mean if r_prog_mean is not None else 0.0)) if env_stats else float(r_prog_mean if r_prog_mean is not None else 0.0),
-            "r_interf": float(r_interf_mean) if r_interf_mean is not None and np.isfinite(r_interf_mean) else 0.0,
+            "r_interf": LEGACY_UNUSED if _is_unified else (float(r_interf_mean) if r_interf_mean is not None and np.isfinite(r_interf_mean) else 0.0),
             "r_risk": float(r_risk_mean) if r_risk_mean is not None and np.isfinite(r_risk_mean) else 0.0,
             "r_illegal": float(r_illegal_mean) if r_illegal_mean is not None and np.isfinite(r_illegal_mean) else 0.0,
-            "r_pbrs": float(r_pbrs_mean) if r_pbrs_mean is not None and np.isfinite(r_pbrs_mean) else 0.0,
+            "r_pbrs": LEGACY_UNUSED if _is_unified else (float(r_pbrs_mean) if r_pbrs_mean is not None and np.isfinite(r_pbrs_mean) else 0.0),
             "r_term": float(r_term_mean) if r_term_mean is not None and np.isfinite(r_term_mean) else 0.0,
             "mean_r_term": float(env_stats.get("mean_r_term", r_term_mean if r_term_mean is not None else 0.0)) if env_stats else float(r_term_mean if r_term_mean is not None else 0.0),
             "r_step": float(r_step_mean) if r_step_mean is not None and np.isfinite(r_step_mean) else 0.0,
             "mean_cost_power": float(env_stats.get("mean_cost_power", ep_cost_mean.get("power", 0.0))) if env_stats else float(ep_cost_mean.get("power", 0.0)),
             "mean_cost_trust": float(env_stats.get("mean_cost_trust", ep_cost_mean.get("trust", 0.0))) if env_stats else float(ep_cost_mean.get("trust", 0.0)),
-            "r_margin": float(r_margin_mean) if r_margin_mean is not None and np.isfinite(r_margin_mean) else 0.0,
-            "r_margin_raw": float(r_margin_raw_mean) if r_margin_raw_mean is not None and np.isfinite(r_margin_raw_mean) else 0.0,
-            "r_margin_norm": float(r_margin_norm_mean) if r_margin_norm_mean is not None and np.isfinite(r_margin_norm_mean) else 0.0,
+            "r_margin": LEGACY_UNUSED if _is_unified else (float(r_margin_mean) if r_margin_mean is not None and np.isfinite(r_margin_mean) else 0.0),
+            "r_margin_raw": LEGACY_UNUSED if _is_unified else (float(r_margin_raw_mean) if r_margin_raw_mean is not None and np.isfinite(r_margin_raw_mean) else 0.0),
+            "r_margin_norm": LEGACY_UNUSED if _is_unified else (float(r_margin_norm_mean) if r_margin_norm_mean is not None and np.isfinite(r_margin_norm_mean) else 0.0),
             "r_total": float(r_total_mean) if r_total_mean is not None and np.isfinite(r_total_mean) else reward_mean,
             "abs_ratio_r_time": _abs_ratio("r_time"),
             "abs_ratio_r_energy": _abs_ratio("r_energy"),
@@ -3411,23 +3461,23 @@ def main():
             "dCFT_rem_p95": dCFT_rem_p95 if dCFT_rem_p95 is not None else 0.0,
             "margin_pre_mean": float(margin_pre_mean) if margin_pre_mean is not None and np.isfinite(margin_pre_mean) else 0.0,
             "margin_post_mean": float(margin_post_mean) if margin_post_mean is not None and np.isfinite(margin_post_mean) else 0.0,
-            "r_margin_abs_mean": float(r_margin_abs_mean) if r_margin_abs_mean is not None and np.isfinite(r_margin_abs_mean) else 0.0,
+            "r_margin_abs_mean": LEGACY_UNUSED if _is_unified else (float(r_margin_abs_mean) if r_margin_abs_mean is not None and np.isfinite(r_margin_abs_mean) else 0.0),
             "r_prog_abs_mean": float(r_prog_abs_mean) if r_prog_abs_mean is not None and np.isfinite(r_prog_abs_mean) else 0.0,
-            "r_margin_nonzero_rate": float(r_margin_nonzero_rate) if r_margin_nonzero_rate is not None and np.isfinite(r_margin_nonzero_rate) else 0.0,
+            "r_margin_nonzero_rate": LEGACY_UNUSED if _is_unified else (float(r_margin_nonzero_rate) if r_margin_nonzero_rate is not None and np.isfinite(r_margin_nonzero_rate) else 0.0),
             "margin_valid_count": int(margin_valid_count) if margin_valid_count is not None else 0,
             "margin_skip_count": int(margin_skip_count) if margin_skip_count is not None else 0,
             "reward_clip_hit_count": int(reward_clip_hit_count) if reward_clip_hit_count is not None else 0,
             "reward_clip_hit_rate": float(reward_clip_hit_rate) if reward_clip_hit_rate is not None and np.isfinite(reward_clip_hit_rate) else 0.0,
             "abs_ratio_basis": str(abs_ratio_basis or ("unified_mainline" if _is_unified else "default_abs_parts")),
             "r_prog_on_task_mean": float(r_prog_on_task_mean) if r_prog_on_task_mean is not None and np.isfinite(r_prog_on_task_mean) else 0.0,
-            "r_margin_on_task_mean": float(r_margin_on_task_mean) if r_margin_on_task_mean is not None and np.isfinite(r_margin_on_task_mean) else 0.0,
-            "r_time_on_task_mean": float(r_time_on_task_mean) if r_time_on_task_mean is not None and np.isfinite(r_time_on_task_mean) else 0.0,
+            "r_margin_on_task_mean": LEGACY_UNUSED if _is_unified else (float(r_margin_on_task_mean) if r_margin_on_task_mean is not None and np.isfinite(r_margin_on_task_mean) else 0.0),
+            "r_time_on_task_mean": LEGACY_UNUSED if _is_unified else (float(r_time_on_task_mean) if r_time_on_task_mean is not None and np.isfinite(r_time_on_task_mean) else 0.0),
             "r_prog_on_task_abs_mean": float(r_prog_on_task_abs_mean) if r_prog_on_task_abs_mean is not None and np.isfinite(r_prog_on_task_abs_mean) else 0.0,
-            "r_margin_on_task_abs_mean": float(r_margin_on_task_abs_mean) if r_margin_on_task_abs_mean is not None and np.isfinite(r_margin_on_task_abs_mean) else 0.0,
-            "r_time_on_task_abs_mean": float(r_time_on_task_abs_mean) if r_time_on_task_abs_mean is not None and np.isfinite(r_time_on_task_abs_mean) else 0.0,
+            "r_margin_on_task_abs_mean": LEGACY_UNUSED if _is_unified else (float(r_margin_on_task_abs_mean) if r_margin_on_task_abs_mean is not None and np.isfinite(r_margin_on_task_abs_mean) else 0.0),
+            "r_time_on_task_abs_mean": LEGACY_UNUSED if _is_unified else (float(r_time_on_task_abs_mean) if r_time_on_task_abs_mean is not None and np.isfinite(r_time_on_task_abs_mean) else 0.0),
             "abs_ratio_on_task_r_prog": float(abs_ratio_on_task_r_prog) if abs_ratio_on_task_r_prog is not None and np.isfinite(abs_ratio_on_task_r_prog) else 0.0,
-            "abs_ratio_on_task_r_margin": float(abs_ratio_on_task_r_margin) if abs_ratio_on_task_r_margin is not None and np.isfinite(abs_ratio_on_task_r_margin) else 0.0,
-            "abs_ratio_on_task_r_time": float(abs_ratio_on_task_r_time) if abs_ratio_on_task_r_time is not None and np.isfinite(abs_ratio_on_task_r_time) else 0.0,
+            "abs_ratio_on_task_r_margin": LEGACY_UNUSED if _is_unified else (float(abs_ratio_on_task_r_margin) if abs_ratio_on_task_r_margin is not None and np.isfinite(abs_ratio_on_task_r_margin) else 0.0),
+            "abs_ratio_on_task_r_time": LEGACY_UNUSED if _is_unified else (float(abs_ratio_on_task_r_time) if abs_ratio_on_task_r_time is not None and np.isfinite(abs_ratio_on_task_r_time) else 0.0),
             "abs_ratio_on_task_r_term": float(abs_ratio_on_task_r_term) if abs_ratio_on_task_r_term is not None and np.isfinite(abs_ratio_on_task_r_term) else 0.0,
             "dt_used_mean": dt_used_mean if dt_used_mean is not None else 0.0,
             "implied_dt_mean": implied_dt_mean if implied_dt_mean is not None else ( (dT_mean if dT_mean is not None else 0.0) - (dT_eff_mean if dT_eff_mean is not None else 0.0)),
@@ -3831,19 +3881,6 @@ def main():
                 tb.add_scalar("diag/best_v2v_rate_mean", best_v2v_rate_mean, episode)
             if best_v2v_valid_rate is not None:
                 tb.add_scalar("diag/best_v2v_valid_rate", best_v2v_valid_rate, episode)
-            tb.add_scalar("diag/best_mode_compare_rate", best_mode_compare_rate, episode)
-            tb.add_scalar("diag/best_mode_local_rate", best_mode_local_rate, episode)
-            tb.add_scalar("diag/best_mode_rsu_rate", best_mode_rsu_rate, episode)
-            tb.add_scalar("diag/best_mode_v2v_rate", best_mode_v2v_rate, episode)
-            tb.add_scalar("diag/oracle_match_rate", oracle_match_rate, episode)
-            tb.add_scalar("diag/oracle_match_eps_abs_rate", oracle_match_eps_abs_rate, episode)
-            tb.add_scalar("diag/oracle_match_eps_rel_rate", oracle_match_eps_rel_rate, episode)
-            tb.add_scalar("diag/action_regret_mean", action_regret_mean, episode)
-            tb.add_scalar("diag/action_regret_p95", action_regret_p95, episode)
-            tb.add_scalar("diag/target_match_within_mode_rate", target_match_within_mode_rate, episode)
-            tb.add_scalar("diag/oracle_rsu_chosen_v2v_rate", oracle_rsu_chosen_v2v_rate, episode)
-            tb.add_scalar("diag/oracle_v2v_chosen_rsu_rate", oracle_v2v_chosen_rsu_rate, episode)
-            tb.add_scalar("diag/oracle_v2v_chosen_v2v_rate", oracle_v2v_chosen_v2v_rate, episode)
             tb.add_scalar("diag/v2v_beats_rsu_rate", v2v_beats_rsu_rate, episode)
             if mean_cost_gap is not None and np.isfinite(mean_cost_gap):
                 tb.add_scalar("diag/mean_cost_gap_v2v_minus_rsu", mean_cost_gap, episode)
@@ -4068,14 +4105,31 @@ def main():
         if ep_reward > best_reward:
             best_reward = ep_reward
 
-        # 保存基于 task_success_rate 的最佳模型（50-ep滑动平均）
-        avg_recent_sr = np.mean(recent_success_rates) if recent_success_rates else 0.0
-        if episode == 1 or avg_recent_sr > best_success_rate:
+        # 保存 best_model：50-ep moving average 的词典序综合准则
+        avg_recent_sr = _moving_average(recent_success_rates, 0.0)
+        avg_recent_deadline_miss = _moving_average(recent_deadline_miss_rates, 1.0)
+        avg_recent_time_limit = _moving_average(recent_time_limit_rates, 1.0)
+        avg_recent_real_cft = _moving_average(recent_real_cfts, float("inf"))
+        avg_recent_illegal = _moving_average(recent_illegal_action_rates, 1.0)
+        current_model_key = (
+            avg_recent_sr,
+            -avg_recent_deadline_miss,
+            -avg_recent_time_limit,
+            -avg_recent_real_cft,
+            -avg_recent_illegal,
+        )
+        if best_model_key is None or current_model_key > best_model_key:
+            best_model_key = current_model_key
             best_success_rate = avg_recent_sr
             agent.save(best_model_path)
             best_success_episode = int(episode)
             if episode == 1 or episode % TC.LOG_INTERVAL == 0:
-                print(f"  → Best model saved: Success Rate = {best_success_rate:.3f} (50-ep avg)")
+                print(
+                    "  → Best model saved: "
+                    f"sr={avg_recent_sr:.3f} miss={avg_recent_deadline_miss:.3f} "
+                    f"tl={avg_recent_time_limit:.3f} cft={avg_recent_real_cft:.3f} "
+                    f"illegal={avg_recent_illegal:.3f}"
+                )
 
         # 后期退化保护：持续低于历史最佳窗口时，回滚到best并可冻结更新，抑制后段漂移
         if (

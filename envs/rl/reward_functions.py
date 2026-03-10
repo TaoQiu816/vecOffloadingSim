@@ -3,6 +3,13 @@ import numpy as np
 from configs.config import SystemConfig as Cfg
 
 
+def is_benign_trust_mode(config=None):
+    cfg = config or Cfg
+    malicious_ratio = float(max(getattr(cfg, "MALICIOUS_RATIO", 0.0), 0.0))
+    reliable_prob = float(np.clip(getattr(cfg, "TRUST_RELIABLE_PROB", 1.0), 0.0, 1.0))
+    return bool(malicious_ratio <= 1e-12 and reliable_prob >= 1.0 - 1e-12)
+
+
 def clip_reward(reward, config=None):
     cfg = config or Cfg
     return float(np.clip(float(reward), cfg.REWARD_MIN, cfg.REWARD_MAX))
@@ -78,7 +85,9 @@ def compute_cost_power(tx_energy, dt=None, e_ref=None):
     return float(np.clip(float(max(tx_energy, 0.0)) / e_ref, 0.0, 10.0))
 
 
-def compute_cost_trust(trust_lcb):
+def compute_cost_trust(trust_lcb, config=None):
+    if is_benign_trust_mode(config=config):
+        return 0.0
     return float(np.clip(1.0 - float(np.clip(trust_lcb, 0.0, 1.0)), 0.0, 1.0))
 
 
@@ -107,6 +116,7 @@ __all__ = [
     "compute_unified_terminal_reward",
     "compute_cost_power",
     "compute_cost_trust",
+    "is_benign_trust_mode",
     "compute_absolute_reward",
     "compute_unified_pbrs",
     "compute_phi_lb",

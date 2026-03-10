@@ -3596,6 +3596,10 @@ class VecOffloadingEnv(gym.Env):
             v.id: float(self.E_tx_input_cost.get(v.id, 0.0))
             for v in self.vehicles
         }
+        prev_energy_edge_record = {
+            v.id: float(self.E_tx_edge_record.get(v.id, 0.0))
+            for v in self.vehicles
+        }
 
         step_congestion_cost = 0.0
         active_agents_count = 0
@@ -3906,6 +3910,26 @@ class VecOffloadingEnv(gym.Env):
         # 职责: FIFO并行推进V2I/V2V通信队列 (work-conserving)
         # =====================================================================
         comm_result = self._phase3_advance_comm_queues()
+        for q_dict in (self.txq_v2i, self.txq_v2v):
+            for queue in q_dict.values():
+                for job in queue:
+                    if job is None:
+                        continue
+                    if getattr(job, "step_time_used", 0.0) <= 0.0 or getattr(job, "step_bytes_sent", 0.0) <= 0.0:
+                        continue
+                    if getattr(job, "src_node", None) is None or job.src_node[0] != "VEH":
+                        continue
+                    vid = int(job.src_node[1])
+                    step_tx_time[vid] = step_tx_time.get(vid, 0.0) + float(job.step_time_used)
+        for job in getattr(comm_result, "completed_jobs", []):
+            if job is None:
+                continue
+            if getattr(job, "step_time_used", 0.0) <= 0.0 or getattr(job, "step_bytes_sent", 0.0) <= 0.0:
+                continue
+            if getattr(job, "src_node", None) is None or job.src_node[0] != "VEH":
+                continue
+            vid = int(job.src_node[1])
+            step_tx_time[vid] = step_tx_time.get(vid, 0.0) + float(job.step_time_used)
 
         # =====================================================================
         # [阶段4: 计算服务] Serve Compute Queues
@@ -4037,14 +4061,18 @@ class VecOffloadingEnv(gym.Env):
         step_completed_counts = {}
         step_energy_cost = {}
         step_energy_input_cost = {}
+        step_energy_edge_cost = {}
         for v in self.vehicles:
             prev_completed = prev_completed_counts.get(v.id, 0)
             curr_completed = int(np.sum(v.task_dag.status == 3))
             step_completed_counts[v.id] = max(curr_completed - prev_completed, 0)
-            prev_energy = prev_energy_input_cost.get(v.id, 0.0)
-            curr_energy = float(self.E_tx_input_cost.get(v.id, 0.0))
-            step_energy_cost[v.id] = max(curr_energy - prev_energy, 0.0)
-            step_energy_input_cost[v.id] = step_energy_cost[v.id]
+            prev_input_energy = prev_energy_input_cost.get(v.id, 0.0)
+            curr_input_energy = float(self.E_tx_input_cost.get(v.id, 0.0))
+            prev_edge_energy = prev_energy_edge_record.get(v.id, 0.0)
+            curr_edge_energy = float(self.E_tx_edge_record.get(v.id, 0.0))
+            step_energy_input_cost[v.id] = max(curr_input_energy - prev_input_energy, 0.0)
+            step_energy_edge_cost[v.id] = max(curr_edge_energy - prev_edge_energy, 0.0)
+            step_energy_cost[v.id] = step_energy_input_cost[v.id] + step_energy_edge_cost[v.id]
 
         phi_next_cache = {}
         phi_next_debug_cache = {}
@@ -4079,7 +4107,7 @@ class VecOffloadingEnv(gym.Env):
             v2v_i_total_dict = v2v_stats.get('i_total', {})
             v2i_i_total_dict = v2i_stats.get('i_total', {})
 
-            energy_vals = [float(max(step_energy_input_cost.get(v.id, 0.0), 0.0)) for v in self.vehicles]
+            energy_vals = [float(max(step_energy_cost.get(v.id, 0.0), 0.0)) for v in self.vehicles]
             interf_vals = [
                 float(max(
                     float(v2v_i_caused_input_dict.get(v.id, 0.0)) + float(v2i_i_caused_input_dict.get(v.id, 0.0)),
@@ -4099,7 +4127,7 @@ class VecOffloadingEnv(gym.Env):
                 illegal = bool(ctx.get("illegal_action", ctx.get("illegal", False)))
                 if illegal:
                     step_unified_illegal_trigger_count += 1
-                energy_step = step_energy_input_cost.get(v.id, 0.0)
+                energy_step = step_energy_cost.get(v.id, 0.0)
                 i_caused_input = float(v2v_i_caused_input_dict.get(v.id, 0.0)) + float(
                     v2i_i_caused_input_dict.get(v.id, 0.0)
                 )
@@ -4145,7 +4173,7 @@ class VecOffloadingEnv(gym.Env):
                 target = ctx.get("target", "Local")
                 _, _, trust_lcb = self._get_trust_stats_for_target(target)
                 cost_power = compute_cost_power(energy_step, dt=dt_used, e_ref=energy_ref)
-                cost_trust = compute_cost_trust(trust_lcb if target != "Local" else 1.0)
+                cost_trust = compute_cost_trust(trust_lcb if target != "Local" else 1.0, config=self.config)
                 step_cost_power_arr.append(float(cost_power))
                 step_cost_trust_arr.append(float(cost_trust))
 
@@ -4177,7 +4205,7 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("I_total", float(i_total_all))
                     self._reward_stats.add_metric("I_total_abs", abs(float(i_total_all)))
                 self._episode_energy_norm_values.append(cost_power)
-                self._episode_t_tx_values.append(float(ctx.get("t_tx", 0.0)))
+                self._episode_t_tx_values.append(float(step_tx_time.get(v.id, 0.0)))
                 self._episode_I_total_values.append(float(i_total_all))
                 self._episode_I_caused_input_values.append(float(i_caused_input))
             self._last_step_cost_power = list(step_cost_power_arr)

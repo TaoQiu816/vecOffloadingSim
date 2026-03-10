@@ -4,6 +4,7 @@ import torch.nn as nn
 from typing import Dict, List, Tuple
 
 from agents.rollout_buffer import RolloutBuffer
+from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from models.offloading_policy import OffloadingPolicyNetwork
 
@@ -58,7 +59,15 @@ class MAPPOAgent:
 
         self.lambda_power = float(getattr(TC, "DUAL_POWER_INIT", 0.0))
         self.lambda_trust = float(getattr(TC, "DUAL_TRUST_INIT", 0.0))
+        if self._benign_trust_mode():
+            self.lambda_trust = 0.0
         self.last_update_stats = {}
+
+    @staticmethod
+    def _benign_trust_mode() -> bool:
+        malicious_ratio = float(max(getattr(Cfg, "MALICIOUS_RATIO", 0.0), 0.0))
+        reliable_prob = float(np.clip(getattr(Cfg, "TRUST_RELIABLE_PROB", 1.0), 0.0, 1.0))
+        return bool(malicious_ratio <= 1e-12 and reliable_prob >= 1.0 - 1e-12)
 
     @staticmethod
     def _has_invalid_grad(params) -> bool:
@@ -174,7 +183,10 @@ class MAPPOAgent:
         budget_power = float(getattr(TC, "COST_BUDGET_POWER", 0.20))
         budget_trust = float(getattr(TC, "COST_BUDGET_TRUST", 0.35))
         self.lambda_power = float(np.clip(self.lambda_power + lr * (float(mean_cost_power) - budget_power), 0.0, lam_max))
-        self.lambda_trust = float(np.clip(self.lambda_trust + lr * (float(mean_cost_trust) - budget_trust), 0.0, lam_max))
+        if self._benign_trust_mode():
+            self.lambda_trust = 0.0
+        else:
+            self.lambda_trust = float(np.clip(self.lambda_trust + lr * (float(mean_cost_trust) - budget_trust), 0.0, lam_max))
 
     def update(self, buffer: RolloutBuffer, batch_size: int = 64) -> float:
         total_loss = 0.0
@@ -294,7 +306,8 @@ class MAPPOAgent:
                     approx_kl = torch.tensor(0.0, device=self.device)
                     clip_frac = torch.tensor(0.0, device=self.device)
                 else:
-                    lagrangian_adv = advantages - (self.lambda_power * cost_power_advantages) - (self.lambda_trust * cost_trust_advantages)
+                    lambda_trust = 0.0 if self._benign_trust_mode() else self.lambda_trust
+                    lagrangian_adv = advantages - (self.lambda_power * cost_power_advantages) - (lambda_trust * cost_trust_advantages)
                     surr1 = ratio * lagrangian_adv
                     surr2 = torch.clamp(ratio, 1.0 - TC.CLIP_PARAM, 1.0 + TC.CLIP_PARAM) * lagrangian_adv
                     policy_loss = -(torch.min(surr1, surr2) * actor_masks).sum() / actor_mask_sum

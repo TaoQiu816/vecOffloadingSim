@@ -59,6 +59,20 @@ def rolling_mean(data, window=50):
     return data.rolling(window=window, min_periods=1).mean()
 
 
+def rolling_quantile(data, window=50, q=0.5):
+    """计算滚动分位数，用于高噪声曲线的稳健趋势可视化"""
+    if len(data) < window:
+        window = max(1, len(data) // 10)
+    return data.rolling(window=window, min_periods=1).quantile(q)
+
+
+def maybe_add_legend(ax, **kwargs):
+    """仅在当前坐标轴存在有效图例项时添加图例，避免空legend警告"""
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(**kwargs)
+
+
 def _plot_baseline_hlines(ax, df_baseline, col, scale=1.0, n_ep_label=None):
     """
     P2 统一口径：baseline 策略以水平线绘制，避免 10ep 压缩在 3000ep x 轴左侧造成误导。
@@ -129,16 +143,21 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     
     # 1. Reward with Baseline
     ax = axes[0, 0]
-    ax.plot(df['episode'], df['reward_mean'], alpha=0.15, color=COLORS['primary'], linewidth=0.8)
-    ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
-            color=COLORS['primary'], linewidth=2.5, label='MAPPO')
+    reward_q25 = rolling_quantile(df['reward_mean'], 50, 0.25)
+    reward_q75 = rolling_quantile(df['reward_mean'], 50, 0.75)
+    reward_med = rolling_quantile(df['reward_mean'], 20, 0.50)
+    reward_ma50 = rolling_mean(df['reward_mean'], 50)
+    ax.plot(df['episode'], df['reward_mean'], alpha=0.08, color=COLORS['primary'], linewidth=0.8, label='Raw Reward')
+    ax.fill_between(df['episode'], reward_q25, reward_q75, color=COLORS['primary'], alpha=0.14, label='IQR (50-ep)')
+    ax.plot(df['episode'], reward_med, color=COLORS['accent'], linewidth=1.8, label='Median (20-ep)')
+    ax.plot(df['episode'], reward_ma50, color=COLORS['primary'], linewidth=2.5, label='Mean (50-ep)')
     
     _plot_baseline_hlines(ax, df_baseline, 'reward_mean')
     
     ax.set_xlabel('Episode')
     ax.set_ylabel('Reward (per step)')
-    ax.set_title('Reward Convergence', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    ax.set_title('Reward Convergence (Raw + Robust Trend)', fontweight='bold')
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.axhline(y=0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
     
     # 2. Task Success Rate with Baseline
@@ -152,7 +171,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Task Success Rate (%)')
     ax.set_title('Task Success Rate', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.axhline(y=80, color=COLORS['danger'], linestyle='--', linewidth=1.5, alpha=0.7, label='Target 80%')
     ax.set_ylim([0, 105])
     
@@ -167,7 +186,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Success Rate (%)')
     ax.set_title('Vehicle & Subtask Success Rate', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.set_ylim([0, 105])
     
     # 4. Deadline Misses
@@ -179,7 +198,7 @@ def plot_convergence_with_baseline(df, df_baseline, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Deadline Misses (count)')
     ax.set_title('Deadline Miss Count', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'fig_convergence_baseline.png'), dpi=300, bbox_inches='tight')
@@ -237,7 +256,7 @@ def plot_training_diagnostics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Actor Loss')
     ax.set_title('Actor (Policy) Loss', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 2. Critic Loss
     ax = axes[0, 1]
@@ -252,7 +271,7 @@ def plot_training_diagnostics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Critic Loss')
     ax.set_title('Critic (Value) Loss', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 3. Entropy
     ax = axes[1, 0]
@@ -267,7 +286,7 @@ def plot_training_diagnostics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Entropy')
     ax.set_title('Policy Entropy (Exploration)', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 4. KL Divergence & Clip Fraction
     ax = axes[1, 1]
@@ -319,7 +338,7 @@ def plot_physical_metrics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Task Duration (s)')
     ax.set_title('Task Completion Time', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 2. Service Rate & Idle Fraction
     ax = axes[0, 1]
@@ -351,7 +370,7 @@ def plot_physical_metrics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Count per Episode')
     ax.set_title('Transmission Statistics', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 4. Completed Tasks
     ax = axes[1, 1]
@@ -362,7 +381,7 @@ def plot_physical_metrics(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Count')
     ax.set_title('Completed Tasks per Episode', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'fig_physical_metrics.png'), dpi=300, bbox_inches='tight')
@@ -381,14 +400,19 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     
     # 1. Reward (大图)
     ax = fig.add_subplot(gs[0, :2])
-    ax.plot(df['episode'], df['reward_mean'], alpha=0.15, color=COLORS['primary'])
-    ax.plot(df['episode'], rolling_mean(df['reward_mean'], 50), 
-            color=COLORS['primary'], linewidth=3, label='MAPPO')
+    reward_q25 = rolling_quantile(df['reward_mean'], 50, 0.25)
+    reward_q75 = rolling_quantile(df['reward_mean'], 50, 0.75)
+    reward_med = rolling_quantile(df['reward_mean'], 20, 0.50)
+    reward_ma50 = rolling_mean(df['reward_mean'], 50)
+    ax.plot(df['episode'], df['reward_mean'], alpha=0.08, color=COLORS['primary'], label='Raw Reward')
+    ax.fill_between(df['episode'], reward_q25, reward_q75, color=COLORS['primary'], alpha=0.14, label='IQR (50-ep)')
+    ax.plot(df['episode'], reward_med, color=COLORS['accent'], linewidth=1.8, label='Median (20-ep)')
+    ax.plot(df['episode'], reward_ma50, color=COLORS['primary'], linewidth=3, label='Mean (50-ep)')
     _plot_baseline_hlines(ax, df_baseline, 'reward_mean')
-    ax.set_title('Reward Convergence', fontweight='bold', fontsize=14)
+    ax.set_title('Reward Convergence (Raw + Robust Trend)', fontweight='bold', fontsize=14)
     ax.set_xlabel('Episode')
     ax.set_ylabel('Reward/Step')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.axhline(y=0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
     
     # 2. Success Rate (大图)
@@ -401,7 +425,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Success Rate (%)')
     ax.set_ylim([0, 105])
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 3. Policy Evolution
     ax = fig.add_subplot(gs[1, :2])
@@ -431,7 +455,7 @@ def plot_summary_dashboard(df, df_baseline, output_dir):
     ax.set_title('Training Loss', fontweight='bold', fontsize=14)
     ax.set_xlabel('Episode')
     ax.set_ylabel('Loss')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
     
     # 5. Entropy
     ax = fig.add_subplot(gs[1, 3])
@@ -585,7 +609,7 @@ def plot_constraints_and_health(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Rate (%)')
     ax.set_title('Constraint Hit Rate', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
 
     # 2) 非法与硬触发
     ax = axes[0, 1]
@@ -598,7 +622,7 @@ def plot_constraints_and_health(df, output_dir):
     ax.set_xlabel('Episode')
     ax.set_ylabel('Rate (%)')
     ax.set_title('Safety Trigger Rate', fontweight='bold')
-    ax.legend(loc='best', framealpha=0.9)
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
 
     # 3) 资源压力
     ax = axes[1, 0]
@@ -614,7 +638,7 @@ def plot_constraints_and_health(df, output_dir):
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax.legend(lines1 + lines2, labels1 + labels2, loc='best', framealpha=0.9)
     else:
-        ax.legend(loc='best', framealpha=0.9)
+        maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.set_xlabel('Episode')
     ax.set_ylabel('RSU Queue Length')
     ax.set_title('Resource Pressure', fontweight='bold')
@@ -633,7 +657,7 @@ def plot_constraints_and_health(df, output_dir):
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax.legend(lines1 + lines2, labels1 + labels2, loc='best', framealpha=0.9)
     else:
-        ax.legend(loc='best', framealpha=0.9)
+        maybe_add_legend(ax, loc='best', framealpha=0.9)
     ax.set_xlabel('Episode')
     ax.set_ylabel('Grad Norm')
     ax.set_title('PPO Update Health', fontweight='bold')
@@ -642,6 +666,146 @@ def plot_constraints_and_health(df, output_dir):
     plt.savefig(os.path.join(output_dir, 'fig_constraint_health.png'), dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✓ Saved: fig_constraint_health.png")
+
+
+def plot_convergence_recheck(df, output_dir):
+    """
+    面向收敛性复核的补充图：
+    把 reward、成功率、约束、终止原因、策略分布、PPO健康拆开看，
+    避免单看 reward 均值曲线造成误判。
+    """
+    fig, axes = plt.subplots(3, 2, figsize=(18, 14))
+    episodes = df['episode']
+
+    # 1) Success rate
+    ax = axes[0, 0]
+    task_sr_raw = df['task_sr'] * 100.0
+    task_sr_ma20 = rolling_mean(df['task_sr'], 20) * 100.0
+    task_sr_ma50 = rolling_mean(df['task_sr'], 50) * 100.0
+    subtask_sr_ma50 = rolling_mean(df['subtask_sr'], 50) * 100.0
+    ax.plot(episodes, task_sr_raw, alpha=0.10, color=COLORS['secondary'], linewidth=0.8, label='Task SR Raw')
+    ax.plot(episodes, task_sr_ma20, color=COLORS['accent'], linewidth=1.8, label='Task SR Mean (20-ep)')
+    ax.plot(episodes, task_sr_ma50, color=COLORS['secondary'], linewidth=2.6, label='Task SR Mean (50-ep)')
+    ax.plot(episodes, subtask_sr_ma50, color=COLORS['primary'], linewidth=2.0, linestyle='--', label='Subtask SR Mean (50-ep)')
+    best_idx = int(task_sr_ma50.idxmax())
+    ax.scatter([episodes.iloc[best_idx]], [task_sr_ma50.iloc[best_idx]], color=COLORS['danger'], s=35, zorder=5)
+    ax.axvline(episodes.iloc[best_idx], color=COLORS['danger'], linestyle=':', linewidth=1.2, alpha=0.8)
+    ax.set_title('Success Convergence Recheck', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Success Rate (%)')
+    ax.set_ylim([0, 105])
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
+
+    # 2) Reward recheck
+    ax = axes[0, 1]
+    reward_q25 = rolling_quantile(df['reward_mean'], 50, 0.25)
+    reward_q75 = rolling_quantile(df['reward_mean'], 50, 0.75)
+    reward_med = rolling_quantile(df['reward_mean'], 20, 0.50)
+    reward_ma50 = rolling_mean(df['reward_mean'], 50)
+    ax.plot(episodes, df['reward_mean'], alpha=0.08, color=COLORS['primary'], linewidth=0.8, label='Raw Reward')
+    ax.fill_between(episodes, reward_q25, reward_q75, color=COLORS['primary'], alpha=0.14, label='IQR (50-ep)')
+    ax.plot(episodes, reward_med, color=COLORS['accent'], linewidth=1.8, label='Median (20-ep)')
+    ax.plot(episodes, reward_ma50, color=COLORS['primary'], linewidth=2.6, label='Mean (50-ep)')
+    ax.axhline(y=0.0, color='gray', linestyle='-', linewidth=0.5, alpha=0.6)
+    ax.set_title('Reward Recheck (High-Noise Friendly)', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Reward / Step')
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
+
+    # 3) Constraint rates
+    ax = axes[1, 0]
+    if 'deadline_miss_rate' in df.columns:
+        ax.plot(episodes, rolling_mean(df['deadline_miss_rate'], 20) * 100,
+                color=COLORS['danger'], linewidth=1.8, alpha=0.9, label='Deadline Miss (20-ep)')
+        ax.plot(episodes, rolling_mean(df['deadline_miss_rate'], 50) * 100,
+                color=COLORS['danger'], linewidth=2.6, label='Deadline Miss (50-ep)')
+    if 'time_limit_rate' in df.columns:
+        ax.plot(episodes, rolling_mean(df['time_limit_rate'], 20) * 100,
+                color=COLORS['accent'], linewidth=1.8, linestyle='--', alpha=0.9, label='Time Limit (20-ep)')
+        ax.plot(episodes, rolling_mean(df['time_limit_rate'], 50) * 100,
+                color=COLORS['accent'], linewidth=2.6, linestyle='-.', label='Time Limit (50-ep)')
+    ax.set_title('Constraint Pressure', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Rate (%)')
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
+
+    # 4) Termination mix
+    ax = axes[1, 1]
+    term_col = None
+    for candidate in ('termination_reason', 'termination_reason_bucket', 'termination_reason_raw'):
+        if candidate in df.columns:
+            term_col = candidate
+            break
+    if term_col is not None:
+        if 'time_limit' in set(df[term_col].astype(str)):
+            tlimit = rolling_mean((df[term_col].astype(str) == 'time_limit').astype(float), 50) * 100
+            ax.plot(episodes, tlimit, color=COLORS['accent'], linewidth=2.5, label='Time Limit (50-ep)')
+        if 'idle' in set(df[term_col].astype(str)):
+            idle = rolling_mean((df[term_col].astype(str) == 'idle').astype(float), 50) * 100
+            ax.plot(episodes, idle, color=COLORS['muted'], linewidth=2.2, label='Idle (50-ep)')
+        if 'success_all_done' in set(df[term_col].astype(str)):
+            all_done = rolling_mean((df[term_col].astype(str) == 'success_all_done').astype(float), 50) * 100
+            ax.plot(episodes, all_done, color=COLORS['secondary'], linewidth=2.5, label='All Done (50-ep)')
+        if 'terminated' in set(df[term_col].astype(str)):
+            terminated = rolling_mean((df[term_col].astype(str) == 'terminated').astype(float), 50) * 100
+            ax.plot(episodes, terminated, color=COLORS['secondary'], linewidth=2.5, label='Terminated (50-ep)')
+    ax.set_title('Termination Mix', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Rolling Share (%)')
+    ax.set_ylim([0, 105])
+    maybe_add_legend(ax, loc='best', framealpha=0.9)
+
+    # 5) Policy evolution as lines
+    ax = axes[2, 0]
+    ax.plot(episodes, rolling_mean(df['ratio_local'], 20) * 100,
+            color='#3b82f6', linewidth=1.6, alpha=0.9, label='Local (20-ep)')
+    ax.plot(episodes, rolling_mean(df['ratio_local'], 50) * 100,
+            color='#1d4ed8', linewidth=2.4, label='Local (50-ep)')
+    ax.plot(episodes, rolling_mean(df['ratio_rsu'], 20) * 100,
+            color='#f59e0b', linewidth=1.6, alpha=0.9, label='RSU (20-ep)')
+    ax.plot(episodes, rolling_mean(df['ratio_rsu'], 50) * 100,
+            color='#b45309', linewidth=2.4, label='RSU (50-ep)')
+    ax.plot(episodes, rolling_mean(df['ratio_v2v'], 20) * 100,
+            color='#10b981', linewidth=1.6, alpha=0.9, label='V2V (20-ep)')
+    ax.plot(episodes, rolling_mean(df['ratio_v2v'], 50) * 100,
+            color='#047857', linewidth=2.4, label='V2V (50-ep)')
+    ax.set_title('Policy Narrowing', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Decision Ratio (%)')
+    ax.set_ylim([0, 105])
+    ax.legend(loc='best', ncol=2, framealpha=0.9)
+
+    # 6) PPO health
+    ax = axes[2, 1]
+    health_handles = []
+    health_labels = []
+    if 'entropy' in df.columns:
+        line = ax.plot(episodes, rolling_mean(df['entropy'], 50),
+                       color=COLORS['secondary'], linewidth=2.4, label='Entropy (50-ep)')
+        health_handles.extend(line)
+        health_labels.extend(['Entropy (50-ep)'])
+    if 'critic_loss' in df.columns:
+        line = ax.plot(episodes, rolling_mean(df['critic_loss'], 50),
+                       color=COLORS['primary'], linewidth=2.2, label='Critic Loss (50-ep)')
+        health_handles.extend(line)
+        health_labels.extend(['Critic Loss (50-ep)'])
+    if 'grad_norm' in df.columns:
+        ax2 = ax.twinx()
+        line = ax2.plot(episodes, rolling_mean(df['grad_norm'], 50),
+                        color=COLORS['danger'], linewidth=2.0, linestyle='--', label='Grad Norm (50-ep)')
+        health_handles.extend(line)
+        health_labels.extend(['Grad Norm (50-ep)'])
+        ax2.set_ylabel('Grad Norm', color=COLORS['danger'])
+    ax.set_title('PPO Update Health', fontweight='bold')
+    ax.set_xlabel('Episode')
+    ax.set_ylabel('Entropy / Critic Loss')
+    if health_handles:
+        ax.legend(health_handles, health_labels, loc='best', framealpha=0.9)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'fig_convergence_recheck.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print("✓ Saved: fig_convergence_recheck.png")
 
 
 def main():
@@ -703,6 +867,7 @@ def main():
     
     # 生成图表
     print("\n[Generating Plots]")
+    plot_convergence_recheck(df, args.output_dir)
     plot_convergence_with_baseline(df, df_baseline, args.output_dir)
     plot_policy_evolution(df, args.output_dir)
     plot_training_diagnostics(df, args.output_dir)
