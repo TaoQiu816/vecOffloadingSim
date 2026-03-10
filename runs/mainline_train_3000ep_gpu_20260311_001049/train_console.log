@@ -1,0 +1,21 @@
+[ConfigEffective] USE_SIMPLIFIED_CRITIC=False COMMWAIT_DIRECT_TO_CRITIC=True USE_LOGIT_BIAS=True USE_FIXED_POWER=False CTDE_GLOBAL_DIM=30 GLOBAL_STATE_SOURCE=train_ctde_override
+[ScaleCheck] UNIFIED cap: step<=~0.335 ep<=~67.0 term=24.0 ep/term=2.79 (Td_min=0.40s, DT=0.10s, i_cap=3, e_cap=1.5)
+[ConfigDump] saved: /root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/config_dump.json
+[ConfigSnapshot] saved: /root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/logs/config_snapshot.json
+[RunMeta] saved: /root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/run_meta.json
+
+======================================================================================================================
+[Train] MAPPO VEC training started
+======================================================================================================================
+[Run] id=mainline_train_3000ep_gpu_20260311_001049 seed=42 device=cuda reward=UNIFIED candidate=ALL (all_feasible=True)
+[Train] episodes=3000 steps/ep=200 eval_interval=1 save_interval=100 baseline_eval=off
+[Scenario] vehicles=20 rsu=3 map=2000.0m lanes=2 v2v_range=250.0m rsu_range=350.0m
+[Physics] BW_V2I=10.00MHz BW_V2V=20.00MHz RB=10 Ptx=[0.0200,0.1995]W (13.0,23.0 dBm) DT=0.100s
+[ScaleCheck] UNIFIED nominal: E_loc=9J E_tx=0.00750952J r_time=-0.0035 r_energy=-0.0115039 r_interf=-0.03 (B_RB=2e+06Hz, SNR=20dB, dt=0.1, Td=10, rho=0.7)
+[Compute] f_local=[0.50,2.00]GHz f_rsu=8.00GHz
+[PPO] lr=2.00e-04 gamma=0.995 gae=0.950 clip=0.250 ent=0.012 batch=256 epochs=5 d_model=128 layers=2
+[Logging] step_metrics=off step_logs=off tb_obs=on
+[Paths] run=/root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049
+[Paths] logs=/root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/logs  models=/root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/models  plots=/root/vecOffloadingSim/runs/mainline_train_3000ep_gpu_20260311_001049/plots
+======================================================================================================================
+

@@ -1,0 +1,22 @@
+[2026-02-09 21:22:26] Abnormal termination
+run_id=run500_n20_topk8_20260209_212218
+run_dir=/root/vecOffloadingSim/runs/run500_n20_topk8_20260209_212218
+episode=1
+step=75
+exception=KeyboardInterrupt: 
+traceback:
+Traceback (most recent call last):
+  File "/root/vecOffloadingSim/train.py", line 2120, in <module>
+    main()
+  File "/root/vecOffloadingSim/train.py", line 1137, in main
+    next_obs_list, rewards, terminated, truncated, info = env.step(actions)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 3036, in step
+    return self._get_obs(), rewards, terminated, truncated, info
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 3472, in _get_obs
+    queue_wait_time = self._get_node_delay(other)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 582, in _get_node_delay
+    return self._get_veh_queue_wait_time(node.id, node.cpu_freq)
+  File "/root/vecOffloadingSim/envs/vec_offloading_env.py", line 287, in _get_veh_queue_wait_time
+    def _get_veh_queue_wait_time(self, veh_id: int, cpu_freq: float = None) -> float:
+KeyboardInterrupt
+
