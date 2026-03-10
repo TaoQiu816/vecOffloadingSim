@@ -1,0 +1,17 @@
+{
+  "run_id": "mainline_train_1000ep_gpu_20260310_184319",
+  "run_dir": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319",
+  "status": "completed",
+  "created_at": "2026-03-10 18:43:22",
+  "git_commit": "0499048487ffc9aa3654bec5e0e6135dc6868579",
+  "config_hash": "b6cdcb9a364e7f9b4859b5b167228d86f2bfad87ec57e200db3bea6284df7093",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319/logs/config_snapshot.json",
+  "completed_at": "2026-03-10 22:06:52",
+  "episodes_completed": 1000,
+  "best_reward": 0.37765890934426793,
+  "best_success_rate_50ep": 0.862,
+  "best_model_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260310_184319/logs/training_stats.csv"
+}
