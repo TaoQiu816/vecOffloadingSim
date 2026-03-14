@@ -216,6 +216,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_not_in_candidate_fallback_cnt = 0
         self._episode_illegal_by_connectivity_cnt = 0
         self._episode_domain_params = {}
+        self._episode_sampling_profile = {}
         self._episode_v2v_tx_jobs = 0
         self._episode_v2v_link_break_count = 0
 
@@ -238,6 +239,14 @@ class VecOffloadingEnv(gym.Env):
         # log 压缩归一：R_ref_max = R_ref(d=1m)，log_max = log(1 + R_ref_max)
         g_d1 = self.channel.beta0 * (1.0 ** (-self.config.PL_BETA_V2V))
         snr_max = self._v2v_ref_p_w * g_d1 / max(self._v2v_ref_noise_w, 1e-30)
+        self._log_rsu_queue_cap = np.log1p(max(float(getattr(self.config, "RSU_QUEUE_CYCLES_LIMIT", 1.0)), 1.0))
+        self._log_vehicle_queue_cap = np.log1p(max(float(getattr(self.config, "VEHICLE_QUEUE_CYCLES_LIMIT", 1.0)), 1.0))
+        tx_backlog_cap = max(
+            float(getattr(self.config, "NORM_MAX_DATA", 1.0)),
+            float(getattr(self.config, "MAX_DATA", 1.0)) * float(max(getattr(self.config, "MAX_NODES", 1), 1)),
+        )
+        self._log_tx_backlog_cap = np.log1p(max(tx_backlog_cap, 1.0))
+        self._log_wait_cap = np.log1p(max(float(getattr(self.config, "NORM_MAX_WAIT_TIME", 1.0)), 1.0))
         r_ref_max = self._v2v_ref_bw * np.log2(1.0 + snr_max)
         self._v2v_ref_log_max = float(np.log(1.0 + r_ref_max))  # 用于 col3 归一
         self._max_rsu_contact_time = self.config.RSU_RANGE / max(self.config.VEL_MIN, 1e-6)
@@ -500,6 +509,83 @@ class VecOffloadingEnv(gym.Env):
             if wait < min_wait:
                 min_wait = wait
         return min_wait if min_wait < float('inf') else 0.0
+
+    def _get_rsu_queue_wait_proxy(self, rsu_id: int) -> float:
+        """
+        Actor/reward shared instantaneous RSU wait proxy.
+
+        用最早可用处理器等待时间作为乐观项，同时用总负载/总服务率
+        给出平均拥塞项，取两者较大值，避免在多处理器RSU下系统性低估排队后果。
+        """
+        if rsu_id not in self.rsu_cpu_q or rsu_id >= len(self.rsus):
+            return 0.0
+        rsu = self.rsus[rsu_id]
+        cpu_freq = max(float(getattr(rsu, "cpu_freq", self.config.F_RSU)), 1e-9)
+        proc_dict = self.rsu_cpu_q.get(rsu_id, {})
+        num_proc = max(int(len(proc_dict)), int(max(getattr(self.config, "RSU_NUM_PROCESSORS", 1), 1)))
+        if num_proc <= 0:
+            return 0.0
+        min_wait = float(self._get_rsu_queue_wait_time(rsu_id))
+        total_load = float(self._get_rsu_queue_load(rsu_id))
+        avg_wait = total_load / max(cpu_freq * float(num_proc), 1e-9)
+        return float(max(min_wait, avg_wait))
+
+    def _compress_queue_load(self, load: float, queue_kind: str) -> float:
+        """Log-compressed queue-load proxy for actor-visible features."""
+        load = max(float(load), 0.0)
+        if queue_kind == "rsu":
+            denom = self._log_rsu_queue_cap
+        else:
+            denom = self._log_vehicle_queue_cap
+        if denom <= 0.0:
+            return 0.0
+        return float(np.clip(np.log1p(load) / denom, 0.0, 1.0))
+
+    def _compress_tx_backlog(self, backlog_bits: float) -> float:
+        """Log-compressed transmission-backlog proxy for actor-visible features."""
+        backlog_bits = max(float(backlog_bits), 0.0)
+        if self._log_tx_backlog_cap <= 0.0:
+            return 0.0
+        return float(np.clip(np.log1p(backlog_bits) / self._log_tx_backlog_cap, 0.0, 1.0))
+
+    def _compress_wait_proxy(self, wait_seconds: float) -> float:
+        """Log-compressed instantaneous wait proxy from current observable queues."""
+        wait_seconds = max(float(wait_seconds), 0.0)
+        if self._log_wait_cap <= 0.0:
+            return 0.0
+        return float(np.clip(np.log1p(wait_seconds) / self._log_wait_cap, 0.0, 1.0))
+
+    def _build_ctde_global_state(self) -> np.ndarray:
+        """
+        Single-source CTDE global_state used by both env observations and train-time attach.
+        """
+        _gs = np.zeros(30, dtype=np.float32)
+        _n_rsu = len(self.rsus)
+        for _k, _rsu in enumerate(self.rsus[:3]):
+            _gs[_k] = float(np.clip(
+                self._get_rsu_queue_wait_proxy(_rsu.id) * self._inv_max_wait, 0.0, 1.0
+            ))
+        _n_veh = max(len(self.vehicles), 1)
+        _veh_per_rsu = [0] * 3
+        for _v in self.vehicles:
+            _sid = getattr(_v, 'serving_rsu_id', None)
+            if _sid is not None and 0 <= _sid < 3:
+                _veh_per_rsu[_sid] += 1
+        for _k in range(3):
+            _gs[3 + _k] = float(_veh_per_rsu[_k]) / _n_veh
+        _dec_total = max(sum(getattr(self, '_decision_counts', {k: 0 for k in ('local', 'rsu', 'v2v')}).values()), 1)
+        _edc = getattr(self, '_decision_counts', {'local': 0, 'rsu': 0, 'v2v': 0})
+        _gs[6] = float(_edc.get('local', 0)) / _dec_total
+        _gs[7] = float(_edc.get('rsu', 0)) / _dec_total
+        _gs[8] = float(_edc.get('v2v', 0)) / _dec_total
+        _gs[9] = float(np.clip(self._episode_steps / max(self.config.MAX_STEPS, 1), 0.0, 1.0))
+        if _n_rsu > 0:
+            _gs[10] = float(np.clip(
+                np.mean([self._get_rsu_queue_wait_proxy(r.id) * self._inv_max_wait for r in self.rsus]),
+                0.0,
+                1.0,
+            ))
+        return _gs
 
     def _refresh_f_max_const(self):
         """更新f_max常量上界（用于PBRS潜势归一化）"""
@@ -960,7 +1046,7 @@ class VecOffloadingEnv(gym.Env):
         if isinstance(node, Vehicle):
             return self._get_veh_queue_wait_time(node.id, node.cpu_freq)
         elif isinstance(node, RSU):
-            return self._get_rsu_queue_wait_time(node.id)
+            return self._get_rsu_queue_wait_proxy(node.id)
         else:
             return 0.0
 
@@ -1497,6 +1583,149 @@ class VecOffloadingEnv(gym.Env):
                 vehicle._ho_freeze_remain = self.config.HO_FREEZE_STEPS
             return best_new_id
 
+    def _sample_factor_level(self, factor_name: str) -> str:
+        if factor_name == "workload_level":
+            levels = ("light", "medium", "heavy")
+        else:
+            levels = ("low", "medium", "high")
+        prob_map = dict(getattr(self.config, "EXOGENOUS_FACTOR_PROBS", {}))
+        probs = np.asarray(prob_map.get(factor_name, np.ones(len(levels), dtype=float)), dtype=float)
+        if probs.size != len(levels):
+            probs = np.ones(len(levels), dtype=float)
+        probs = np.clip(probs, 0.0, None)
+        if float(np.sum(probs)) <= 0.0:
+            probs = np.ones(len(levels), dtype=float)
+        probs = probs / float(np.sum(probs))
+        return str(np.random.choice(levels, p=probs))
+
+    def _sample_episode_scenario_profile(self):
+        workload_level = self._sample_factor_level("workload_level")
+        traffic_density = self._sample_factor_level("traffic_density")
+        helper_availability = self._sample_factor_level("helper_availability")
+        contact_stability = self._sample_factor_level("contact_stability")
+        rsu_access = self._sample_factor_level("rsu_accessibility_or_load")
+
+        workload_spec = dict(getattr(self.config, "WORKLOAD_LEVEL_SPECS", {}).get(workload_level, {}))
+        density_spec = dict(getattr(self.config, "TRAFFIC_DENSITY_SPECS", {}).get(traffic_density, {}))
+        helper_spec = dict(getattr(self.config, "HELPER_AVAILABILITY_SPECS", {}).get(helper_availability, {}))
+        contact_spec = dict(getattr(self.config, "CONTACT_STABILITY_SPECS", {}).get(contact_stability, {}))
+        rsu_spec = dict(getattr(self.config, "RSU_ACCESSIBILITY_LOAD_SPECS", {}).get(rsu_access, {}))
+
+        rsu_centers = [float(r.position[0]) for r in self.rsus]
+        boundaries = [0.5 * (rsu_centers[i] + rsu_centers[i + 1]) for i in range(max(len(rsu_centers) - 1, 0))]
+        map_size = float(self.config.MAP_SIZE)
+        x_min = float(getattr(self.config, "VEHICLE_SPAWN_X_MIN", 0.0)) * map_size
+        x_max = float(getattr(self.config, "VEHICLE_SPAWN_X_MAX", 1.0)) * map_size
+
+        anchor_source = str(rsu_spec.get("anchor_source", "mixed"))
+        if anchor_source == "rsu_centers":
+            spawn_anchors = rsu_centers
+        elif anchor_source == "boundaries":
+            spawn_anchors = boundaries if boundaries else [0.2 * map_size, 0.8 * map_size]
+        else:
+            spawn_anchors = sorted({*rsu_centers, *boundaries}) if (rsu_centers or boundaries) else [0.25 * map_size, 0.5 * map_size, 0.75 * map_size]
+
+        profile = {
+            "task_weights": dict(workload_spec.get("task_weights", {})),
+            "workload_adjustment": {
+                "comp_scale": float(workload_spec.get("comp_scale", 1.0)),
+                "data_scale": float(workload_spec.get("data_scale", 1.0)),
+                "edge_scale": float(workload_spec.get("edge_scale", 1.0)),
+                "node_shift": int(workload_spec.get("node_shift", 0)),
+                "deadline_alpha_shift": float(workload_spec.get("deadline_alpha_shift", 0.0)),
+                "deadline_slack_scale": float(workload_spec.get("deadline_slack_scale", 1.0)),
+            },
+            "role_probs": dict(helper_spec.get("role_probs", {})),
+            "role_cpu": dict(helper_spec.get("role_cpu", {})),
+            "helper_cpu_scale": float(helper_spec.get("helper_cpu_scale", 1.0)),
+            "spawn_mode": str(density_spec.get("spawn_mode", "uniform")),
+            "spawn_anchor_prob": float(density_spec.get("anchor_prob", 0.0)),
+            "cluster_spread": float(density_spec.get("cluster_spread", 100.0)),
+            "speed_mean": float(contact_spec.get("speed_mean", getattr(self.config, "VEL_MEAN", 10.0))),
+            "speed_std": float(contact_spec.get("speed_std", getattr(self.config, "VEL_STD", 2.0))),
+            "spawn_anchors": [float(np.clip(a, 0.0, map_size)) for a in spawn_anchors],
+            "spawn_x_range": (x_min, x_max),
+            "rsu_centers": rsu_centers,
+            "boundaries": boundaries,
+            "rsu_background_cycles": tuple(rsu_spec.get("rsu_background_cycles", (0.0, 0.0))),
+        }
+
+        self._episode_sampling_profile = profile
+        self._episode_domain_params.update({
+            "workload_level": workload_level,
+            "traffic_density": traffic_density,
+            "helper_availability": helper_availability,
+            "contact_stability": contact_stability,
+            "rsu_accessibility_or_load": rsu_access,
+            "scenario_spawn_mode": str(profile["spawn_mode"]),
+            "scenario_anchor_source": anchor_source,
+        })
+
+    def _sample_vehicle_archetype(self):
+        profile = getattr(self, "_episode_sampling_profile", {}) or {}
+        role_probs = dict(profile.get("role_probs", {}))
+        role_cpu = dict(profile.get("role_cpu", {}))
+        if role_probs and role_cpu:
+            roles = list(role_probs.keys())
+            probs = np.asarray([max(float(role_probs.get(role, 0.0)), 0.0) for role in roles], dtype=float)
+            if float(np.sum(probs)) <= 0.0:
+                probs = np.ones(len(roles), dtype=float)
+            probs = probs / float(np.sum(probs))
+            role = str(np.random.choice(roles, p=probs))
+            lo, hi = role_cpu.get(role, (self.config.MIN_VEHICLE_CPU_FREQ, self.config.MAX_VEHICLE_CPU_FREQ))
+            lo = max(float(lo), 1e-9)
+            hi = max(float(hi), lo)
+            cpu_freq = float(np.random.uniform(lo, hi))
+            if role == "helper":
+                cpu_freq *= float(profile.get("helper_cpu_scale", 1.0))
+            cpu_freq = float(np.clip(cpu_freq, self.config.VEH_CPU_WEAK_MIN, self.config.MAX_VEHICLE_CPU_FREQ))
+            return {"role": role, "cpu_freq": cpu_freq}
+        return {"role": "regular", "cpu_freq": self._sample_vehicle_cpu_freq()}
+
+    def _sample_vehicle_spawn_state(self):
+        profile = getattr(self, "_episode_sampling_profile", {}) or {}
+        spawn_mode = str(profile.get("spawn_mode", "uniform"))
+        map_size = float(self.config.MAP_SIZE)
+        lane_centers = [(k + 0.5) * self.config.LANE_WIDTH for k in range(self.config.NUM_LANES)]
+        y_pos = float(np.random.choice(lane_centers))
+        speed_mean = float(profile.get("speed_mean", getattr(self.config, "VEL_MEAN", 15.0)))
+        speed_std = float(profile.get("speed_std", getattr(self.config, "VEL_STD", 3.0)))
+
+        if spawn_mode == "anchored" and profile.get("spawn_anchors") and np.random.rand() < float(profile.get("spawn_anchor_prob", 0.0)):
+            anchor = float(np.random.choice(profile["spawn_anchors"]))
+            x_pos = float(np.clip(np.random.normal(anchor, profile.get("cluster_spread", 80.0)), 0.0, map_size))
+        else:
+            x_min, x_max = profile.get("spawn_x_range", (0.0, map_size))
+            x_pos = float(np.random.uniform(float(x_min), float(x_max)))
+
+        speed = float(np.clip(np.random.normal(speed_mean, max(speed_std, 1e-6)), self.config.VEL_MIN, self.config.VEL_MAX))
+        return np.array([x_pos, y_pos], dtype=float), np.array([speed, 0.0], dtype=float)
+
+    def _apply_background_rsu_loads(self):
+        profile = getattr(self, "_episode_sampling_profile", {}) or {}
+        bg_range = tuple(profile.get("rsu_background_cycles", (0.0, 0.0)))
+        if len(bg_range) != 2:
+            return
+        lo = max(float(bg_range[0]), 0.0)
+        hi = max(float(bg_range[1]), lo)
+        if hi <= 0.0:
+            return
+        for rsu in self.rsus:
+            proc_dict = self.rsu_cpu_q.get(rsu.id, {})
+            for pid, queue in proc_dict.items():
+                rem_cycles = float(np.random.uniform(lo, hi))
+                if rem_cycles <= 0.0:
+                    continue
+                queue.append(ComputeJob(
+                    owner_vehicle_id=-1,
+                    subtask_id=-1,
+                    rem_cycles=rem_cycles,
+                    exec_node=("RSU", rsu.id),
+                    processor_id=int(pid),
+                    enqueue_time=self.time,
+                    dag_uid=None,
+                ))
+
     def _get_serving_rsu(self, vehicle):
         """获取车辆当前serving RSU实体与ID（若不在覆盖内返回None）"""
         rsu_id = getattr(vehicle, "serving_rsu_id", None)
@@ -1690,24 +1919,27 @@ class VecOffloadingEnv(gym.Env):
         return True
 
     def _build_vehicle(self, vehicle_id: int, start_time: float):
-        # [场景修复] 使用可配置的生成范围，确保覆盖所有RSU
-        x_min = getattr(self.config, 'VEHICLE_SPAWN_X_MIN', 0.0) * self.config.MAP_SIZE
-        x_max = getattr(self.config, 'VEHICLE_SPAWN_X_MAX', 0.8) * self.config.MAP_SIZE
-        x_pos = np.random.uniform(x_min, x_max)
-        lane_centers = [(k + 0.5) * self.config.LANE_WIDTH for k in range(self.config.NUM_LANES)]
-        y_pos = np.random.choice(lane_centers)
-        pos = np.array([x_pos, y_pos])
+        vehicle_profile = self._sample_vehicle_archetype()
+        pos, vel = self._sample_vehicle_spawn_state()
 
         v = Vehicle(vehicle_id, pos)
-        v.cpu_freq = self._sample_vehicle_cpu_freq()
+        v.vel = vel
+        v.cpu_freq = float(vehicle_profile["cpu_freq"])
+        v.sampled_role = str(vehicle_profile["role"])
         v.tx_power_dbm = self.config.TX_POWER_DEFAULT_DBM if hasattr(Cfg, 'TX_POWER_DEFAULT_DBM') else self.config.TX_POWER_MIN_DBM
 
-        adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=v.cpu_freq)
+        episode_profile = getattr(self, "_episode_sampling_profile", {}) or {}
+        sampling_profile = {
+            "task_profile_weights": dict(episode_profile.get("task_weights", {})),
+            "workload_adjustment": dict(episode_profile.get("workload_adjustment", {})),
+        }
+        adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=v.cpu_freq, sampling_profile=sampling_profile)
         v.task_dag = DAGTask(0, adj, prof, data, ddl)
         v.task_dag.deadline_gamma = extra.get("deadline_gamma")
         v.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
         v.task_dag.deadline_base_time = extra.get("deadline_base_time")
         v.task_dag.deadline_slack = extra.get("deadline_slack")
+        v.task_dag.task_profile = extra.get("task_class")
         v.task_dag.start_time = start_time
         v.task_dag.reset_runtime_traces(start_time)
 
@@ -1794,12 +2026,18 @@ class VecOffloadingEnv(gym.Env):
 
         # 分配新 DAG（继承原车辆 CPU 频率，保持异构性）
         old_id = vehicle.task_dag.id if vehicle.task_dag is not None else 0
-        adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=vehicle.cpu_freq)
+        episode_profile = getattr(self, "_episode_sampling_profile", {}) or {}
+        sampling_profile = {
+            "task_profile_weights": dict(episode_profile.get("task_weights", {})),
+            "workload_adjustment": dict(episode_profile.get("workload_adjustment", {})),
+        }
+        adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=vehicle.cpu_freq, sampling_profile=sampling_profile)
         vehicle.task_dag = DAGTask(old_id + 1, adj, prof, data, ddl)
         vehicle.task_dag.deadline_gamma = extra.get("deadline_gamma")
         vehicle.task_dag.critical_path_cycles = extra.get("critical_path_cycles")
         vehicle.task_dag.deadline_base_time = extra.get("deadline_base_time")
         vehicle.task_dag.deadline_slack = extra.get("deadline_slack")
+        vehicle.task_dag.task_profile = extra.get("task_class")
         vehicle.task_dag.start_time = self.time
         vehicle.task_dag.reset_runtime_traces(self.time)
 
@@ -2113,13 +2351,65 @@ class VecOffloadingEnv(gym.Env):
         contact_penalty = abs(contact_slack) if np.isfinite(contact_slack) and contact_slack < 0.0 else 0.0
         return float(contact_penalty), float(contact_time), float(contact_slack)
 
+    def _get_rsu_service_rate_snapshot(self, rsu_id: int) -> float:
+        if rsu_id is None or not (0 <= int(rsu_id) < len(self.rsus)):
+            return 0.0
+        rsu = self.rsus[int(rsu_id)]
+        num_proc = max(int(getattr(rsu, "num_processors", getattr(self.config, "RSU_NUM_PROCESSORS", 1))), 1)
+        cpu_freq = max(float(getattr(rsu, "cpu_freq", self.config.F_RSU)), 1e-9)
+        return float(num_proc * cpu_freq)
+
+    def _estimate_rsu_arrival_work_proxy(self, rsu_id, owner_vehicle_id=None):
+        if rsu_id is None or not (0 <= int(rsu_id) < len(self.rsus)):
+            return 0.0
+        rsu = self.rsus[int(rsu_id)]
+        arrival_work = 0.0
+        for v in self.vehicles:
+            if owner_vehicle_id is not None and int(v.id) == int(owner_vehicle_id):
+                continue
+            dag = getattr(v, "task_dag", None)
+            if dag is None or getattr(dag, "is_finished", False) or getattr(dag, "is_failed", False):
+                continue
+            if not rsu.is_in_coverage(v.pos):
+                continue
+            ready = np.flatnonzero(np.asarray(dag.get_action_mask(), dtype=bool))
+            if ready.size <= 0:
+                continue
+            ready_cycles = [float(self._get_remaining_cycles(dag, int(idx))) for idx in ready]
+            if not ready_cycles:
+                continue
+            rsu_choices = self._get_all_rsus_in_range(v.pos)
+            rsu_share = 1.0 / max(len(rsu_choices), 1)
+            arrival_work += float(np.mean(ready_cycles)) * rsu_share
+        return float(arrival_work)
+
+    def _estimate_rsu_sojourn_proxy_terms(self, rsu_id, task_cycles, owner_vehicle_id=None):
+        service_rate = max(float(self._get_rsu_service_rate_snapshot(int(rsu_id))), 1e-9)
+        rsu = self.rsus[int(rsu_id)]
+        cpu_freq = max(float(getattr(rsu, "cpu_freq", self.config.F_RSU)), 1e-9)
+        queue_work = float(self._get_rsu_queue_load(int(rsu_id)))
+        arrival_work = float(self._estimate_rsu_arrival_work_proxy(int(rsu_id), owner_vehicle_id=owner_vehicle_id))
+        min_wait_proxy = float(self._get_rsu_queue_wait_time(int(rsu_id)))
+        avg_wait = (queue_work + arrival_work) / service_rate
+        cpu_wait = max(min_wait_proxy, avg_wait)
+        cpu_exec = max(float(task_cycles), 0.0) / cpu_freq
+        return {
+            "queue_workload": queue_work,
+            "arrival_workload": arrival_work,
+            "service_rate": service_rate,
+            "min_wait_proxy": float(min_wait_proxy),
+            "cpu_wait": float(cpu_wait),
+            "cpu_exec": float(cpu_exec),
+        }
+
     def _estimate_snapshot_target_cost(self, vehicle, subtask_idx, target, task_comp=None, task_data=None,
                                        power_dbm=None, comm_wait_dict=None,
                                        active_v2i_count=None, active_v2i_vehicles=None,
                                        active_v2v_vehicles=None):
         """
         统一 snapshot cost:
-            J = comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty
+        - Local/V2V: J = comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty
+        - RSU: J = comm_wait + tx_time + max(min_wait_proxy, (W_queue_cur + W_arrive_proxy) / service_rate) + w_i / F_RSU
         """
         result = {
             "mode": "none",
@@ -2131,6 +2421,10 @@ class VecOffloadingEnv(gym.Env):
             "cpu_wait": 0.0,
             "cpu_exec": 0.0,
             "contact_penalty": 0.0,
+            "delta_ext": 0.0,
+            "queue_workload": 0.0,
+            "arrival_workload": 0.0,
+            "service_rate": 0.0,
             "contact_time": float("inf"),
             "contact_slack": float("inf"),
             "deadline_remaining": self._get_deadline_remaining_seconds(vehicle),
@@ -2177,19 +2471,22 @@ class VecOffloadingEnv(gym.Env):
             rate = max(float(rate), eps_rate)
             tx_time = (data_bits / rate) if data_bits > 0 else 0.0
             comm_wait = float(comm_wait_dict.get("total_v2i", 0.0))
-            cpu_wait = float(self._get_rsu_queue_wait_time(rsu_id))
-            cpu_exec = cycles / max(float(getattr(rsu, "cpu_freq", self.config.F_RSU)), 1e-9)
+            sojourn_terms = self._estimate_rsu_sojourn_proxy_terms(rsu_id, cycles, owner_vehicle_id=vehicle.id)
             contact_penalty, contact_time, contact_slack = self._estimate_contact_penalty_snapshot(
                 vehicle, ("RSU", rsu_id), comm_wait + tx_time
             )
             result.update({
                 "available": True,
-                "J": float(comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty),
+                "J": float(comm_wait + tx_time + sojourn_terms["cpu_wait"] + sojourn_terms["cpu_exec"]),
                 "comm_wait": comm_wait,
                 "tx_time": float(tx_time),
-                "cpu_wait": cpu_wait,
-                "cpu_exec": float(cpu_exec),
-                "contact_penalty": float(contact_penalty),
+                "cpu_wait": float(sojourn_terms["cpu_wait"]),
+                "cpu_exec": float(sojourn_terms["cpu_exec"]),
+                "contact_penalty": 0.0,
+                "delta_ext": 0.0,
+                "queue_workload": float(sojourn_terms["queue_workload"]),
+                "arrival_workload": float(sojourn_terms["arrival_workload"]),
+                "service_rate": float(sojourn_terms["service_rate"]),
                 "contact_time": float(contact_time),
                 "contact_slack": float(contact_slack),
             })
@@ -2245,6 +2542,36 @@ class VecOffloadingEnv(gym.Env):
             return 1.0, 0.0, 1.0
         return self._trust_mgr.get_trust_stats(node_key)
 
+    def _get_phi_subtask_weight(self, dag, subtask_idx):
+        if dag is None or subtask_idx is None:
+            return 1.0
+        criticality = 0.0
+        if hasattr(dag, "compute_all_priorities"):
+            priorities = dag.compute_all_priorities()
+            if priorities is not None and 0 <= int(subtask_idx) < len(priorities):
+                criticality = float(np.clip(priorities[int(subtask_idx)], 0.0, 1.0))
+        is_sink = 0.0
+        out_degree = getattr(dag, "out_degree", None)
+        if out_degree is not None and 0 <= int(subtask_idx) < len(out_degree):
+            is_sink = 1.0 if int(out_degree[int(subtask_idx)]) <= 0 else 0.0
+        # Align phi with actor-visible tail semantics without changing reward structure:
+        # mildly upweight high-criticality / sink subtasks so progress is less dominated by
+        # snapshot-best compute mode on non-tail work.
+        return float(1.0 + 0.25 * criticality + 0.15 * is_sink)
+
+    def _aggregate_phi_candidate_cost(self, feasible_costs):
+        if not feasible_costs:
+            return float("inf")
+        costs = np.sort(np.asarray(feasible_costs, dtype=np.float64))
+        best = float(costs[0])
+        if costs.size <= 1:
+            return best
+        second = float(costs[1])
+        gap_weight = float(np.clip(getattr(self.config, "PHI_SECOND_BEST_GAP_WEIGHT", 0.25), 0.0, 1.0))
+        # Keep phi state-only and lightweight, but reduce hard-min optimism when one mode is
+        # only snapshot-best by a small margin. This is a proxy for coupled-decision fragility.
+        return float(best + gap_weight * max(second - best, 0.0))
+
     def _estimate_decision_phi(self, vehicle):
         dag = getattr(vehicle, "task_dag", None)
         if dag is None or dag.is_finished or dag.is_failed:
@@ -2267,7 +2594,7 @@ class VecOffloadingEnv(gym.Env):
             for other in self._get_state_only_v2v_candidates(vehicle):
                 candidates.append(int(other.id))
 
-            best_cost = float("inf")
+            feasible_costs = []
             for target in candidates:
                 _, _, trust_lcb = self._get_trust_stats_for_target(target)
                 if target != "Local" and trust_lcb < trust_floor:
@@ -2284,13 +2611,15 @@ class VecOffloadingEnv(gym.Env):
                     active_v2v_vehicles=active_v2v_vehicles,
                 )
                 if bool(est.get("available", False)) and np.isfinite(est.get("J", float("inf"))):
-                    best_cost = min(best_cost, float(est["J"]))
+                    feasible_costs.append(float(est["J"]))
 
+            best_cost = self._aggregate_phi_candidate_cost(feasible_costs)
             if not np.isfinite(best_cost):
                 f_max, _ = self._get_reachable_f_max_state_only(vehicle)
                 max_rate = max(float(getattr(self, "_max_rate_v2i", 1e6)), float(getattr(self, "_max_rate_v2v", 1e6)), 1e-6)
                 best_cost = (rem_cycles / max(f_max, 1e-6)) + (rem_bytes / max_rate)
-            total_cost += max(best_cost, 0.0)
+            phi_weight = self._get_phi_subtask_weight(dag, int(subtask_idx))
+            total_cost += max(best_cost, 0.0) * phi_weight
         return float(total_cost)
 
     def _is_deadline_feasible(self, vehicle, subtask_idx=None):
@@ -2685,6 +3014,7 @@ class VecOffloadingEnv(gym.Env):
         self._episode_not_in_candidate_fallback_cnt = 0
         self._episode_illegal_by_connectivity_cnt = 0
         self._episode_domain_params = {}
+        self._episode_sampling_profile = {}
         self._episode_v2v_tx_jobs = 0
         self._episode_v2v_link_break_count = 0
         self._episode_physical_steps = 0
@@ -2755,6 +3085,7 @@ class VecOffloadingEnv(gym.Env):
         # [Domain Randomization] 只在reset时采样，不影响单步推进
         if getattr(self.config, "DOMAIN_RANDOMIZATION", False):
             self._apply_domain_randomization()
+        self._sample_episode_scenario_profile()
         
         # =====================================================================
         # [FIFO队列系统] 清空所有队列与账本（防止跨episode污染）
@@ -2787,7 +3118,8 @@ class VecOffloadingEnv(gym.Env):
             v = self._build_vehicle(i, start_time=0.0)
             self.vehicles.append(v)
             self._vehicles_seen.add(v.id)
-        
+        self._apply_background_rsu_loads()
+
         # 道路模型：初始化动态车辆生成的下一辆到达时间（泊松过程）
         # 如果VEHICLE_ARRIVAL_RATE > 0，则启用动态生成
         if hasattr(Cfg, 'VEHICLE_ARRIVAL_RATE') and self.config.VEHICLE_ARRIVAL_RATE > 0:
@@ -5397,32 +5729,7 @@ class VecOffloadingEnv(gym.Env):
         #   [9]    当前步归一化时间进度
         #   [10]   全局平均RSU等待时间（归一化）
         #   [11-29] 预留为0
-        _gs = np.zeros(30, dtype=np.float32)
-        _n_rsu = len(self.rsus)
-        for _k, _rsu in enumerate(self.rsus[:3]):
-            _gs[_k] = float(np.clip(
-                self._get_rsu_queue_wait_time(_rsu.id) * self._inv_max_wait, 0.0, 1.0
-            ))
-        _n_veh = max(len(self.vehicles), 1)
-        _veh_per_rsu = [0] * 3
-        for _v in self.vehicles:
-            _sid = getattr(_v, 'serving_rsu_id', None)
-            if _sid is not None and 0 <= _sid < 3:
-                _veh_per_rsu[_sid] += 1
-        for _k in range(3):
-            _gs[3 + _k] = float(_veh_per_rsu[_k]) / _n_veh
-        _dec_total = max(sum(getattr(self, '_decision_counts', {k: 0 for k in ('local', 'rsu', 'v2v')}).values()), 1)
-        _edc = getattr(self, '_decision_counts', {'local': 0, 'rsu': 0, 'v2v': 0})
-        _gs[6] = float(_edc.get('local', 0)) / _dec_total
-        _gs[7] = float(_edc.get('rsu', 0)) / _dec_total
-        _gs[8] = float(_edc.get('v2v', 0)) / _dec_total
-        _gs[9] = float(np.clip(self._episode_steps / max(self.config.MAX_STEPS, 1), 0.0, 1.0))
-        if _n_rsu > 0:
-            _gs[10] = float(np.clip(
-                np.mean([self._get_rsu_queue_wait_time(r.id) * self._inv_max_wait for r in self.rsus]),
-                0.0, 1.0
-            ))
-        global_state_vec = _gs
+        global_state_vec = self._build_ctde_global_state()
         # --- end CTDE global_state ---
         active_v2i_by_rsu = self._get_active_v2i_counts()
         active_v2v_links_now = self._get_active_v2v_links()
@@ -5674,7 +5981,7 @@ class VecOffloadingEnv(gym.Env):
             resource_raw = np.zeros((self.config.MAX_TARGETS, self.config.RESOURCE_RAW_DIM), dtype=np.float32)
             resource_raw[0] = [
                 v.cpu_freq * self._inv_max_cpu,
-                np.clip(local_backlog_cycles * self._inv_max_comp, 0, 1),
+                self._compress_queue_load(local_backlog_cycles, "veh"),
                 0.0,
                 0.0,
                 0.0,
@@ -5688,6 +5995,7 @@ class VecOffloadingEnv(gym.Env):
                 1.0,
                 1.0,
                 0.0,
+                self._compress_wait_proxy(self_wait),
             ]
 
             speed = np.linalg.norm(v.vel)
@@ -5709,6 +6017,7 @@ class VecOffloadingEnv(gym.Env):
                 rsu_contact_norm = np.clip(contact_time / max(self._max_rsu_contact_time, 1e-6), 0, 1)
                 rel_rsu = (rsu.position - v.pos) * self._inv_map_size
                 rsu_backlog = self._get_rsu_queue_load(rsu_id_iter)
+                rsu_wait_proxy = self._get_rsu_queue_wait_proxy(rsu_id_iter)
                 rsu_active_cnt = int(active_v2i_by_rsu.get(rsu_id_iter, 0))
                 rsu_active_norm = float(np.clip(rsu_active_cnt / max(float(max(self.config.NUM_VEHICLES, 1)), 1.0), 0.0, 1.0))
                 rsu_load_norm_iter = float(0.0 if rsu_active_cnt <= 0 else np.clip(1.0 - 1.0 / rsu_active_cnt, 0.0, 1.0))
@@ -5716,8 +6025,8 @@ class VecOffloadingEnv(gym.Env):
                 coverage_risk = 1.0 - rsu_contact_norm
                 resource_raw[idx] = [
                     rsu_cpu_iter * self._inv_max_cpu,
-                    np.clip(rsu_backlog * self._inv_max_comp, 0, 1),
-                    np.clip(txq_bytes_v2i * self._inv_max_data, 0, 1),
+                    self._compress_queue_load(rsu_backlog, "rsu"),
+                    self._compress_tx_backlog(txq_bytes_v2i),
                     np.clip(rsu_dist_iter / max(self.config.RSU_RANGE, 1e-6), 0, 1),
                     rel_rsu[0],
                     rel_rsu[1],
@@ -5730,6 +6039,7 @@ class VecOffloadingEnv(gym.Env):
                     np.clip(trust_lcb, 0.0, 1.0),
                     np.clip(rsu_contact_norm, 0.0, 1.0),
                     np.clip(coverage_risk, 0.0, 1.0),
+                    self._compress_wait_proxy(rsu_wait_proxy),
                 ]
 
             for idx, info in enumerate(v2v_slots):
@@ -5746,8 +6056,8 @@ class VecOffloadingEnv(gym.Env):
                 trust_mean, trust_uncertainty, trust_lcb = trust_stats_by_idx.get(target_idx, (1.0, 0.0, 1.0))
                 resource_raw[target_idx] = [
                     info['cpu_freq'] * self._inv_max_cpu,
-                    np.clip(nbr_backlog * self._inv_max_comp, 0, 1),
-                    np.clip(txq_bytes_v2v * self._inv_max_data, 0, 1),
+                    self._compress_queue_load(nbr_backlog, "veh"),
+                    self._compress_tx_backlog(txq_bytes_v2v),
                     np.clip(info['dist'] * self._inv_v2v_range, 0, 1),
                     info['rel_pos'][0],
                     info['rel_pos'][1],
@@ -5760,6 +6070,7 @@ class VecOffloadingEnv(gym.Env):
                     np.clip(trust_lcb, 0.0, 1.0),
                     np.clip(contact_norm_v, 0.0, 1.0),
                     np.clip(1.0 - contact_norm_v, 0.0, 1.0),
+                    self._compress_wait_proxy(info.get('queue_wait', 0.0)),
                 ]
 
             rate_prev = np.zeros(self.config.MAX_TARGETS, dtype=np.float32)
@@ -5854,7 +6165,7 @@ class VecOffloadingEnv(gym.Env):
                 neighbors_array[:, 5:8] = np.clip(neighbors_array[:, 5:8], 0.0, 1.0)
 
             resource_raw = _nan_clip(resource_raw, dtype=np.float32)
-            for col in (0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+            for col in (0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
                 if col < resource_raw.shape[1]:
                     resource_raw[:, col] = np.clip(resource_raw[:, col], 0.0, 1.0)
             for col in (4, 5):

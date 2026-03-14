@@ -93,7 +93,76 @@ class DAGGenerator:
             return np.full(n, float(total) / float(n), dtype=float)
         return (float(total) * w / w_sum).astype(float)
 
-    def generate(self, num_nodes, veh_f=None):
+    @staticmethod
+    def _normalize_weights(weights: dict, keys: list[str]) -> np.ndarray:
+        vals = np.array([max(float(weights.get(k, 0.0)), 0.0) for k in keys], dtype=float)
+        total = float(np.sum(vals))
+        if total <= 0.0:
+            return np.full(len(keys), 1.0 / max(len(keys), 1), dtype=float)
+        return vals / total
+
+    @staticmethod
+    def _get_workload_specs() -> dict:
+        return getattr(Cfg, "WORKLOAD_PROFILE_SPECS", {})
+
+    def _pick_workload_profile(self, sampling_profile=None) -> str | None:
+        specs = self._get_workload_specs()
+        if not specs:
+            return None
+        weights = None
+        if sampling_profile is not None:
+            weights = sampling_profile.get("task_profile_weights")
+        if not weights:
+            return None
+        names = list(specs.keys())
+        probs = self._normalize_weights(weights, names)
+        return str(np.random.choice(names, p=probs))
+
+    def _resolve_workload_spec(self, workload_profile: str | None, sampling_profile=None) -> dict | None:
+        specs = self._get_workload_specs()
+        if workload_profile is None:
+            return None
+        spec = specs.get(str(workload_profile))
+        if spec is None:
+            return None
+        resolved = dict(spec)
+        adjustment = dict((sampling_profile or {}).get("workload_adjustment", {}))
+        if adjustment:
+            node_shift = int(adjustment.get("node_shift", 0))
+            if "node_range" in resolved:
+                lo, hi = resolved["node_range"]
+                lo = max(int(lo) + node_shift, 1)
+                hi = max(int(hi) + node_shift, lo)
+                resolved["node_range"] = (lo, hi)
+            for key, scale_key in (("total_comp", "comp_scale"), ("total_data", "data_scale"), ("edge_data", "edge_scale")):
+                if key in resolved:
+                    lo, hi = resolved[key]
+                    scale = max(float(adjustment.get(scale_key, 1.0)), 1e-6)
+                    lo = max(float(lo) * scale, 1.0)
+                    hi = max(float(hi) * scale, lo)
+                    resolved[key] = (lo, hi)
+            if "deadline_alpha" in resolved:
+                lo, hi = resolved["deadline_alpha"]
+                shift = float(adjustment.get("deadline_alpha_shift", 0.0))
+                lo = max(1.0, float(lo) + shift)
+                hi = max(lo, float(hi) + shift)
+                resolved["deadline_alpha"] = (lo, hi)
+            if "deadline_slack" in resolved:
+                slack_scale = max(float(adjustment.get("deadline_slack_scale", 1.0)), 1e-6)
+                resolved["deadline_slack"] = max(float(resolved["deadline_slack"]) * slack_scale, 0.0)
+        return resolved
+
+    def _sample_num_nodes(self, sampling_profile=None) -> tuple[int, str | None]:
+        workload_profile = self._pick_workload_profile(sampling_profile=sampling_profile)
+        spec = self._resolve_workload_spec(workload_profile, sampling_profile=sampling_profile)
+        if spec is not None and "node_range" in spec:
+            lo, hi = spec["node_range"]
+            lo = max(int(lo), 1)
+            hi = max(int(hi), lo)
+            return int(np.random.randint(lo, hi + 1)), workload_profile
+        return int(np.random.randint(Cfg.MIN_NODES, Cfg.MAX_NODES + 1)), workload_profile
+
+    def generate(self, num_nodes, veh_f=None, workload_profile=None, sampling_profile=None):
         """
         生成单个DAG任务实例
         
@@ -109,6 +178,11 @@ class DAGGenerator:
         """
         if num_nodes <= 0:
             return None, [], None, 0
+
+        workload_spec = self._resolve_workload_spec(workload_profile, sampling_profile=sampling_profile)
+        edge_range = self.edge_data_range
+        if workload_spec is not None and "edge_data" in workload_spec:
+            edge_range = tuple(workload_spec["edge_data"])
 
         # 初始化矩阵
         adj_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
@@ -138,14 +212,14 @@ class DAGGenerator:
                         if 0 <= u_idx < num_nodes and 0 <= v_idx < num_nodes:
                             if u_idx != v_idx:
                                 adj_matrix[u_idx, v_idx] = 1
-                                data_matrix[u_idx, v_idx] = np.random.uniform(*self.edge_data_range)
+                                data_matrix[u_idx, v_idx] = np.random.uniform(*edge_range)
                                 use_fallback = False
             except Exception as e:
                 use_fallback = True
 
         # Fallback生成策略（当daggen不可用时）- 生成有并行宽度的DAG
         if use_fallback:
-            adj_matrix, data_matrix = self._generate_layered_dag(num_nodes)
+            adj_matrix, data_matrix = self._generate_layered_dag(num_nodes, edge_range=edge_range)
 
         # 生成节点属性
         profiles = []
@@ -155,7 +229,22 @@ class DAGGenerator:
             entry_nodes = np.array([0], dtype=int)
 
         task_class = None
-        if self._mix_enabled():
+        if workload_spec is not None:
+            total_data_bits = float(np.random.uniform(*workload_spec["total_data"]))
+            total_comp_cycles = float(np.random.uniform(*workload_spec["total_comp"]))
+            comp_jit = float(getattr(Cfg, "TASK_COMP_SPLIT_JITTER", 0.6))
+            data_jit = float(getattr(Cfg, "TASK_DATA_SPLIT_JITTER", 0.8))
+            comp_arr = self._split_total(total_comp_cycles, num_nodes, comp_jit)
+            entry_data_arr = self._split_total(total_data_bits, len(entry_nodes), data_jit)
+
+            entry_data_map = {int(entry_nodes[k]): float(entry_data_arr[k]) for k in range(len(entry_nodes))}
+            for i in range(num_nodes):
+                profiles.append({
+                    'comp': float(comp_arr[i]),
+                    'input_data': float(entry_data_map.get(int(i), 0.0))
+                })
+            task_class = str(workload_profile).upper()
+        elif self._mix_enabled():
             task_class = self._pick_task_class()
             total_data_bits, total_comp_cycles = self._sample_totals_by_class(task_class)
             comp_jit = float(getattr(Cfg, "TASK_COMP_SPLIT_JITTER", 0.6))
@@ -181,7 +270,8 @@ class DAGGenerator:
 
         # 计算相对截止时间
         deadline, gamma, critical_path_cycles, base_time = self._calc_deadline(
-            num_nodes, adj_matrix, profiles, veh_f, task_class=task_class
+            num_nodes, adj_matrix, profiles, veh_f, task_class=task_class, workload_profile=workload_profile,
+            sampling_profile=sampling_profile,
         )
 
         extras = {
@@ -195,7 +285,7 @@ class DAGGenerator:
 
         return adj_matrix, profiles, data_matrix, deadline, extras
 
-    def generate_from_config(self, veh_f=None):
+    def generate_from_config(self, veh_f=None, sampling_profile=None):
         """
         根据配置选择DAG来源
 
@@ -206,8 +296,8 @@ class DAGGenerator:
         """
         source = getattr(Cfg, "DAG_SOURCE", "synthetic_small")
         if source == "synthetic_small":
-            num_nodes = np.random.randint(Cfg.MIN_NODES, Cfg.MAX_NODES + 1)
-            return self.generate(num_nodes, veh_f=veh_f)
+            num_nodes, workload_profile = self._sample_num_nodes(sampling_profile=sampling_profile)
+            return self.generate(num_nodes, veh_f=veh_f, workload_profile=workload_profile, sampling_profile=sampling_profile)
         if source == "synthetic_large":
             options = getattr(Cfg, "DAG_LARGE_NODE_OPTIONS", [20, 50, 100])
             if not options:
@@ -324,7 +414,7 @@ class DAGGenerator:
         }
         return adj_matrix, profiles, data_matrix, deadline, extras
 
-    def _calc_deadline(self, n, adj, profiles, f_base=None, task_class=None):
+    def _calc_deadline(self, n, adj, profiles, f_base=None, task_class=None, workload_profile=None, sampling_profile=None):
         """
         计算相对截止时间（基于关键路径）
         
@@ -389,7 +479,19 @@ class DAGGenerator:
         slack = max(0.0, getattr(Cfg, "DEADLINE_SLACK_SECONDS", 0.0))
         eps = getattr(Cfg, 'DEADLINE_LB_EPS', 0.05)  # 下界裕量
         
-        if self._mix_enabled() and task_class in ("A", "B"):
+        workload_spec = self._resolve_workload_spec(workload_profile, sampling_profile=sampling_profile)
+
+        if workload_spec is not None:
+            alpha_min, alpha_max = workload_spec.get("deadline_alpha", (1.0, 1.0))
+            alpha_min = max(1.0, float(alpha_min))
+            alpha_max = max(alpha_min, float(alpha_max))
+            alpha = float(np.random.uniform(alpha_min, alpha_max))
+            slack = max(float(workload_spec.get("deadline_slack", slack)), 0.0)
+            base_time = LB_star
+            deadline_raw = alpha * LB_star + slack
+            gamma = deadline_raw / max(base_time, 1e-9)
+
+        elif self._mix_enabled() and task_class in ("A", "B"):
             if task_class == "B":
                 d_min = float(getattr(Cfg, "TASK_B_DEADLINE_MIN", 1.0))
                 d_max = float(getattr(Cfg, "TASK_B_DEADLINE_MAX", 2.5))
@@ -450,7 +552,7 @@ class DAGGenerator:
         
         return float(deadline), float(gamma), float(cp_cycles), float(base_time)
 
-    def _generate_layered_dag(self, num_nodes):
+    def _generate_layered_dag(self, num_nodes, edge_range=None):
         """
         生成有并行宽度的层级DAG（fallback方法）
         
@@ -472,12 +574,13 @@ class DAGGenerator:
         """
         adj_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
         data_matrix = np.zeros((num_nodes, num_nodes))
+        edge_range = tuple(edge_range) if edge_range is not None else self.edge_data_range
         
         if num_nodes <= 2:
             # 极小DAG，直接链式
             if num_nodes == 2:
                 adj_matrix[0, 1] = 1
-                data_matrix[0, 1] = np.random.uniform(*self.edge_data_range)
+                data_matrix[0, 1] = np.random.uniform(*edge_range)
             return adj_matrix, data_matrix
         
         # 计算层级结构
@@ -522,14 +625,14 @@ class DAGGenerator:
                 targets = np.random.choice(next_layer, size=num_targets, replace=False)
                 for v in targets:
                     adj_matrix[u, v] = 1
-                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+                    data_matrix[u, v] = np.random.uniform(*edge_range)
             
             # 确保每个下一层节点至少有一条入边
             for v in next_layer:
                 if np.sum(adj_matrix[:, v]) == 0:
                     u = np.random.choice(curr_layer)
                     adj_matrix[u, v] = 1
-                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+                    data_matrix[u, v] = np.random.uniform(*edge_range)
         
         # 可选：添加跨层边（增加复杂度）
         if self.density > 0.3 and len(layers) > 3:
@@ -544,7 +647,7 @@ class DAGGenerator:
                 
                 if adj_matrix[u, v] == 0:
                     adj_matrix[u, v] = 1
-                    data_matrix[u, v] = np.random.uniform(*self.edge_data_range)
+                    data_matrix[u, v] = np.random.uniform(*edge_range)
         
         return adj_matrix, data_matrix
 

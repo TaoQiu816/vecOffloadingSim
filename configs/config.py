@@ -33,10 +33,8 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.1 道路模型参数 (Road Model)
     # -------------------------------------------------------------------------
-    MAP_SIZE = 2000.0       # 道路长度 (m) - Road segment length
-                            # 2000m + 3 RSU + RSU_RANGE=350m → d_inter=666.7m，
-                            # 边界重叠=32.8m(4.9%)，全路段覆盖，RSU_RANGE>V2V_RANGE(250m)
-                            # Impact: 2000m road with 3 RSUs at 350m range gives full coverage + minimal overlap
+    MAP_SIZE = 1000.0       # 道路长度 (m) - Road segment length
+                            # 主线基础环境固定为 1 km 量级直路，兼容现有单路段推进流程
     
     NUM_LANES = 2           # 车道数量 - Number of lanes
                             # 影响: 车辆横向分布，减少换道干扰
@@ -50,8 +48,7 @@ class SystemConfig:
     # 1.2 车辆参数 (Vehicle Parameters)
     # -------------------------------------------------------------------------
     NUM_VEHICLES = 20       # 初始车辆数 - Initial number of vehicles
-                            # 影响: 网络负载和V2V候选数量，20辆适配1000m道路密度
-                            # Impact: Network load and V2V candidates; 20 vehicles for 1000m road
+                            # 主线保持固定 agent 数，只通过外生几何采样改变有效邻居数
 
     V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
     # 候选集模式（锁定为ALL_FEASIBLE）
@@ -83,38 +80,25 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.3 车辆移动性参数 (Vehicle Mobility - Truncated Normal Distribution)
     # -------------------------------------------------------------------------
-    VEL_MEAN = 15.0         # 速度均值 (m/s) ≈ 54 km/h - Mean velocity (文献二)
-                            # 影响: 城市快速路标准速度，增加拓扑动态性
-                            # Impact: Urban expressway standard speed, increases topology dynamics
-
-    VEL_STD = 3.0           # 速度标准差 (m/s) - Velocity standard deviation
-                            # 影响: 更大的速度异构性，模拟多样化驾驶风格
-                            # Impact: Greater velocity heterogeneity, simulates diverse driving styles
-
-    VEL_MIN = 5.0           # 最小速度 (m/s) ≈ 18 km/h - Minimum velocity
-                            # 影响: 防止车辆静止，确保拓扑动态性
-                            # Impact: Prevents static vehicles, ensures topology dynamics
-
-    VEL_MAX = 25.0          # 最大速度 (m/s) ≈ 90 km/h - Maximum velocity (文献二)
-                            # 影响: 城市快速路限速，控制最大拓扑变化速率
-                            # Impact: Urban expressway speed limit, controls max topology change rate
+    VEL_MEAN = 10.0         # 速度均值 (m/s) ≈ 36 km/h
+    VEL_STD = 2.0           # 速度标准差 (m/s)
+    VEL_MIN = 5.56          # 最小速度 (m/s) ≈ 20 km/h
+    VEL_MAX = 13.89         # 最大速度 (m/s) ≈ 50 km/h
     
     MAX_VELOCITY = VEL_MAX  # 最大速度 - Maximum velocity
     
     # 车辆生成位置范围 (相对于MAP_SIZE的比例)
     # Vehicle spawn position range (ratio of MAP_SIZE)
     VEHICLE_SPAWN_X_MIN = 0.0   # 最小X位置比例 - Min X position ratio
-    VEHICLE_SPAWN_X_MAX = 0.85  # 最大X位置比例 - Max X position ratio
-                                # 0.85×2000m=1700m>RSU2(1666.7m)，确保车辆初始覆盖全部3个RSU区域
-                                # 0.85 ensures initial vehicles span all 3 RSU zones (up to 1700m)
+    VEHICLE_SPAWN_X_MAX = 1.0   # 最大X位置比例 - Max X position ratio
     
     DT = 0.1                # 仿真时间步长 (s) - Simulation time step (文献二)
                             # 影响: 精度与计算开销权衡，0.1s降低50%开销
                             # Impact: Accuracy vs. computation tradeoff; 0.1s reduces 50% overhead
 
-    MAX_STEPS = 200         # Episode最大步数 - Max steps per episode
-                            # 影响: Episode总时长 = MAX_STEPS × DT = 20秒
-                            # Impact: Total episode duration = MAX_STEPS × DT = 20s
+    MAX_STEPS = 300         # Episode最大步数 - Max steps per episode
+                            # 影响: Episode总时长 = MAX_STEPS × DT = 30秒
+                            # Impact: Total episode duration = MAX_STEPS × DT = 30s
     TERMINATE_ON_ALL_FINISHED = True  # 是否允许任务全部完成时提前终止
 
     # -------------------------------------------------------------------------
@@ -126,19 +110,13 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 1.4 RSU部署参数 (RSU Deployment)
     # -------------------------------------------------------------------------
-    NUM_RSU = 3             # RSU数量 - Number of RSUs
-                            # 影响: 覆盖率和卸载能力，3个RSU确保1000m全覆盖+重叠区
-                            # Impact: Coverage and offloading capacity; 3 RSUs ensure full coverage
+    NUM_RSU = 2             # RSU数量 - Number of RSUs
     
     RSU_Y_DIST = 10.0       # RSU离路边距离 (m) - RSU distance from roadside
                             # 影响: V2I路径损耗，10m为标准高度
                             # Impact: V2I path loss; 10m is standard height
     
-    RSU_RANGE = 350.0       # RSU覆盖半径 (m) - RSU coverage radius (文献二: 500m直径)
-                            # 几何依据: 3 RSU等间距(d=666.7m)双侧部署(h=10/17m)，
-                            # R=350m → 水平覆盖≈349.6m ≈ d/2×1.05，相邻边界重叠≈32.8m(4.9%)
-                            # RSU_RANGE(350m) > V2V_RANGE(250m)，符合文献设定
-                            # Impact: 350m radius, full 2000m coverage with ~5% boundary overlap
+    RSU_RANGE = 300.0       # RSU覆盖半径 (m) - RSU coverage radius
     
     RSU_POS = np.array([500.0, 500.0])  # 默认RSU位置（向后兼容）
                                          # Default RSU position (backward compatibility)
@@ -225,9 +203,7 @@ class SystemConfig:
     V2V_INTERFERENCE_DBM = -95.0  # ESTIMATE_ONLY: 仅供单链路估计/诊断fallback使用
                                   # 主线多链路V2V干扰来自 same-RB reuse 的显式干扰和
     
-    V2V_RANGE = 250.0       # V2V通信半径 (m) - V2V communication range
-                            # 影响: 邻居发现范围，DVTP等文献常用值
-                            # Impact: Neighbor discovery range; common value in DVTP literature
+    V2V_RANGE = 200.0       # V2V通信半径 (m) - V2V communication range
 
     # -------------------------------------------------------------------------
     # 2.5.1 V2V RB 干扰模型 (V2V Resource Block Interference)
@@ -313,30 +289,167 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.1 CPU频率设定 (CPU Frequency - Heterogeneous Configuration)
     # -------------------------------------------------------------------------
-    MIN_VEHICLE_CPU_FREQ = 0.5e9    # 车辆最小CPU频率 (Hz) - Min vehicle CPU freq (0.5 GHz)
-                                    # 影响: 异构性下界，弱车需卸载才能在deadline内完成
-                                    # Impact: Heterogeneity lower bound, weak vehicles need offloading
-
-    MAX_VEHICLE_CPU_FREQ = 2.0e9    # 车辆最大CPU频率 (Hz) - Max vehicle CPU freq (2 GHz)
-                                    # 影响: 异构性上界，强车可作为V2V卸载目标
-                                    # Impact: Heterogeneity upper bound, strong vehicles as V2V targets
+    MIN_VEHICLE_CPU_FREQ = 2.0e9    # 车辆主流算力下界 (Hz)
+    MAX_VEHICLE_CPU_FREQ = 4.0e9    # 车辆主流算力上界 (Hz)
 
     VEH_CPU_DIST_MODE = "uniform"   # uniform | bimodal_helper
-    VEH_CPU_HELPER_PROB = 0.25      # bimodal_helper模式下helper车辆占比
-    VEH_CPU_WEAK_MIN = 1.0e9        # 弱/普通车算力下界 (Hz)
-    VEH_CPU_WEAK_MAX = 1.8e9        # 弱/普通车算力上界 (Hz)
-    VEH_CPU_HELPER_MIN = 3.2e9      # helper车算力下界 (Hz)
+    VEH_CPU_HELPER_PROB = 0.25
+    VEH_CPU_WEAK_MIN = 1.0e9        # 弱车算力下界 (Hz)
+    VEH_CPU_WEAK_MAX = 2.0e9        # 弱车算力上界 (Hz)
+    VEH_CPU_HELPER_MIN = 3.0e9      # helper车算力下界 (Hz)
     VEH_CPU_HELPER_MAX = 4.0e9      # helper车算力上界 (Hz)
 
-    F_RSU = 8.0e9           # 主线默认 RSU CPU 频率
-                            # 语义：多核时每核同频，单任务占一核，执行时间 = cycles/F_RSU
-                            # Impact: RSU computing advantage significant but not absolute
-    
-    # [N=20对比建议] 适度收紧RSU并行度，避免Greedy在RSU侧形成绝对优势，
-    # 让“干扰/队列/信誉感知”的策略收益更可见（Ours相对Greedy更容易拉开差距）。
-    RSU_NUM_PROCESSORS = 3  # RSU处理器核心数 - RSU processor cores
-                             # 影响: 降低并行度，提高调度压力
-                             # Impact: Lower parallelism, higher scheduling pressure
+    # -------------------------------------------------------------------------
+    # 3.1.1 统一基础环境 + 外生因素采样协议
+    # -------------------------------------------------------------------------
+    WORKLOAD_PROFILE_SPECS = {
+        "light": {
+            "node_range": (5, 8),
+            "total_comp": (4.0e8, 1.2e9),
+            "total_data": (5.0e5, 2.0e6),
+            "edge_data": (3.0e4, 1.8e5),
+            "deadline_alpha": (1.50, 1.85),
+            "deadline_slack": 0.30,
+        },
+        "medium": {
+            "node_range": (7, 11),
+            "total_comp": (0.9e9, 2.2e9),
+            "total_data": (1.2e6, 4.6e6),
+            "edge_data": (0.8e5, 6.2e5),
+            "deadline_alpha": (1.82, 2.22),
+            "deadline_slack": 0.78,
+        },
+        "heavy": {
+            "node_range": (9, 12),
+            "total_comp": (1.9e9, 3.3e9),
+            "total_data": (2.8e6, 6.4e6),
+            "edge_data": (1.8e5, 8.8e5),
+            "deadline_alpha": (2.1e+00, 2.5e+00),
+            "deadline_slack": 1.15,
+        },
+    }
+
+    EXOGENOUS_LEVELS = ("low", "medium", "high")
+    EXOGENOUS_FACTOR_PROBS = {
+        "workload_level": (0.34, 0.33, 0.33),
+        "traffic_density": (0.33, 0.34, 0.33),
+        "helper_availability": (0.33, 0.34, 0.33),
+        "contact_stability": (0.33, 0.34, 0.33),
+        "rsu_accessibility_or_load": (0.33, 0.34, 0.33),
+    }
+
+    WORKLOAD_LEVEL_SPECS = {
+        "light": {
+            "task_weights": {"light": 0.55, "medium": 0.30, "heavy": 0.15},
+            "comp_scale": 0.92,
+            "data_scale": 0.92,
+            "edge_scale": 0.92,
+            "node_shift": -1,
+            "deadline_alpha_shift": 0.05,
+            "deadline_slack_scale": 1.05,
+        },
+        "medium": {
+            "task_weights": {"light": 0.30, "medium": 0.45, "heavy": 0.25},
+            "comp_scale": 0.98,
+            "data_scale": 0.98,
+            "edge_scale": 0.98,
+            "node_shift": 0,
+            "deadline_alpha_shift": 0.05,
+            "deadline_slack_scale": 1.06,
+        },
+        "heavy": {
+            "task_weights": {"light": 0.15, "medium": 0.35, "heavy": 0.50},
+            "comp_scale": 0.98,
+            "data_scale": 0.98,
+            "edge_scale": 0.98,
+            "node_shift": 0,
+            "deadline_alpha_shift": 0.10,
+            "deadline_slack_scale": 1.15,
+        },
+    }
+
+    TRAFFIC_DENSITY_SPECS = {
+        "low": {
+            "spawn_mode": "uniform",
+            "anchor_prob": 0.15,
+            "cluster_spread": 120.0,
+        },
+        "medium": {
+            "spawn_mode": "anchored",
+            "anchor_prob": 0.65,
+            "cluster_spread": 85.0,
+        },
+        "high": {
+            "spawn_mode": "anchored",
+            "anchor_prob": 0.90,
+            "cluster_spread": 50.0,
+        },
+    }
+
+    HELPER_AVAILABILITY_SPECS = {
+        "low": {
+            "role_probs": {"weak": 0.22, "regular": 0.75, "helper": 0.03},
+            "role_cpu": {
+                "weak": (1.0e9, 1.8e9),
+                "regular": (2.1e9, 3.0e9),
+                "helper": (2.1e+09, 2.7e+09),
+            },
+            "helper_cpu_scale": 0.96,
+        },
+        "medium": {
+            "role_probs": {"weak": 0.20, "regular": 0.75, "helper": 0.05},
+            "role_cpu": {
+                "weak": (1.1e9, 1.9e9),
+                "regular": (2.2e9, 3.1e9),
+                "helper": (2.2e+09, 2.8e+09),
+            },
+            "helper_cpu_scale": 0.97,
+        },
+        "high": {
+            "role_probs": {"weak": 0.18, "regular": 0.75, "helper": 0.07},
+            "role_cpu": {
+                "weak": (1.2e9, 2.0e9),
+                "regular": (2.3e9, 3.2e9),
+                "helper": (2.3e+09, 2.9e+09),
+            },
+            "helper_cpu_scale": 0.96,
+        },
+    }
+
+    CONTACT_STABILITY_SPECS = {
+        "low": {
+            "speed_mean": 10.6,
+            "speed_std": 3.0,
+        },
+        "medium": {
+            "speed_mean": 10.0,
+            "speed_std": 2.0,
+        },
+        "high": {
+            "speed_mean": 9.4,
+            "speed_std": 3.6,
+        },
+    }
+
+    RSU_ACCESSIBILITY_LOAD_SPECS = {
+        "low": {
+            "anchor_source": "boundaries",
+            "rsu_background_cycles": (0.45e9, 0.70e9),
+        },
+        "medium": {
+            "anchor_source": "mixed",
+            "rsu_background_cycles": (0.35e9, 0.60e9),
+        },
+        "high": {
+            "anchor_source": "rsu_centers",
+            "rsu_background_cycles": (0.30e9, 0.45e9),
+        },
+    }
+
+    F_RSU = 5.0e9           # RSU单核频率 (Hz)
+                            # 总服务能力由 F_RSU × RSU_NUM_PROCESSORS 给出，主线约 15 GHz
+
+    RSU_NUM_PROCESSORS = 3  # RSU处理器核心数，主线总服务能力约 12 GHz
     
     K_ENERGY = 1e-27        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -353,7 +466,7 @@ class SystemConfig:
 
     # [N=20对比建议] 收紧RSU队列上限，提升“集中卸载到RSU”的拥塞代价，
     # 促使策略进行更细粒度分流（Local/RSU/V2V）。
-    RSU_QUEUE_CYCLES_LIMIT = 100.0e9    # RSU队列上限 (cycles) - RSU queue limit
+    RSU_QUEUE_CYCLES_LIMIT = 30.0e9     # RSU队列上限 (cycles) - RSU queue limit
                                         # 影响: 适度收紧RSU负载，避免过度偏向RSU
                                         # Impact: Moderately tightens RSU load to avoid over-reliance
 
@@ -802,7 +915,7 @@ class SystemConfig:
     # =========================================================================
     # 8. 模型结构参数 (Model Architecture)
     # =========================================================================
-    RESOURCE_RAW_DIM = 15           # 资源原始特征维度
+    RESOURCE_RAW_DIM = 16           # 资源原始特征维度
                                     # [0] cpu_norm
                                     # [1] comp_backlog_norm
                                     # [2] tx_backlog_norm
@@ -818,6 +931,7 @@ class SystemConfig:
                                     # [12] trust_lcb
                                     # [13] contact_survival_slack
                                     # [14] v2i_coverage_handover_risk
+                                    # [15] wait_norm (current instantaneous wait proxy)
 
     # -------------------------------------------------------------------------
     # 8.1 通信等待时间归一化 (CommWait Normalization)

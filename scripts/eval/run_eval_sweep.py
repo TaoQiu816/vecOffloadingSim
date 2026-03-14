@@ -46,6 +46,7 @@ def _parse_args():
     parser.add_argument("--out-dir", type=str, default=None, help="Output directory for CSVs")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--stochastic", action="store_true", default=False, help="Use stochastic policy for checkpoint")
+    parser.add_argument("--log-interval", type=int, default=1, help="Print progress every N eval episodes")
     return parser.parse_args()
 
 
@@ -106,6 +107,10 @@ def _summarize_records(records: List[Dict], seed: int = None) -> Dict:
         "latency_p95",
         "energy_norm_mean",
         "throughput",
+        "decision_frac_local",
+        "decision_frac_rsu",
+        "decision_frac_v2v",
+        "avg_rsu_queue",
     ]
     summary = {
         "seed": seed if seed is not None else "overall",
@@ -142,7 +147,9 @@ def run_eval(args):
             raise ValueError("--checkpoint is required for policy=mappo")
         if not os.path.exists(args.checkpoint):
             raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+        print(f"[Eval] loading checkpoint: {args.checkpoint}", flush=True)
         agent = _load_agent(args.checkpoint, device=args.device)
+        print(f"[Eval] checkpoint loaded on {args.device}", flush=True)
     else:
         agent = None
 
@@ -178,6 +185,7 @@ def run_eval(args):
 
         for ep in range(args.episodes):
             ep_seed = seed + ep
+            ep_start = time.time()
             _set_global_seed(ep_seed)
             Cfg.SEED = ep_seed
             obs_list, _ = env.reset(seed=ep_seed)
@@ -222,8 +230,20 @@ def run_eval(args):
                 "throughput": float(throughput),
                 "episode_time_seconds": float(episode_time),
                 "completed_tasks": int(completed_tasks),
+                "decision_frac_local": float(metrics.get("decision_frac_local", 0.0)),
+                "decision_frac_rsu": float(metrics.get("decision_frac_rsu", 0.0)),
+                "decision_frac_v2v": float(metrics.get("decision_frac_v2v", 0.0)),
+                "avg_rsu_queue": float(metrics.get("avg_rsu_queue", 0.0)),
             }
             all_records.append(record)
+            log_interval = max(int(getattr(args, "log_interval", 1)), 1)
+            if (ep + 1) % log_interval == 0 or ep == 0 or (ep + 1) == args.episodes:
+                print(
+                    f"[Eval] seed={seed} ep={ep + 1}/{args.episodes} "
+                    f"sr={record['success_rate']:.3f} miss={record['deadline_miss_rate']:.3f} "
+                    f"lat={record['latency_mean']:.3f}s done_in={time.time() - ep_start:.1f}s",
+                    flush=True,
+                )
 
         env.close()
 

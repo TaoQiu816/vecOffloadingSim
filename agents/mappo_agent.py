@@ -511,7 +511,10 @@ class MAPPOAgent:
         torch.save(payload, path)
 
     def load(self, path: str, restore_optimizer: bool = True, restore_scheduler: bool = True):
-        checkpoint = torch.load(path, map_location=self.device)
+        try:
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(path, map_location=self.device)
         self.network.load_state_dict(checkpoint["network_state_dict"], strict=False)
         self.lambda_power = float(checkpoint.get("lambda_power", self.lambda_power))
         self.lambda_trust = float(checkpoint.get("lambda_trust", self.lambda_trust))

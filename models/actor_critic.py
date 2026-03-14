@@ -29,8 +29,8 @@ Actor-Critic Network Module
         Bias = -0.1*λ_dist * Dist_Norm - λ_load * (0.5*Backlog_Norm + 0.5*Contention_Norm)
 
     说明：
-        当前 actor 只使用当前时刻可观测的距离、backlog 与竞争状态。
-        因此这里只保留弱距离先验，并将主要偏置放在 backlog / contention 上。
+        当前 actor 只使用当前时刻可观测的距离、backlog、即时等待与竞争状态。
+        因此这里只保留弱距离先验，并将主要偏置放在 backlog / wait / contention 上。
     
     作用：
         - 引导注意力关注近距离、低负载的资源
@@ -101,7 +101,7 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         
         # [关键] 可学习的物理偏置权重（初始化为建议值）
         self.lambda_dist = nn.Parameter(torch.tensor(1.0))
-        self.lambda_load = nn.Parameter(torch.tensor(0.5))
+        self.lambda_load = nn.Parameter(torch.tensor(0.25))
     
     def forward(self,
                 query: torch.Tensor,
@@ -136,16 +136,17 @@ class CrossAttentionWithPhysicsBias(nn.Module):
         
         # 2. 物理流：计算物理偏置（支持消融开关）
         # resource_raw: [B, N_res, RESOURCE_RAW_DIM]
-        # [CPU, CompBacklog, TxBacklog, Dist, Rel_X, Rel_Y, RelSpeed, Contact, Contention, Occupancy]
+        # [CPU, CompBacklog, TxBacklog, Dist, Rel_X, Rel_Y, RelSpeed, Contact, Contention, Occupancy, ..., Wait]
         from configs.train_config import TrainConfig as TC
         if getattr(TC, "USE_PHYSICS_BIAS", True):
             dist_norm = resource_raw[:, :, 3]  # Dist_Norm
             backlog_norm = 0.5 * (resource_raw[:, :, 1] + resource_raw[:, :, 2])
             contention_norm = 0.5 * (resource_raw[:, :, 8] + resource_raw[:, :, 9])
+            wait_norm = resource_raw[:, :, 15]
 
-            # 距离只保留弱先验；显式竞争偏置由当前 backlog + contention 驱动。
+            # 距离只保留弱先验；显式竞争偏置只做轻量校正，避免与learned path重复施压。
             # [B, N_res] -> [B, 1, 1, N_res] (广播到多头)
-            fused_load = 0.5 * backlog_norm + 0.5 * contention_norm
+            fused_load = 0.30 * backlog_norm + 0.20 * wait_norm + 0.10 * contention_norm
             bias_phy = -0.1 * self.lambda_dist * dist_norm - self.lambda_load * fused_load
             bias_phy = bias_phy.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, N_res]
             
@@ -311,13 +312,22 @@ class SubtaskHead(nn.Module):
         super().__init__()
         hidden = max(d_model // 2, 16)
         self.mlp = nn.Sequential(
-            nn.Linear(d_model, hidden),
+            nn.Linear(d_model * 2, hidden),
             nn.ReLU(),
             nn.Linear(hidden, 1),
         )
 
-    def forward(self, dag_features: torch.Tensor) -> torch.Tensor:
-        return self.mlp(dag_features).squeeze(-1)
+    def forward(self, dag_features: torch.Tensor, resource_context: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if resource_context is None:
+            resource_context = torch.zeros(
+                dag_features.shape[0],
+                dag_features.shape[-1],
+                dtype=dag_features.dtype,
+                device=dag_features.device,
+            )
+        resource_context = resource_context.unsqueeze(1).expand(-1, dag_features.shape[1], -1)
+        fused = torch.cat([dag_features, resource_context], dim=-1)
+        return self.mlp(fused).squeeze(-1)
 
 
 class CriticHead(nn.Module):
@@ -665,6 +675,29 @@ class ActorCriticNetwork(nn.Module):
         
         # Layer Norm（用于Cross-Attention后）
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+
+    @staticmethod
+    def _pool_resource_context(
+        resource_encoded: torch.Tensor,
+        resource_raw: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Lightweight resource summary for subtask selection.
+        """
+        if action_mask is not None:
+            mask = action_mask.to(dtype=resource_encoded.dtype).unsqueeze(-1)
+            valid = mask.squeeze(-1) > 0.0
+        else:
+            mask = torch.ones_like(resource_encoded[..., :1])
+            valid = torch.ones_like(resource_encoded[..., 0], dtype=torch.bool)
+        denom = mask.sum(dim=1).clamp(min=1.0)
+        encoded_mean = (resource_encoded * mask).sum(dim=1) / denom
+        wait_col = 15 if resource_raw.shape[-1] > 15 else resource_raw.shape[-1] - 1
+        load_proxy = 0.35 * resource_raw[:, :, 1] + 0.20 * resource_raw[:, :, 2] + 0.35 * resource_raw[:, :, wait_col] + 0.10 * resource_raw[:, :, 8]
+        load_proxy = torch.where(valid, load_proxy, torch.zeros_like(load_proxy))
+        worst_load = load_proxy.max(dim=1, keepdim=True).values
+        return encoded_mean * (1.0 - worst_load)
     
     def forward_actor(self,
                      dag_features: torch.Tensor,
@@ -733,7 +766,10 @@ class ActorCriticNetwork(nn.Module):
         return target_logits, alpha, beta
 
     def forward_subtask(self,
-                        dag_features: torch.Tensor) -> torch.Tensor:
+                        dag_features: torch.Tensor,
+                        resource_encoded: Optional[torch.Tensor] = None,
+                        resource_raw: Optional[torch.Tensor] = None,
+                        action_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Subtask头前向（不做mask，mask在策略层统一处理）
 
@@ -742,7 +778,10 @@ class ActorCriticNetwork(nn.Module):
         Returns:
             subtask_logits: [Batch, MAX_NODES]
         """
-        return self.subtask_head(dag_features)
+        resource_context = None
+        if resource_encoded is not None and resource_raw is not None:
+            resource_context = self._pool_resource_context(resource_encoded, resource_raw, action_mask)
+        return self.subtask_head(dag_features, resource_context)
     
     def _run_critic(self,
                       head: nn.Module,
@@ -859,7 +898,7 @@ class ActorCriticNetwork(nn.Module):
             value: [Batch, 1]
         """
         # Subtask head（用于自回归采样/评估）
-        subtask_logits = self.forward_subtask(dag_features)
+        subtask_logits = self.forward_subtask(dag_features, resource_encoded, resource_raw, action_mask)
 
         # Actor
         target_logits, alpha, beta = self.forward_actor(
