@@ -1,0 +1,326 @@
+{
+  "generated_at": "2026-03-15 19:30:13",
+  "plots_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots",
+  "plot_count": 35,
+  "tag_counts": {
+    "rl_diagnostics": 6,
+    "baseline": 6,
+    "policy": 3,
+    "multi_agent": 3,
+    "simulation": 5,
+    "reward": 4,
+    "success": 4
+  },
+  "jobs": [
+    {
+      "job": "DataRecorder.plot_training_stats",
+      "ok": true,
+      "seconds": 2.846121072769165,
+      "tail": []
+    },
+    {
+      "job": "plot_results.py",
+      "ok": true,
+      "seconds": 8.227975845336914,
+      "tail": [
+        "✓ Saved: fig_latency_with_baselines.png",
+        "✓ Saved: fig_summary_dashboard.png",
+        "✓ All plots saved to: /Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots"
+      ]
+    },
+    {
+      "job": "generate_all_plots.py",
+      "ok": true,
+      "seconds": 4.776101112365723,
+      "tail": [
+        "⚠ No baseline data found, skipping baseline comparison plot",
+        "✓ All plots saved to: /Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots",
+        "  Total plots: 8"
+      ]
+    },
+    {
+      "job": "plot_mappo_vs_baselines.py",
+      "ok": true,
+      "skipped": true,
+      "seconds": 0.0,
+      "tail": [
+        "baseline_stats.csv missing/empty or script not found"
+      ]
+    },
+    {
+      "job": "DataRecorder.auto_plot",
+      "ok": true,
+      "seconds": 6.9114298820495605,
+      "tail": []
+    }
+  ],
+  "figures": [
+    {
+      "file": "bias_annealing.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/bias_annealing.png",
+      "size_bytes": 83534,
+      "tags": []
+    },
+    {
+      "file": "cpu_efficiency.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/cpu_efficiency.png",
+      "size_bytes": 366711,
+      "tags": []
+    },
+    {
+      "file": "episode_duration.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/episode_duration.png",
+      "size_bytes": 602410,
+      "tags": []
+    },
+    {
+      "file": "fig_constraint_health.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_constraint_health.png",
+      "size_bytes": 679900,
+      "tags": []
+    },
+    {
+      "file": "fig_convergence_analysis.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_convergence_analysis.png",
+      "size_bytes": 289528,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_convergence_baseline.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_convergence_baseline.png",
+      "size_bytes": 1171987,
+      "tags": [
+        "rl_diagnostics",
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_convergence_recheck.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_convergence_recheck.png",
+      "size_bytes": 1785358,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_decision_distribution.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_decision_distribution.png",
+      "size_bytes": 189983,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_latency_with_baselines.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_latency_with_baselines.png",
+      "size_bytes": 542679,
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_multi_agent_metrics.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_multi_agent_metrics.png",
+      "size_bytes": 516194,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "fig_physical_metrics.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_physical_metrics.png",
+      "size_bytes": 1019326,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "fig_policy_evolution.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_policy_evolution.png",
+      "size_bytes": 217320,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_reward_analysis.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_reward_analysis.png",
+      "size_bytes": 418421,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "fig_success_rate_analysis.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_success_rate_analysis.png",
+      "size_bytes": 174482,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "fig_summary_dashboard.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_summary_dashboard.png",
+      "size_bytes": 940847,
+      "tags": []
+    },
+    {
+      "file": "fig_system_metrics.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_system_metrics.png",
+      "size_bytes": 338504,
+      "tags": []
+    },
+    {
+      "file": "fig_training_diagnostics.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_training_diagnostics.png",
+      "size_bytes": 996957,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_training_overview.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/fig_training_overview.png",
+      "size_bytes": 676576,
+      "tags": []
+    },
+    {
+      "file": "loss_curve.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/loss_curve.png",
+      "size_bytes": 186169,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "ma_collaboration_with_baselines.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/ma_collaboration_with_baselines.png",
+      "size_bytes": 460792,
+      "tags": [
+        "baseline",
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_fairness.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/ma_fairness.png",
+      "size_bytes": 422947,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_reward_gap.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/ma_reward_gap.png",
+      "size_bytes": 444482,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "offloading_ratio.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/offloading_ratio.png",
+      "size_bytes": 482887,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "performance_radar.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/performance_radar.png",
+      "size_bytes": 494660,
+      "tags": []
+    },
+    {
+      "file": "physical_metrics.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/physical_metrics.png",
+      "size_bytes": 1301152,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_len.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/queue_len.png",
+      "size_bytes": 494750,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_load_balance.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/queue_load_balance.png",
+      "size_bytes": 158909,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "resource_utilization.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/resource_utilization.png",
+      "size_bytes": 818526,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "reward_curve_with_baselines.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/reward_curve_with_baselines.png",
+      "size_bytes": 425850,
+      "tags": [
+        "reward",
+        "baseline"
+      ]
+    },
+    {
+      "file": "reward_decomposition.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/reward_decomposition.png",
+      "size_bytes": 1289755,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "subtask_success_rate_with_baselines.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/subtask_success_rate_with_baselines.png",
+      "size_bytes": 276396,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    },
+    {
+      "file": "success_rate_multilevel.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/success_rate_multilevel.png",
+      "size_bytes": 355020,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "training_overview.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/training_overview.png",
+      "size_bytes": 1117243,
+      "tags": []
+    },
+    {
+      "file": "training_stability.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/training_stability.png",
+      "size_bytes": 295384,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "veh_success_rate_with_baselines.png",
+      "path": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/train_300ep_20260315_183645/plots/veh_success_rate_with_baselines.png",
+      "size_bytes": 341965,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    }
+  ]
+}

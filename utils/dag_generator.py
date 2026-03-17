@@ -109,14 +109,11 @@ class DAGGenerator:
         specs = self._get_workload_specs()
         if not specs:
             return None
-        weights = None
         if sampling_profile is not None:
-            weights = sampling_profile.get("task_profile_weights")
-        if not weights:
-            return None
-        names = list(specs.keys())
-        probs = self._normalize_weights(weights, names)
-        return str(np.random.choice(names, p=probs))
+            profile_name = sampling_profile.get("workload_profile")
+            if profile_name in specs:
+                return str(profile_name)
+        return None
 
     def _resolve_workload_spec(self, workload_profile: str | None, sampling_profile=None) -> dict | None:
         specs = self._get_workload_specs()
@@ -125,32 +122,7 @@ class DAGGenerator:
         spec = specs.get(str(workload_profile))
         if spec is None:
             return None
-        resolved = dict(spec)
-        adjustment = dict((sampling_profile or {}).get("workload_adjustment", {}))
-        if adjustment:
-            node_shift = int(adjustment.get("node_shift", 0))
-            if "node_range" in resolved:
-                lo, hi = resolved["node_range"]
-                lo = max(int(lo) + node_shift, 1)
-                hi = max(int(hi) + node_shift, lo)
-                resolved["node_range"] = (lo, hi)
-            for key, scale_key in (("total_comp", "comp_scale"), ("total_data", "data_scale"), ("edge_data", "edge_scale")):
-                if key in resolved:
-                    lo, hi = resolved[key]
-                    scale = max(float(adjustment.get(scale_key, 1.0)), 1e-6)
-                    lo = max(float(lo) * scale, 1.0)
-                    hi = max(float(hi) * scale, lo)
-                    resolved[key] = (lo, hi)
-            if "deadline_alpha" in resolved:
-                lo, hi = resolved["deadline_alpha"]
-                shift = float(adjustment.get("deadline_alpha_shift", 0.0))
-                lo = max(1.0, float(lo) + shift)
-                hi = max(lo, float(hi) + shift)
-                resolved["deadline_alpha"] = (lo, hi)
-            if "deadline_slack" in resolved:
-                slack_scale = max(float(adjustment.get("deadline_slack_scale", 1.0)), 1e-6)
-                resolved["deadline_slack"] = max(float(resolved["deadline_slack"]) * slack_scale, 0.0)
-        return resolved
+        return dict(spec)
 
     def _sample_num_nodes(self, sampling_profile=None) -> tuple[int, str | None]:
         workload_profile = self._pick_workload_profile(sampling_profile=sampling_profile)

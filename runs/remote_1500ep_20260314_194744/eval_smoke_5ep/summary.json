@@ -1,0 +1,102 @@
+[
+  {
+    "policy_name": "Local-Only Policy",
+    "avg_reward": 0.44675547698908324,
+    "std_reward": 0.009304758862896697,
+    "avg_vehicle_success_rate": 1.0,
+    "std_vehicle_success_rate": 0.0,
+    "avg_task_success_rate": 1.0,
+    "std_task_success_rate": 0.0,
+    "avg_subtask_success_rate": 1.0,
+    "std_subtask_success_rate": 0.0,
+    "avg_completion_time": -1.0,
+    "std_completion_time": 0.0,
+    "avg_makespan": 1.7400000000000002,
+    "std_makespan": 0.48826222462934854,
+    "avg_energy_consumption": 0.0,
+    "std_energy_consumption": 0.0,
+    "deadline_meet_ratio": 1.0,
+    "decision_distribution": {
+      "local": 1.0,
+      "rsu": 0.0,
+      "v2v": 0.0
+    },
+    "avg_queue_length": 0.23529460670908037,
+    "avg_power": 0.0
+  },
+  {
+    "policy_name": "Greedy Policy",
+    "avg_reward": 0.27687258384013197,
+    "std_reward": 0.1674189389229038,
+    "avg_vehicle_success_rate": 0.72,
+    "std_vehicle_success_rate": 0.208806130178211,
+    "avg_task_success_rate": 0.72,
+    "std_task_success_rate": 0.208806130178211,
+    "avg_subtask_success_rate": 0.8901995346144538,
+    "std_subtask_success_rate": 0.08363330192520863,
+    "avg_completion_time": -1.0,
+    "std_completion_time": 0.0,
+    "avg_makespan": 20.000000000000014,
+    "std_makespan": 0.0,
+    "avg_energy_consumption": 0.1017020628679985,
+    "std_energy_consumption": 0.10202711553004863,
+    "deadline_meet_ratio": 0.73,
+    "decision_distribution": {
+      "local": 0.9599,
+      "rsu": 0.0357,
+      "v2v": 0.0044
+    },
+    "avg_queue_length": 0.0042,
+    "avg_power": 0.040100000000000004
+  },
+  {
+    "policy_name": "EFT Policy",
+    "avg_reward": 0.07480930284452826,
+    "std_reward": 0.10634039564416471,
+    "avg_vehicle_success_rate": 0.47000000000000003,
+    "std_vehicle_success_rate": 0.16911534525287764,
+    "avg_task_success_rate": 0.47000000000000003,
+    "std_task_success_rate": 0.16911534525287764,
+    "avg_subtask_success_rate": 0.7915751768560857,
+    "std_subtask_success_rate": 0.08261896039409436,
+    "avg_completion_time": -1.0,
+    "std_completion_time": 0.0,
+    "avg_makespan": 18.020000000000007,
+    "std_makespan": 3.9600000000000137,
+    "avg_energy_consumption": 0.1569773705523322,
+    "std_energy_consumption": 0.09501293944787305,
+    "deadline_meet_ratio": 0.47000000000000003,
+    "decision_distribution": {
+      "local": 0.9665371809100999,
+      "rsu": 0.01986681465038846,
+      "v2v": 0.013596004439511655
+    },
+    "avg_queue_length": 0.015954455445544555,
+    "avg_power": 3.239022888478083e-05
+  },
+  {
+    "policy_name": "MAPPO (Trained)",
+    "avg_reward": 0.444360097126591,
+    "std_reward": 0.009490428540461171,
+    "avg_vehicle_success_rate": 1.0,
+    "std_vehicle_success_rate": 0.0,
+    "avg_task_success_rate": 1.0,
+    "std_task_success_rate": 0.0,
+    "avg_subtask_success_rate": 1.0,
+    "std_subtask_success_rate": 0.0,
+    "avg_completion_time": -1.0,
+    "std_completion_time": 0.0,
+    "avg_makespan": 1.7800000000000005,
+    "std_makespan": 0.4534313619501857,
+    "avg_energy_consumption": 0.0,
+    "std_energy_consumption": 0.0,
+    "deadline_meet_ratio": 1.0,
+    "decision_distribution": {
+      "local": 1.0,
+      "rsu": 0.0,
+      "v2v": 0.0
+    },
+    "avg_queue_length": 0.19667290823211875,
+    "avg_power": 0.5
+  }
+]

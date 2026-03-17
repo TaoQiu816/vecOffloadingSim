@@ -198,7 +198,8 @@ class MAPPOAgent:
         total_cost_trust_value = 0.0
         total_kl = 0.0
         total_clip = 0.0
-        total_grad_norm = 0.0
+        total_grad_norm_preclip = 0.0
+        total_grad_norm_postclip = 0.0
         total_value_clip = 0.0
         total_value_target_mean = 0.0
         total_value_target_std = 0.0
@@ -232,7 +233,9 @@ class MAPPOAgent:
                 "cost_trust_value_loss": 0.0,
                 "approx_kl": 0.0,
                 "clip_fraction": 0.0,
-                "grad_norm": 0.0,
+                "grad_norm": 0.0,  # 保留向后兼容
+                "grad_norm_preclip": 0.0,
+                "grad_norm_postclip": 0.0,
                 "active_samples": int(active_samples),
                 "total_samples": int(total_samples),
                 "active_ratio": (float(active_samples) / float(total_samples)) if total_samples > 0 else 0.0,
@@ -379,7 +382,10 @@ class MAPPOAgent:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                grad_norm = nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
+                # 计算 clip 前的梯度范数
+                grad_norm_preclip = sum(p.grad.data.norm(2).item() ** 2 for p in self.network.parameters() if p.grad is not None) ** 0.5
+                # 执行梯度裁剪并获取 clip 后的梯度范数
+                grad_norm_postclip = nn.utils.clip_grad_norm_(self.network.parameters(), TC.MAX_GRAD_NORM)
                 if self._has_invalid_grad(self.network.parameters()):
                     continue
 
@@ -393,7 +399,8 @@ class MAPPOAgent:
                 total_cost_trust_value += float(cost_trust_loss.item())
                 total_kl += float(approx_kl.item())
                 total_clip += float(clip_frac.item())
-                total_grad_norm += float(grad_norm) if grad_norm is not None else 0.0
+                total_grad_norm_preclip += float(grad_norm_preclip)
+                total_grad_norm_postclip += float(grad_norm_postclip)
                 total_value_clip += float(value_clip_frac.item())
                 total_value_target_mean += float(value_target_mean.item())
                 total_value_target_std += float(value_target_std.item())
@@ -468,7 +475,9 @@ class MAPPOAgent:
             "cost_trust_value_loss": total_cost_trust_value / num_updates,
             "approx_kl": total_kl / num_updates,
             "clip_fraction": total_clip / num_updates,
-            "grad_norm": total_grad_norm / num_updates,
+            "grad_norm": total_grad_norm_preclip / num_updates,  # 保留向后兼容，使用 preclip 作为默认值
+            "grad_norm_preclip": total_grad_norm_preclip / num_updates,
+            "grad_norm_postclip": total_grad_norm_postclip / num_updates,
             "active_samples": int(active_samples),
             "total_samples": int(total_samples),
             "active_ratio": (float(active_samples) / float(total_samples)) if total_samples > 0 else 0.0,

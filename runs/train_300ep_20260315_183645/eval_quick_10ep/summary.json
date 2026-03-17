@@ -1,0 +1,12 @@
+[
+  {
+    "policy_name": "Local-Only",
+    "avg_reward": 0.3672711112618574,
+    "std_reward": 0.07514508829239579,
+    "avg_vehicle_success_rate": 0.905,
+    "std_vehicle_success_rate": 0.11056672193747989,
+    "avg_task_success_rate": 0.905,
+    "std_task_success_rate": 0.11056672193747989,
+    "avg_subtask_success_rate": 0.9844324253412877,
+    "std_subtask_success_rate": 0.02076782032849488,
+    "avg_completion_time": 

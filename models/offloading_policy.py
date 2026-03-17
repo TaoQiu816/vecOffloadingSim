@@ -35,7 +35,7 @@ Complete Offloading Policy Network
         - delta: [B, N, N] - 最短路径矩阵
         - resource_raw: [B, M, 10] - 资源原始特征
         - resource_ids: [B, M] - 资源角色ID
-        - subtask_index: [B] - 当前调度的子任务索引
+        - subtask_index: [B] - 兼容fallback索引，不代表环境预选任务
         - action_mask: [B, M] - 动作掩码
         - task_mask: [B, N] - 任务掩码
     
@@ -441,7 +441,7 @@ class OffloadingPolicyNetwork(nn.Module):
             delta: [Batch, MAX_NODES, MAX_NODES], 最短路径距离
             resource_ids: [Batch, N_res], 资源ID列表
             resource_raw: [Batch, N_res, RESOURCE_RAW_DIM], 资源原始特征
-            subtask_index: [Batch], 当前选中任务索引
+            subtask_index: [Batch], 兼容fallback索引
             action_mask: [Batch, N_res], 动作掩码（True=可选）
             subtask_mask: [Batch, MAX_NODES], 可调度子任务mask（READY且未分配）
             node_valid_mask: [Batch, MAX_NODES], DAG有效节点mask（非padding）

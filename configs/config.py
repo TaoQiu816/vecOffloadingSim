@@ -52,7 +52,8 @@ class SystemConfig:
 
     V2V_TOP_K = 5           # V2V候选数上限 - Max V2V candidates per agent [调优: 11→5]
     # 候选集模式（锁定为ALL_FEASIBLE）
-    # ALL: 保留通信范围内所有可达邻居，仅通过action_mask屏蔽不可行动作
+    # ALL: 为当前时刻所有通信范围内且资源合法的helper保留槽位；
+    #      观测仍使用固定长度张量，未被当前helper占用的槽位仅作为padding，ids=-1且mask=False
     CANDIDATE_MODE = "ALL"
     TOPK_K = V2V_TOP_K
     RANDOMK_K = V2V_TOP_K
@@ -64,8 +65,18 @@ class SystemConfig:
     V2V_CANDIDATE_ABS_TOL = 0.2   # 绝对时间允许阈值(秒) - Absolute time tolerance (seconds)
                             # 影响: 减少V2V冗余，使邻居选择更有意义
                             # Impact: Reduces V2V redundancy, makes neighbor selection more meaningful
+    V2V_CAND_GATE_ENABLED = True
+    V2V_CAND_MAX_WAIT = 0.60
+    V2V_CAND_DEADLINE_RATIO = 0.80
+    V2V_CAND_CONTACT_MARGIN = 1.50
+    V2V_CAND_ALLOW_SOFT_SLACK = 0.20
+    RSU_CAND_GATE_ENABLED = True
+    RSU_CAND_MAX_WAIT = 0.80
+    RSU_CAND_DEADLINE_RATIO = 0.90
+    RSU_CAND_ALLOW_SOFT_SLACK = 0.25
     
-    # ALL-feasible模式：使用固定上界 NUM_VEHICLES-1 作为V2V slot数
+    # ALL-feasible模式：观测张量使用固定上界 NUM_VEHICLES-1 作为V2V slot数，
+    # 但真实候选集合仅由当前 in-range 且合法 helper 动态填充
     # TOPK/RANDOMK模式：使用 V2V_TOP_K 作为上限
     ALL_FEASIBLE = (CANDIDATE_MODE == "ALL")
     MAX_NEIGHBORS = (NUM_VEHICLES - 1) if ALL_FEASIBLE else max(0, min(NUM_VEHICLES - 1, V2V_TOP_K))
@@ -96,9 +107,10 @@ class SystemConfig:
                             # 影响: 精度与计算开销权衡，0.1s降低50%开销
                             # Impact: Accuracy vs. computation tradeoff; 0.1s reduces 50% overhead
 
-    MAX_STEPS = 300         # Episode最大步数 - Max steps per episode
-                            # 影响: Episode总时长 = MAX_STEPS × DT = 30秒
-                            # Impact: Total episode duration = MAX_STEPS × DT = 30s
+    TRAIN_MAX_STEPS = 300          # 训练episode步数上限（唯一训练时域来源）
+    BASELINE_GATE_MAX_STEPS = 300  # baseline / gate episode步数上限（唯一门禁时域来源）
+    EVAL_MAX_STEPS = 300           # 评估episode步数上限（唯一评估时域来源）
+    MAX_STEPS = TRAIN_MAX_STEPS    # 环境运行时当前生效步数；由入口脚本显式绑定到对应用途
     TERMINATE_ON_ALL_FINISHED = True  # 是否允许任务全部完成时提前终止
 
     # -------------------------------------------------------------------------
@@ -289,15 +301,15 @@ class SystemConfig:
     # -------------------------------------------------------------------------
     # 3.1 CPU频率设定 (CPU Frequency - Heterogeneous Configuration)
     # -------------------------------------------------------------------------
-    MIN_VEHICLE_CPU_FREQ = 2.0e9    # 车辆主流算力下界 (Hz)
-    MAX_VEHICLE_CPU_FREQ = 4.0e9    # 车辆主流算力上界 (Hz)
+    MIN_VEHICLE_CPU_FREQ = 1.0e9    # 车辆主流算力下界 (Hz)
+    MAX_VEHICLE_CPU_FREQ = 1.8e9    # 车辆主流算力上界 (Hz)
 
     VEH_CPU_DIST_MODE = "uniform"   # uniform | bimodal_helper
     VEH_CPU_HELPER_PROB = 0.25
     VEH_CPU_WEAK_MIN = 1.0e9        # 弱车算力下界 (Hz)
     VEH_CPU_WEAK_MAX = 2.0e9        # 弱车算力上界 (Hz)
-    VEH_CPU_HELPER_MIN = 3.0e9      # helper车算力下界 (Hz)
-    VEH_CPU_HELPER_MAX = 4.0e9      # helper车算力上界 (Hz)
+    VEH_CPU_HELPER_MIN = 2.8e9      # helper车算力下界 (Hz)
+    VEH_CPU_HELPER_MAX = 3.6e9      # helper车算力上界 (Hz)
 
     # -------------------------------------------------------------------------
     # 3.1.1 统一基础环境 + 外生因素采样协议
@@ -305,67 +317,37 @@ class SystemConfig:
     WORKLOAD_PROFILE_SPECS = {
         "light": {
             "node_range": (5, 8),
-            "total_comp": (4.0e8, 1.2e9),
-            "total_data": (5.0e5, 2.0e6),
-            "edge_data": (3.0e4, 1.8e5),
-            "deadline_alpha": (1.50, 1.85),
-            "deadline_slack": 0.30,
+            "total_comp": (2.5e8, 8.0e8),
+            "total_data": (3.0e5, 1.8e6),
+            "edge_data": (2.0e4, 1.5e5),
+            "deadline_alpha": (1.90, 2.30),
+            "deadline_slack": 0.60,
         },
         "medium": {
-            "node_range": (7, 11),
-            "total_comp": (0.9e9, 2.2e9),
-            "total_data": (1.2e6, 4.6e6),
-            "edge_data": (0.8e5, 6.2e5),
-            "deadline_alpha": (1.82, 2.22),
-            "deadline_slack": 0.78,
+            "node_range": (8, 12),
+            "total_comp": (1.45e9, 3.40e9),
+            "total_data": (0.90e6, 3.20e6),
+            "edge_data": (6.0e4, 4.20e5),
+            "deadline_alpha": (1.86, 2.24),
+            "deadline_slack": 0.88,
         },
         "heavy": {
-            "node_range": (9, 12),
-            "total_comp": (1.9e9, 3.3e9),
-            "total_data": (2.8e6, 6.4e6),
-            "edge_data": (1.8e5, 8.8e5),
-            "deadline_alpha": (2.1e+00, 2.5e+00),
-            "deadline_slack": 1.15,
+            "node_range": (10, 16),
+            "total_comp": (3.10e9, 5.20e9),
+            "total_data": (2.10e6, 4.50e6),
+            "edge_data": (1.20e5, 6.00e5),
+            "deadline_alpha": (2.16, 2.52),
+            "deadline_slack": 1.28,
         },
     }
 
     EXOGENOUS_LEVELS = ("low", "medium", "high")
     EXOGENOUS_FACTOR_PROBS = {
-        "workload_level": (0.34, 0.33, 0.33),
+        "workload_level": (0.25, 0.55, 0.20),
         "traffic_density": (0.33, 0.34, 0.33),
         "helper_availability": (0.33, 0.34, 0.33),
         "contact_stability": (0.33, 0.34, 0.33),
         "rsu_accessibility_or_load": (0.33, 0.34, 0.33),
-    }
-
-    WORKLOAD_LEVEL_SPECS = {
-        "light": {
-            "task_weights": {"light": 0.55, "medium": 0.30, "heavy": 0.15},
-            "comp_scale": 0.92,
-            "data_scale": 0.92,
-            "edge_scale": 0.92,
-            "node_shift": -1,
-            "deadline_alpha_shift": 0.05,
-            "deadline_slack_scale": 1.05,
-        },
-        "medium": {
-            "task_weights": {"light": 0.30, "medium": 0.45, "heavy": 0.25},
-            "comp_scale": 0.98,
-            "data_scale": 0.98,
-            "edge_scale": 0.98,
-            "node_shift": 0,
-            "deadline_alpha_shift": 0.05,
-            "deadline_slack_scale": 1.06,
-        },
-        "heavy": {
-            "task_weights": {"light": 0.15, "medium": 0.35, "heavy": 0.50},
-            "comp_scale": 0.98,
-            "data_scale": 0.98,
-            "edge_scale": 0.98,
-            "node_shift": 0,
-            "deadline_alpha_shift": 0.10,
-            "deadline_slack_scale": 1.15,
-        },
     }
 
     TRAFFIC_DENSITY_SPECS = {
@@ -388,31 +370,16 @@ class SystemConfig:
 
     HELPER_AVAILABILITY_SPECS = {
         "low": {
-            "role_probs": {"weak": 0.22, "regular": 0.75, "helper": 0.03},
-            "role_cpu": {
-                "weak": (1.0e9, 1.8e9),
-                "regular": (2.1e9, 3.0e9),
-                "helper": (2.1e+09, 2.7e+09),
-            },
-            "helper_cpu_scale": 0.96,
+            "role_probs": {"weak": 0.30, "regular": 0.67, "helper": 0.03},
+            "helper_cpu_range": (2.6e9, 3.2e9),
         },
         "medium": {
-            "role_probs": {"weak": 0.20, "regular": 0.75, "helper": 0.05},
-            "role_cpu": {
-                "weak": (1.1e9, 1.9e9),
-                "regular": (2.2e9, 3.1e9),
-                "helper": (2.2e+09, 2.8e+09),
-            },
-            "helper_cpu_scale": 0.97,
+            "role_probs": {"weak": 0.25, "regular": 0.70, "helper": 0.05},
+            "helper_cpu_range": (2.8e9, 3.4e9),
         },
         "high": {
-            "role_probs": {"weak": 0.18, "regular": 0.75, "helper": 0.07},
-            "role_cpu": {
-                "weak": (1.2e9, 2.0e9),
-                "regular": (2.3e9, 3.2e9),
-                "helper": (2.3e+09, 2.9e+09),
-            },
-            "helper_cpu_scale": 0.96,
+            "role_probs": {"weak": 0.22, "regular": 0.71, "helper": 0.07},
+            "helper_cpu_range": (3.0e9, 3.6e9),
         },
     }
 
@@ -427,29 +394,29 @@ class SystemConfig:
         },
         "high": {
             "speed_mean": 9.4,
-            "speed_std": 3.6,
+            "speed_std": 3.2,
         },
     }
 
     RSU_ACCESSIBILITY_LOAD_SPECS = {
         "low": {
             "anchor_source": "boundaries",
-            "rsu_background_cycles": (0.45e9, 0.70e9),
+            "rsu_background_cycles": (0.55e9, 0.85e9),
         },
         "medium": {
             "anchor_source": "mixed",
-            "rsu_background_cycles": (0.35e9, 0.60e9),
+            "rsu_background_cycles": (0.40e9, 0.70e9),
         },
         "high": {
             "anchor_source": "rsu_centers",
-            "rsu_background_cycles": (0.30e9, 0.45e9),
+            "rsu_background_cycles": (0.25e9, 0.50e9),
         },
     }
 
-    F_RSU = 5.0e9           # RSU单核频率 (Hz)
+    F_RSU = 6.0e9           # RSU单核频率 (Hz)
                             # 总服务能力由 F_RSU × RSU_NUM_PROCESSORS 给出，主线约 15 GHz
 
-    RSU_NUM_PROCESSORS = 3  # RSU处理器核心数，主线总服务能力约 12 GHz
+    RSU_NUM_PROCESSORS = 4  # RSU处理器核心数，主线总服务能力约 20 GHz
     
     K_ENERGY = 1e-27        # 能耗系数 - Energy coefficient (Effective Switched Capacitance)
                             # 公式: Energy = K_ENERGY * f^2 * cycles
@@ -488,7 +455,7 @@ class SystemConfig:
                             # 目标: 关键路径深度落在 4~8 的可学习区间
                             # Target: Keep critical-path depth in a learnable 4~8 regime
 
-    MAX_NODES = 16          # DAG最大节点数 - Max DAG nodes
+    MAX_NODES = 18          # DAG最大节点数 - Max DAG nodes
                             # 目标: 保持结构复杂性但避免200-step窗口内结构性超时
                             # Target: Preserve complexity while avoiding structural timeout in 200-step horizon
     

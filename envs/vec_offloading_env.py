@@ -50,8 +50,8 @@ class VecOffloadingEnv(gym.Env):
     - adj: DAG邻接矩阵 (任务依赖关系)
     - neighbors: 邻居车辆特征 (固定维度填充)
     - task_mask: 可调度任务掩码 (用于Critic)
-    - action_mask: 动作目标掩码 (Local/RSU/V2V)，仅对应当前选中的任务
-    - subtask_index: 当前环境自动选择的任务索引 (标量)
+    - action_mask: 动作目标掩码 (Local/RSU/V2V)
+    - subtask_index: 兼容旧路径的子任务fallback索引 (标量，不再表示环境预选任务)
 
     动作空间 (Action Space):
     - target: 卸载目标 (0=Local, 1=RSU, 2+k=Vehicle k)
@@ -188,6 +188,25 @@ class VecOffloadingEnv(gym.Env):
         self._last_step_progress = {}
         self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH")
         self._audit_run_id = os.environ.get("RUN_ID")
+        self._last_oracle_step_info = []
+        self._episode_oracle_valid_count = 0
+        self._episode_oracle_match_flags = []
+        self._episode_action_regrets = []
+        self._episode_action_regrets_on_task = []
+        self._episode_target_match_flags = []
+        self._episode_target_regrets = []
+        self._episode_oracle_mode_counts = defaultdict(int)
+        self._episode_oracle_choice_counts = defaultdict(int)
+        self._episode_mode_match_flags = []
+        self._episode_mean_cost_rsu = []
+        self._episode_mean_cost_v2v = []
+        self._episode_cost_gap_v2v_minus_rsu = []
+        self._episode_v2v_beats_rsu_flags = []
+        self._comm_wait_guard_counts = defaultdict(int)
+        self._comm_wait_guard_trem = []
+        self._episode_rsu_gate_total = 0
+        self._episode_rsu_gate_blocked = 0
+        self._episode_rsu_gate_reason_counts = defaultdict(int)
         # [P2性能统计] 仅在active时间段统计服务速率
         self._active_time_steps = []  # 记录active_tasks>0的步数
         self._delta_w_active = []  # 对应步的计算量减少
@@ -1605,7 +1624,6 @@ class VecOffloadingEnv(gym.Env):
         contact_stability = self._sample_factor_level("contact_stability")
         rsu_access = self._sample_factor_level("rsu_accessibility_or_load")
 
-        workload_spec = dict(getattr(self.config, "WORKLOAD_LEVEL_SPECS", {}).get(workload_level, {}))
         density_spec = dict(getattr(self.config, "TRAFFIC_DENSITY_SPECS", {}).get(traffic_density, {}))
         helper_spec = dict(getattr(self.config, "HELPER_AVAILABILITY_SPECS", {}).get(helper_availability, {}))
         contact_spec = dict(getattr(self.config, "CONTACT_STABILITY_SPECS", {}).get(contact_stability, {}))
@@ -1626,18 +1644,9 @@ class VecOffloadingEnv(gym.Env):
             spawn_anchors = sorted({*rsu_centers, *boundaries}) if (rsu_centers or boundaries) else [0.25 * map_size, 0.5 * map_size, 0.75 * map_size]
 
         profile = {
-            "task_weights": dict(workload_spec.get("task_weights", {})),
-            "workload_adjustment": {
-                "comp_scale": float(workload_spec.get("comp_scale", 1.0)),
-                "data_scale": float(workload_spec.get("data_scale", 1.0)),
-                "edge_scale": float(workload_spec.get("edge_scale", 1.0)),
-                "node_shift": int(workload_spec.get("node_shift", 0)),
-                "deadline_alpha_shift": float(workload_spec.get("deadline_alpha_shift", 0.0)),
-                "deadline_slack_scale": float(workload_spec.get("deadline_slack_scale", 1.0)),
-            },
+            "workload_profile": workload_level,
             "role_probs": dict(helper_spec.get("role_probs", {})),
-            "role_cpu": dict(helper_spec.get("role_cpu", {})),
-            "helper_cpu_scale": float(helper_spec.get("helper_cpu_scale", 1.0)),
+            "helper_cpu_range": tuple(helper_spec.get("helper_cpu_range", (self.config.VEH_CPU_HELPER_MIN, self.config.VEH_CPU_HELPER_MAX))),
             "spawn_mode": str(density_spec.get("spawn_mode", "uniform")),
             "spawn_anchor_prob": float(density_spec.get("anchor_prob", 0.0)),
             "cluster_spread": float(density_spec.get("cluster_spread", 100.0)),
@@ -1664,21 +1673,28 @@ class VecOffloadingEnv(gym.Env):
     def _sample_vehicle_archetype(self):
         profile = getattr(self, "_episode_sampling_profile", {}) or {}
         role_probs = dict(profile.get("role_probs", {}))
-        role_cpu = dict(profile.get("role_cpu", {}))
-        if role_probs and role_cpu:
+        helper_cpu_range = tuple(profile.get("helper_cpu_range", (self.config.VEH_CPU_HELPER_MIN, self.config.VEH_CPU_HELPER_MAX)))
+        if role_probs:
             roles = list(role_probs.keys())
             probs = np.asarray([max(float(role_probs.get(role, 0.0)), 0.0) for role in roles], dtype=float)
             if float(np.sum(probs)) <= 0.0:
                 probs = np.ones(len(roles), dtype=float)
             probs = probs / float(np.sum(probs))
             role = str(np.random.choice(roles, p=probs))
-            lo, hi = role_cpu.get(role, (self.config.MIN_VEHICLE_CPU_FREQ, self.config.MAX_VEHICLE_CPU_FREQ))
+            if role == "helper":
+                lo, hi = helper_cpu_range
+            elif role == "weak":
+                lo, hi = (self.config.VEH_CPU_WEAK_MIN, self.config.VEH_CPU_WEAK_MAX)
+            else:
+                lo, hi = (self.config.MIN_VEHICLE_CPU_FREQ, self.config.MAX_VEHICLE_CPU_FREQ)
             lo = max(float(lo), 1e-9)
             hi = max(float(hi), lo)
             cpu_freq = float(np.random.uniform(lo, hi))
-            if role == "helper":
-                cpu_freq *= float(profile.get("helper_cpu_scale", 1.0))
-            cpu_freq = float(np.clip(cpu_freq, self.config.VEH_CPU_WEAK_MIN, self.config.MAX_VEHICLE_CPU_FREQ))
+            helper_cap = max(
+                float(getattr(self.config, "MAX_VEHICLE_CPU_FREQ", cpu_freq)),
+                float(getattr(self.config, "VEH_CPU_HELPER_MAX", cpu_freq)),
+            )
+            cpu_freq = float(np.clip(cpu_freq, self.config.VEH_CPU_WEAK_MIN, helper_cap))
             return {"role": role, "cpu_freq": cpu_freq}
         return {"role": "regular", "cpu_freq": self._sample_vehicle_cpu_freq()}
 
@@ -1929,10 +1945,7 @@ class VecOffloadingEnv(gym.Env):
         v.tx_power_dbm = self.config.TX_POWER_DEFAULT_DBM if hasattr(Cfg, 'TX_POWER_DEFAULT_DBM') else self.config.TX_POWER_MIN_DBM
 
         episode_profile = getattr(self, "_episode_sampling_profile", {}) or {}
-        sampling_profile = {
-            "task_profile_weights": dict(episode_profile.get("task_weights", {})),
-            "workload_adjustment": dict(episode_profile.get("workload_adjustment", {})),
-        }
+        sampling_profile = {"workload_profile": episode_profile.get("workload_profile")}
         adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=v.cpu_freq, sampling_profile=sampling_profile)
         v.task_dag = DAGTask(0, adj, prof, data, ddl)
         v.task_dag.deadline_gamma = extra.get("deadline_gamma")
@@ -2027,10 +2040,7 @@ class VecOffloadingEnv(gym.Env):
         # 分配新 DAG（继承原车辆 CPU 频率，保持异构性）
         old_id = vehicle.task_dag.id if vehicle.task_dag is not None else 0
         episode_profile = getattr(self, "_episode_sampling_profile", {}) or {}
-        sampling_profile = {
-            "task_profile_weights": dict(episode_profile.get("task_weights", {})),
-            "workload_adjustment": dict(episode_profile.get("workload_adjustment", {})),
-        }
+        sampling_profile = {"workload_profile": episode_profile.get("workload_profile")}
         adj, prof, data, ddl, extra = self.dag_gen.generate_from_config(veh_f=vehicle.cpu_freq, sampling_profile=sampling_profile)
         vehicle.task_dag = DAGTask(old_id + 1, adj, prof, data, ddl)
         vehicle.task_dag.deadline_gamma = extra.get("deadline_gamma")
@@ -2155,6 +2165,29 @@ class VecOffloadingEnv(gym.Env):
             return result
 
         active_v2i_count, active_v2i_vehicles, active_v2v_vehicles = self._get_active_tx_context_from_queues()
+        tx_timeout = float(max(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0), 0.0))
+
+        def _safe_job_wait(job, rate, queue_type):
+            rem_bits = float(max(getattr(job, "rem_bytes", 0.0), 0.0))
+            if rem_bits <= 0.0:
+                return 0.0
+            if rate is None or not np.isfinite(rate) or rate <= 1e-9:
+                self._comm_wait_guard_counts[f"{queue_type.lower()}_rate_nonpositive"] += 1
+                capped = tx_timeout if tx_timeout > 0.0 else 0.0
+                self._comm_wait_guard_trem.append(float(capped))
+                return float(capped)
+            t_rem = rem_bits / float(rate)
+            if not np.isfinite(t_rem):
+                self._comm_wait_guard_counts[f"{queue_type.lower()}_trem_nonfinite"] += 1
+                capped = tx_timeout if tx_timeout > 0.0 else 0.0
+                self._comm_wait_guard_trem.append(float(capped))
+                return float(capped)
+            if tx_timeout > 0.0 and t_rem > tx_timeout:
+                self._comm_wait_guard_counts[f"{queue_type.lower()}_trem_capped"] += 1
+                self._comm_wait_guard_trem.append(float(tx_timeout))
+                return float(tx_timeout)
+            self._comm_wait_guard_trem.append(float(t_rem))
+            return float(t_rem)
 
         # =====================================================================
         # V2I 队列：txq_v2i[src_node]
@@ -2187,10 +2220,7 @@ class VecOffloadingEnv(gym.Env):
                     active_v2i_vehicles=active_v2i_vehicles,
                     active_v2v_vehicles=active_v2v_vehicles,
                 )
-                rate = max(rate, 1e-6)
-
-                # 计算剩余时间（rem_bytes 实为 bits，无需再乘8）
-                t_rem = job.rem_bytes / rate
+                t_rem = _safe_job_wait(job, rate, "V2I")
                 result['total_v2i'] += t_rem
 
                 if job.kind == "EDGE":
@@ -2227,10 +2257,7 @@ class VecOffloadingEnv(gym.Env):
                     active_v2i_vehicles=active_v2i_vehicles,
                     active_v2v_vehicles=active_v2v_vehicles,
                 )
-                rate = max(rate, 1e-6)
-
-                # 计算剩余时间（rem_bytes 实为 bits，无需再乘8）
-                t_rem = job.rem_bytes / rate
+                t_rem = _safe_job_wait(job, rate, "V2V")
                 result['total_v2v'] += t_rem
 
                 if job.kind == "EDGE":
@@ -2402,20 +2429,36 @@ class VecOffloadingEnv(gym.Env):
             "cpu_exec": float(cpu_exec),
         }
 
-    def _estimate_snapshot_target_cost(self, vehicle, subtask_idx, target, task_comp=None, task_data=None,
-                                       power_dbm=None, comm_wait_dict=None,
-                                       active_v2i_count=None, active_v2i_vehicles=None,
-                                       active_v2v_vehicles=None):
-        """
-        统一 snapshot cost:
-        - Local/V2V: J = comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty
-        - RSU: J = comm_wait + tx_time + max(min_wait_proxy, (W_queue_cur + W_arrive_proxy) / service_rate) + w_i / F_RSU
+    def _estimate_latency_oracle(
+        self,
+        vehicle,
+        subtask_idx,
+        target,
+        task_comp=None,
+        task_data=None,
+        power_dbm=None,
+        comm_wait_dict=None,
+        active_v2i_count=None,
+        active_v2i_vehicles=None,
+        active_v2v_vehicles=None,
+        rate_source="expected",
+        include_rsu_contact_penalty=False,
+    ):
+        """Shared snapshot latency oracle for current mainline estimation paths.
+
+        This oracle is used by:
+        - phi / candidate-cost estimation
+        - selected-action latency diagnostics / reward-side snapshot estimate
+
+        It does not modify the real environment progression.
         """
         result = {
             "mode": "none",
             "target_id": None,
             "available": False,
             "J": float("inf"),
+            "predicted_finish_time": float("inf"),
+            "total_cost": float("inf"),
             "comm_wait": 0.0,
             "tx_time": 0.0,
             "cpu_wait": 0.0,
@@ -2434,20 +2477,69 @@ class VecOffloadingEnv(gym.Env):
         dag = getattr(vehicle, "task_dag", None)
         if dag is None:
             return result
+
         cycles = float(task_comp if task_comp is not None else self._get_remaining_cycles(dag, subtask_idx))
         data_bits = float(task_data if task_data is not None else self._get_upload_bytes(dag, subtask_idx))
         eps_rate = float(max(getattr(self.config, "EPS_RATE", 1e-9), 1e-12))
         comm_wait_dict = comm_wait_dict if comm_wait_dict is not None else self._compute_comm_wait(vehicle.id)
 
+        def _resolve_rate(dst_node, link_type):
+            src_node = ("VEH", int(vehicle.id))
+            dst_kind = str(link_type).lower()
+            def _expected_rate():
+                if dst_kind == "v2i":
+                    return max(
+                        float(
+                            self._estimate_link_rate_expected(
+                                vehicle.id,
+                                "rsu",
+                                int(dst_node[1]),
+                                power_dbm=power_dbm,
+                                active_v2i_count=active_v2i_count,
+                                active_v2i_vehicles=active_v2i_vehicles,
+                                active_v2v_vehicles=active_v2v_vehicles,
+                            )
+                        ),
+                        eps_rate,
+                    )
+                return max(
+                    float(
+                        self._estimate_link_rate_expected(
+                            vehicle.id,
+                            "v2v",
+                            int(dst_node[1]),
+                            power_dbm=power_dbm,
+                            active_v2i_count=active_v2i_count,
+                            active_v2i_vehicles=active_v2i_vehicles,
+                            active_v2v_vehicles=active_v2v_vehicles,
+                        )
+                    ),
+                    eps_rate,
+                )
+
+            if str(rate_source).lower() == "snapshot":
+                snap = getattr(self, "_rate_snapshot", None)
+                if snap is not None and snap.get("step", -1) == self.steps:
+                    key = self._rate_key(src_node, dst_node, link_type)
+                    rate = snap.get("links", {}).get(key)
+                    if rate is not None and np.isfinite(rate):
+                        return max(float(rate), eps_rate)
+                return _expected_rate()
+
+            return _expected_rate()
+
         if target is None or target == "Local":
             freq_self = max(float(getattr(vehicle, "cpu_freq", self.config.MIN_VEHICLE_CPU_FREQ)), 1e-9)
             cpu_wait = float(self._get_veh_queue_wait_time(vehicle.id, freq_self))
             cpu_exec = cycles / freq_self
+            total_cost = float(cpu_wait + cpu_exec)
             result.update({
                 "mode": "local",
                 "target_id": -1,
                 "available": True,
-                "J": float(cpu_wait + cpu_exec),
+                "J": total_cost,
+                "predicted_finish_time": total_cost,
+                "total_cost": total_cost,
                 "cpu_wait": cpu_wait,
                 "cpu_exec": float(cpu_exec),
             })
@@ -2462,27 +2554,31 @@ class VecOffloadingEnv(gym.Env):
             rsu = self.rsus[rsu_id]
             if not rsu.is_in_coverage(vehicle.pos) or self._is_rsu_queue_full(rsu_id, cycles):
                 return result
-            rate = self._estimate_link_rate_expected(
-                vehicle.id, "rsu", rsu_id, power_dbm=power_dbm,
-                active_v2i_count=active_v2i_count,
-                active_v2i_vehicles=active_v2i_vehicles,
-                active_v2v_vehicles=active_v2v_vehicles,
-            )
-            rate = max(float(rate), eps_rate)
+
+            rate = _resolve_rate(("RSU", int(rsu_id)), "V2I")
             tx_time = (data_bits / rate) if data_bits > 0 else 0.0
+            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
+            if tx_timeout > 0 and tx_time > tx_timeout:
+                tx_time = tx_timeout
+
             comm_wait = float(comm_wait_dict.get("total_v2i", 0.0))
             sojourn_terms = self._estimate_rsu_sojourn_proxy_terms(rsu_id, cycles, owner_vehicle_id=vehicle.id)
             contact_penalty, contact_time, contact_slack = self._estimate_contact_penalty_snapshot(
                 vehicle, ("RSU", rsu_id), comm_wait + tx_time
             )
+            total_cost = float(comm_wait + tx_time + sojourn_terms["cpu_wait"] + sojourn_terms["cpu_exec"])
+            if include_rsu_contact_penalty:
+                total_cost += float(contact_penalty)
             result.update({
                 "available": True,
-                "J": float(comm_wait + tx_time + sojourn_terms["cpu_wait"] + sojourn_terms["cpu_exec"]),
+                "J": total_cost,
+                "predicted_finish_time": total_cost,
+                "total_cost": total_cost,
                 "comm_wait": comm_wait,
                 "tx_time": float(tx_time),
                 "cpu_wait": float(sojourn_terms["cpu_wait"]),
                 "cpu_exec": float(sojourn_terms["cpu_exec"]),
-                "contact_penalty": 0.0,
+                "contact_penalty": float(contact_penalty) if include_rsu_contact_penalty else 0.0,
                 "delta_ext": 0.0,
                 "queue_workload": float(sojourn_terms["queue_workload"]),
                 "arrival_workload": float(sojourn_terms["arrival_workload"]),
@@ -2502,23 +2598,25 @@ class VecOffloadingEnv(gym.Env):
             dist = float(np.linalg.norm(np.asarray(helper.pos, dtype=float) - np.asarray(vehicle.pos, dtype=float)))
             if dist > float(self.config.V2V_RANGE) or self._is_veh_queue_full(helper_id, cycles):
                 return result
-            rate = self._estimate_link_rate_expected(
-                vehicle.id, "v2v", helper_id, power_dbm=power_dbm,
-                active_v2i_count=active_v2i_count,
-                active_v2i_vehicles=active_v2i_vehicles,
-                active_v2v_vehicles=active_v2v_vehicles,
-            )
-            rate = max(float(rate), eps_rate)
+
+            rate = _resolve_rate(("VEH", helper_id), "V2V")
             tx_time = (data_bits / rate) if data_bits > 0 else 0.0
+            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
+            if tx_timeout > 0 and tx_time > tx_timeout:
+                tx_time = tx_timeout
+
             comm_wait = float(comm_wait_dict.get("total_v2v", 0.0))
             cpu_wait = float(self._get_veh_queue_wait_time(helper_id, max(float(helper.cpu_freq), 1e-9)))
             cpu_exec = cycles / max(float(helper.cpu_freq), 1e-9)
             contact_penalty, contact_time, contact_slack = self._estimate_contact_penalty_snapshot(
                 vehicle, helper_id, comm_wait + tx_time
             )
+            total_cost = float(comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty)
             result.update({
                 "available": True,
-                "J": float(comm_wait + tx_time + cpu_wait + cpu_exec + contact_penalty),
+                "J": total_cost,
+                "predicted_finish_time": total_cost,
+                "total_cost": total_cost,
                 "comm_wait": comm_wait,
                 "tx_time": float(tx_time),
                 "cpu_wait": cpu_wait,
@@ -2530,6 +2628,30 @@ class VecOffloadingEnv(gym.Env):
             return result
 
         return result
+
+    def _estimate_snapshot_target_cost(self, vehicle, subtask_idx, target, task_comp=None, task_data=None,
+                                       power_dbm=None, comm_wait_dict=None,
+                                       active_v2i_count=None, active_v2i_vehicles=None,
+                                       active_v2v_vehicles=None):
+        # Mainline compatibility wrapper. Current UNIFIED-related estimation paths
+        # should use the shared latency oracle semantics from here onward.
+        rate_source = "expected"
+        if self._rate_snapshot is not None and self._rate_snapshot.get("step", -1) == self.steps:
+            rate_source = "snapshot"
+        return self._estimate_latency_oracle(
+            vehicle,
+            subtask_idx,
+            target,
+            task_comp=task_comp,
+            task_data=task_data,
+            power_dbm=power_dbm,
+            comm_wait_dict=comm_wait_dict,
+            active_v2i_count=active_v2i_count,
+            active_v2i_vehicles=active_v2i_vehicles,
+            active_v2v_vehicles=active_v2v_vehicles,
+            rate_source=rate_source,
+            include_rsu_contact_penalty=False,
+        )
 
     def _get_trust_stats_for_target(self, target):
         if not getattr(self.config, "TRUST_ENABLED", False) or not hasattr(self, "_trust_mgr"):
@@ -2861,6 +2983,52 @@ class VecOffloadingEnv(gym.Env):
         })
         return diag
 
+    def _record_snapshot_oracle_diag(self, diag, is_on_task):
+        if not isinstance(diag, dict):
+            return
+        if not int(diag.get("oracle_valid", 0) or 0):
+            return
+        self._episode_oracle_valid_count += 1
+        oracle_mode = str(diag.get("oracle_mode", "none") or "none").lower()
+        chosen_mode = str(diag.get("chosen_mode", "none") or "none").lower()
+        self._episode_oracle_mode_counts[oracle_mode] += 1
+        self._episode_oracle_choice_counts[(oracle_mode, chosen_mode)] += 1
+
+        mode_match = float(diag.get("snapshot_oracle_match", 0) or 0)
+        self._episode_oracle_match_flags.append(mode_match)
+        self._episode_mode_match_flags.append(mode_match)
+
+        regret = diag.get("snapshot_action_regret")
+        if regret is not None and np.isfinite(regret):
+            self._episode_action_regrets.append(float(regret))
+            if is_on_task:
+                self._episode_action_regrets_on_task.append(float(regret))
+
+        target_match = diag.get("target_match_within_mode")
+        if target_match is not None and np.isfinite(target_match):
+            self._episode_target_match_flags.append(float(target_match))
+
+        target_regret = diag.get("target_regret_within_mode")
+        if target_regret is not None and np.isfinite(target_regret):
+            self._episode_target_regrets.append(float(target_regret))
+
+        best_rsu = diag.get("J_best_rsu")
+        best_v2v = diag.get("J_best_v2v")
+        if best_rsu is not None and np.isfinite(best_rsu):
+            self._episode_mean_cost_rsu.append(float(best_rsu))
+        if best_v2v is not None and np.isfinite(best_v2v):
+            self._episode_mean_cost_v2v.append(float(best_v2v))
+        if best_rsu is not None and best_v2v is not None and np.isfinite(best_rsu) and np.isfinite(best_v2v):
+            gap = float(best_v2v) - float(best_rsu)
+            self._episode_cost_gap_v2v_minus_rsu.append(gap)
+            self._episode_v2v_beats_rsu_flags.append(1.0 if gap < 0.0 else 0.0)
+
+    def _safe_mean_or_nan(self, values):
+        return float(np.mean(values)) if values else float("nan")
+
+    def _safe_quantile_or_nan(self, values, q):
+        return float(np.quantile(values, q)) if values else float("nan")
+
     def _power_ratio_from_dbm(self, power_dbm):
         p_min = getattr(Cfg, "TX_POWER_MIN_DBM", power_dbm)
         p_max = getattr(Cfg, "TX_POWER_MAX_DBM", p_min)
@@ -3045,6 +3213,25 @@ class VecOffloadingEnv(gym.Env):
         self._audit_results_dir = os.environ.get("AUDIT_RESULTS_DIR", self._audit_results_dir)
         self._audit_t_est_path = os.environ.get("AUDIT_T_EST_REAL_PATH", self._audit_t_est_path)
         self._audit_run_id = os.environ.get("RUN_ID", self._audit_run_id)
+        self._last_oracle_step_info = []
+        self._episode_oracle_valid_count = 0
+        self._episode_oracle_match_flags = []
+        self._episode_action_regrets = []
+        self._episode_action_regrets_on_task = []
+        self._episode_target_match_flags = []
+        self._episode_target_regrets = []
+        self._episode_oracle_mode_counts = defaultdict(int)
+        self._episode_oracle_choice_counts = defaultdict(int)
+        self._episode_mode_match_flags = []
+        self._episode_mean_cost_rsu = []
+        self._episode_mean_cost_v2v = []
+        self._episode_cost_gap_v2v_minus_rsu = []
+        self._episode_v2v_beats_rsu_flags = []
+        self._comm_wait_guard_counts = defaultdict(int)
+        self._comm_wait_guard_trem = []
+        self._episode_rsu_gate_total = 0
+        self._episode_rsu_gate_blocked = 0
+        self._episode_rsu_gate_reason_counts = defaultdict(int)
         # Chain proxy reset
         if getattr(self.config, "CHAIN_ENABLED", False):
             self.chain_proxy = ChainProxySim(self.config, seed=seed)
@@ -4080,6 +4267,7 @@ class VecOffloadingEnv(gym.Env):
         # 奖励快照/速率冻结（所有方案均需要，保证时隙冻结）
         plan_by_vid = {p["vehicle_id"]: p for p in plans}
         reward_cache = {}
+        oracle_step_info = []
         self._refresh_f_max_const()
         self._capture_rate_snapshot(commit_plans)
         assert self._rate_snapshot is not None and self._rate_snapshot.get("step", -1) == self.steps, \
@@ -4143,6 +4331,44 @@ class VecOffloadingEnv(gym.Env):
                 "illegal_reason": plan.get("illegal_reason") if plan else None,  # [Stage 1] 传播原因
                 "power_ratio": power_ratio,
             }
+            oracle_diag = {
+                "oracle_valid": 0,
+                "chosen_mode": str(plan.get("planned_kind", "none")) if plan else "none",
+                "oracle_mode": "none",
+                "decision_state": str(plan.get("decision_state", "inactive")) if plan else "inactive",
+            }
+            if subtask_idx is not None:
+                candidate_set = self._last_candidate_set.get(v.id) or {}
+                ids_arr = candidate_set.get("ids", [])
+                types_arr = candidate_set.get("types", [])
+                mask_arr = candidate_set.get("mask", [])
+                rsu_ids_for_diag = [
+                    int(ids_arr[j])
+                    for j in range(min(len(ids_arr), len(mask_arr), len(types_arr)))
+                    if bool(mask_arr[j]) and int(types_arr[j]) == 2 and int(ids_arr[j]) >= 0
+                ]
+                helper_ids_for_diag = [
+                    int(ids_arr[j])
+                    for j in range(min(len(ids_arr), len(mask_arr), len(types_arr)))
+                    if bool(mask_arr[j]) and int(types_arr[j]) == 3 and int(ids_arr[j]) >= 0
+                ]
+                oracle_diag = self._compute_snapshot_oracle_diag(
+                    v,
+                    int(subtask_idx),
+                    chosen_target=target,
+                    chosen_mode=plan.get("planned_kind") if plan else None,
+                    task_comp=cycles,
+                    power_dbm=plan.get("power_dbm") if plan else None,
+                    helper_ids=helper_ids_for_diag,
+                    rsu_ids=rsu_ids_for_diag,
+                )
+                oracle_diag["decision_state"] = str(plan.get("decision_state", "active")) if plan else "active"
+                self._record_snapshot_oracle_diag(
+                    oracle_diag,
+                    is_on_task=not bool(plan.get("is_no_task_available", False)) if plan else False,
+                )
+            reward_cache[v.id]["oracle_diag"] = dict(oracle_diag)
+            oracle_step_info.append(dict(oracle_diag))
             if subtask_idx is not None:
                 key = (int(v.id), int(subtask_idx))
                 if key not in self._audit_subtask_est:
@@ -4166,6 +4392,7 @@ class VecOffloadingEnv(gym.Env):
                     if delta_t > 0:
                         self._v2v_gain_pos_sum += float(delta_t)
                         self._v2v_gain_pos_count += 1
+        self._last_oracle_step_info = list(oracle_step_info)
 
         # =====================================================================
         # [阶段1: 决策提交] Commit Decisions
@@ -5050,7 +5277,7 @@ class VecOffloadingEnv(gym.Env):
             terminated_reason = "idle"
             self._idle_terminate_count += 1
         self._last_terminated_reason = terminated_reason
-        
+
         # 在info中记录任务完成状态（用于分析）
         info = {
             'timeout': time_limit_reached,
@@ -5072,6 +5299,9 @@ class VecOffloadingEnv(gym.Env):
         info["feasible_cnt_v2v_mean"] = float(cand_stats.get("feasible_cnt_v2v_mean", 0.0))
         info["padded_cnt_v2v_mean"] = float(cand_stats.get("padded_cnt_v2v_mean", 0.0))
         info["masked_cnt_total_mean"] = float(cand_stats.get("masked_cnt_total_mean", 0.0))
+        info["rsu_gate_total_mean"] = float(cand_stats.get("rsu_gate_total_mean", 0.0))
+        info["rsu_gate_blocked_mean"] = float(cand_stats.get("rsu_gate_blocked_mean", 0.0))
+        info["rsu_gate_reason_counts"] = dict(cand_stats.get("rsu_gate_reason_counts", {}))
         info["cost_power"] = list(getattr(self, "_last_step_cost_power", [0.0] * len(self.vehicles)))
         info["cost_trust"] = list(getattr(self, "_last_step_cost_trust", [0.0] * len(self.vehicles)))
         info["physical_steps"] = int(getattr(self, "_episode_physical_steps", self._episode_steps))
@@ -5090,6 +5320,7 @@ class VecOffloadingEnv(gym.Env):
         # [审计系统] 收集本步审计数据
         info['audit_step_info'] = self._collect_audit_step_info(commit_plans)
         info['step_progress'] = dict(getattr(self, "_last_step_progress", {}))
+        info['oracle_step_info'] = list(getattr(self, "_last_oracle_step_info", []))
         if getattr(self.config, "DEBUG_PBRS_AUDIT", False):
             if 'pbrs_step_flags' in locals() and pbrs_step_flags is not None:
                 info['pbrs_step_flags'] = list(pbrs_step_flags)
@@ -5718,6 +5949,8 @@ class VecOffloadingEnv(gym.Env):
         step_feasible_v2v = []
         step_padded_v2v = []
         step_masked_total = []
+        step_rsu_gate_total = []
+        step_rsu_gate_blocked = []
 
         # --- CTDE global_state（集中训练共享）---
         # 维度布局（共30维，固定对应 CTDE_GLOBAL_DIM=30）：
@@ -5802,16 +6035,19 @@ class VecOffloadingEnv(gym.Env):
 
             task_schedulable = v.task_dag.get_action_mask()
             
-            # 仅作为无ready任务时的保底/兼容索引；标准建模下真正执行的任务由策略自己选。
-            selected_subtask_idx = v.task_dag.get_top_priority_task()
-            if selected_subtask_idx is None:
-                selected_subtask_idx = -1
+            # 兼容字段：仅供旧脚本/保底路径在无显式subtask时兜底。
+            # 不再承载“环境预选任务”语义，避免与策略实际采样的subtask混淆。
+            ready_idx = np.flatnonzero(np.asarray(task_schedulable, dtype=bool))
+            if ready_idx.size > 0:
+                compat_subtask_idx = int(ready_idx[0])
+            elif num_nodes > 0:
+                compat_subtask_idx = 0
+            else:
+                compat_subtask_idx = -1
 
             # 标准建模：观测中的资源状态不再绑定环境预选子任务。
             # 这里仅构造 task-agnostic 的资源状态/可达性；真正的任务相关可行性在step内按策略所选subtask结算。
-            rsu_id, rsu_rate, rsu_wait, rsu_dist, rsu_contact = self._select_best_rsu(
-                v, 0.0, 0.0
-            )
+            rsu_id, rsu_rate, rsu_wait, rsu_dist, rsu_contact = self._select_best_rsu(v, 0.0, 0.0)
             comm_wait = self._compute_comm_wait(v.id)
             comm_wait_total_v2i = comm_wait['total_v2i']
             comm_wait_total_v2v = comm_wait['total_v2v']
@@ -5829,6 +6065,19 @@ class VecOffloadingEnv(gym.Env):
             neighbor_dim = 8
             neighbors_array = np.zeros((self.config.MAX_NEIGHBORS, neighbor_dim), dtype=np.float32)
             candidate_info = []
+            rsu_candidate_info = []
+
+            remaining_deadline = float(self._get_deadline_remaining_seconds(v))
+            for rsu_obj in rsus_in_range_list:
+                rsu_wait_proxy = float(max(self._get_rsu_queue_wait_time(rsu_obj.id), 0.0))
+                predicted_finish_time = float(comm_wait_total_v2i + rsu_wait_proxy)
+                rsu_candidate_info.append({
+                    "id": int(rsu_obj.id),
+                    "remaining_deadline": remaining_deadline,
+                    "predicted_finish_time": predicted_finish_time,
+                    "total_time": predicted_finish_time,
+                    "queue_wait": rsu_wait_proxy,
+                })
 
             for j, other in enumerate(self.vehicles):
                 if v.id == other.id:
@@ -5855,7 +6104,6 @@ class VecOffloadingEnv(gym.Env):
                 # 标准建模：候选排序仅基于当前资源状态，不绑定某个环境预选任务。
                 t_finish_est = comm_wait_total_v2v + queue_wait_time
                 t_comm_phase = comm_wait_total_v2v
-
                 rel_vel = other.vel - v.vel
                 pos_diff = other.pos - v.pos
                 pos_diff_norm = np.linalg.norm(pos_diff)
@@ -5880,15 +6128,22 @@ class VecOffloadingEnv(gym.Env):
                     'rel_pos': rel_pos,
                     'rel_vel': rel_vel,
                     'queue_wait': queue_wait_time,
+                    'helper_queue_wait_est': queue_wait_time,
                     'cpu_freq': other.cpu_freq,
                     'rate': est_v2v_rate,
                     'contact_time': max(time_to_break, 0.0),
-                    'total_time': t_finish_est  # [改动B] 使用 T_finish_est 排序
+                    'contact_window_est': max(time_to_break, 0.0),
+                    'remaining_deadline': float(self._get_deadline_remaining_seconds(v)),
+                    't_tx_est': 0.0,
+                    't_exec_est': 0.0,
+                    'predicted_finish_time': t_finish_est,
+                    'total_time': t_finish_est,
                 })
 
             candidate_set = self.candidate_manager.build_candidate_set(
                 v, candidate_info, rsu_id if rsu_available else None,
-                rsus_in_range=rsus_in_range_ids  # [RSU选择] 传递覆盖范围内的RSU列表
+                rsus_in_range=rsus_in_range_ids,  # [RSU选择] 传递覆盖范围内的RSU列表
+                rsu_candidates=rsu_candidate_info,
             )
             candidate_ids = candidate_set["ids"]
             candidate_types = candidate_set["types"]
@@ -5903,6 +6158,12 @@ class VecOffloadingEnv(gym.Env):
             step_feasible_v2v.append(int(candidate_set.get("feasible_cnt_v2v", 0)))
             step_padded_v2v.append(int(candidate_set.get("padded_cnt_v2v", 0)))
             step_masked_total.append(int(candidate_set.get("masked_cnt_total", 0)))
+            step_rsu_gate_total.append(int(candidate_set.get("rsu_gate_total", 0)))
+            step_rsu_gate_blocked.append(int(candidate_set.get("rsu_gate_blocked", 0)))
+            self._episode_rsu_gate_total += int(candidate_set.get("rsu_gate_total", 0))
+            self._episode_rsu_gate_blocked += int(candidate_set.get("rsu_gate_blocked", 0))
+            for reason, count in (candidate_set.get("rsu_gate_reason_counts", {}) or {}).items():
+                self._episode_rsu_gate_reason_counts[str(reason)] += int(count)
 
             for idx, info in enumerate(v2v_slots):
                 if info is None:
@@ -6178,7 +6439,7 @@ class VecOffloadingEnv(gym.Env):
             subtask_mask_obs = padded_task_mask.astype(np.float32)
             node_valid_mask_obs = padded_node_valid_mask.astype(np.float32)
             action_mask_obs = padded_target_mask.astype(np.float32)
-            subtask_index_obs = np.array(int(selected_subtask_idx), dtype=np.int64)
+            subtask_index_obs = np.array(int(compat_subtask_idx), dtype=np.int64)
             obs_stamp_obs = np.array(int(self._episode_steps), dtype=np.int64)
             obs_list.append({
             'node_x': padded_node_feats,
@@ -6197,7 +6458,7 @@ class VecOffloadingEnv(gym.Env):
             'rate_prev': rate_prev,
             'resource_ids': resource_id_list,  # [新增] 资源节点ID列表
             'resource_raw': resource_raw,  # [新增] 资源原始物理特征
-            'subtask_index': subtask_index_obs,  # [新设计] 添加当前选中的任务索引
+            'subtask_index': subtask_index_obs,  # [兼容字段] fallback子任务索引，不表示环境预选任务
             # [新增] DAG拓扑特征
             'L_fwd': padded_L_fwd,
             'L_bwd': padded_L_bwd,
@@ -6251,6 +6512,9 @@ class VecOffloadingEnv(gym.Env):
             "feasible_cnt_v2v_mean": float(np.mean(step_feasible_v2v)) if step_feasible_v2v else 0.0,
             "padded_cnt_v2v_mean": float(np.mean(step_padded_v2v)) if step_padded_v2v else 0.0,
             "masked_cnt_total_mean": float(np.mean(step_masked_total)) if step_masked_total else 0.0,
+            "rsu_gate_total_mean": float(np.mean(step_rsu_gate_total)) if step_rsu_gate_total else 0.0,
+            "rsu_gate_blocked_mean": float(np.mean(step_rsu_gate_blocked)) if step_rsu_gate_blocked else 0.0,
+            "rsu_gate_reason_counts": dict(self._episode_rsu_gate_reason_counts),
         }
 
         self._episode_obs_stats["steps"] += 1
@@ -6887,50 +7151,26 @@ class VecOffloadingEnv(gym.Env):
         t_local = self._get_veh_queue_wait_time(vehicle.id, freq_self) + cycles / freq_self
         if target is None or target == 'Local':
             return t_local, 0.0
-        eps_rate = getattr(self.config, "EPS_RATE", 1e-9)
-        dag = vehicle.task_dag
-        din = self._get_upload_bytes(dag, subtask_idx)
-        
-        # [V6修复] 获取通信队列等待时间（可配置开关）
+
         use_comm_wait = getattr(self.config, 'USE_COMM_WAIT_IN_EST', True)
         comm_wait_dict = self._compute_comm_wait(vehicle.id) if use_comm_wait else {'total_v2i': 0.0, 'total_v2v': 0.0}
-
         if self._is_rsu_location(target):
             rsu_id = self._get_rsu_id_from_location(target)
             if rsu_id is not None:
                 self._assert_serving_rsu(vehicle, rsu_id, "reward_target")
-            dst_node = ("RSU", rsu_id if rsu_id is not None else 0)
-            rate = self._get_rate_from_snapshot(("VEH", vehicle.id), dst_node, "V2I")
-            rate = max(rate if rate is not None else 0.0, eps_rate)
-            t_tx = din / rate if din > 0 else 0.0
-            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
-            if tx_timeout > 0 and t_tx > tx_timeout:
-                t_tx = tx_timeout
-            freq_r = self.config.F_RSU
-            cpu_wait = 0.0
-            if rsu_id is not None and 0 <= rsu_id < len(self.rsus):
-                freq_r = self.rsus[rsu_id].cpu_freq
-                cpu_wait = self._get_rsu_queue_wait_time(rsu_id)
-            t_comp = cycles / max(freq_r, 1e-9)
-            comm_wait = comm_wait_dict['total_v2i']
-            return comm_wait + t_tx + cpu_wait + t_comp, t_tx
 
-        if isinstance(target, int):
-            dst_node = ("VEH", target)
-            rate = self._get_rate_from_snapshot(("VEH", vehicle.id), dst_node, "V2V")
-            rate = max(rate if rate is not None else 0.0, eps_rate)
-            t_tx = din / rate if din > 0 else 0.0
-            tx_timeout = float(getattr(self.config, "TX_TIMEOUT_SECONDS", 2.0))
-            if tx_timeout > 0 and t_tx > tx_timeout:
-                t_tx = tx_timeout
-            tgt_veh = self._get_vehicle_by_id(target)
-            freq_t = getattr(tgt_veh, "cpu_freq", self.config.MIN_VEHICLE_CPU_FREQ) if tgt_veh is not None else self.config.MIN_VEHICLE_CPU_FREQ
-            cpu_wait = self._get_veh_queue_wait_time(target, freq_t) if tgt_veh is not None else 0.0
-            t_comp = cycles / max(freq_t, 1e-9)
-            comm_wait = comm_wait_dict['total_v2v']
-            return comm_wait + t_tx + cpu_wait + t_comp, t_tx
-
-        return t_local, 0.0
+        est = self._estimate_latency_oracle(
+            vehicle,
+            subtask_idx,
+            target,
+            task_comp=cycles,
+            task_data=self._get_upload_bytes(vehicle.task_dag, subtask_idx),
+            power_dbm=None,
+            comm_wait_dict=comm_wait_dict,
+            rate_source="snapshot",
+            include_rsu_contact_penalty=False,
+        )
+        return float(est.get("J", t_local)), float(est.get("tx_time", 0.0))
 
     def _compute_slack_based_time_reward(self, vehicle, ctx):
         """
@@ -8278,6 +8518,9 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics["candidate_reachable_cnt_p95"] = float(np.percentile(reach, 95)) if reach else 0.0
             episode_metrics["candidate_dropped_cnt_mean"] = float(np.mean(drop)) if drop else 0.0
             episode_metrics["candidate_dropped_cnt_p95"] = float(np.percentile(drop, 95)) if drop else 0.0
+        episode_metrics["rsu_gate_total"] = int(getattr(self, "_episode_rsu_gate_total", 0))
+        episode_metrics["rsu_gate_blocked"] = int(getattr(self, "_episode_rsu_gate_blocked", 0))
+        episode_metrics["rsu_gate_reason_counts"] = dict(getattr(self, "_episode_rsu_gate_reason_counts", {}))
         episode_metrics["not_in_candidate_fallback_cnt"] = int(getattr(self, "_episode_not_in_candidate_fallback_cnt", 0))
         episode_metrics["illegal_by_connectivity_cnt"] = int(getattr(self, "_episode_illegal_by_connectivity_cnt", 0))
         if getattr(self, "_episode_domain_params", None):
@@ -8317,29 +8560,56 @@ class VecOffloadingEnv(gym.Env):
             episode_metrics['neighbor_count_mean'] = self._episode_obs_stats.get("neighbor_sum", 0.0) / obs_steps
             episode_metrics['best_v2v_rate_mean'] = self._episode_obs_stats.get("best_v2v_rate_sum", 0.0) / obs_steps
             episode_metrics['best_v2v_valid_rate'] = self._episode_obs_stats.get("best_v2v_valid_sum", 0.0) / obs_steps
-            episode_metrics['best_mode_compare_rate'] = 0.0
-            episode_metrics['best_mode_local_rate'] = 0.0
-            episode_metrics['best_mode_rsu_rate'] = 0.0
-            episode_metrics['best_mode_v2v_rate'] = 0.0
-            episode_metrics['v2v_beats_rsu_rate'] = 0.0
-            episode_metrics['mean_cost_gap_v2v_minus_rsu'] = 0.0
-            episode_metrics['mean_cost_rsu'] = 0.0
-            episode_metrics['mean_cost_v2v'] = 0.0
+        oracle_valid_count = int(getattr(self, "_episode_oracle_valid_count", 0))
+        oracle_den = float(max(oracle_valid_count, 1))
+        decision_den = float(max(int(getattr(self, "_episode_decision_steps", 0)), 1))
+        oracle_mode_counts = getattr(self, "_episode_oracle_mode_counts", {})
+        oracle_choice_counts = getattr(self, "_episode_oracle_choice_counts", {})
 
-        episode_metrics["oracle_match_rate"] = 0.0
-        episode_metrics["oracle_match_eps_abs_rate"] = 0.0
-        episode_metrics["oracle_match_eps_rel_rate"] = 0.0
-        episode_metrics["oracle_match_rate_on_task"] = 0.0
-        episode_metrics["action_regret_mean"] = 0.0
-        episode_metrics["action_regret_p50"] = 0.0
-        episode_metrics["action_regret_p95"] = 0.0
-        episode_metrics["action_regret_mean_on_task"] = 0.0
-        episode_metrics["target_match_within_mode_rate"] = 0.0
-        episode_metrics["target_regret_within_mode_mean"] = 0.0
-        episode_metrics["oracle_valid_count"] = 0
+        episode_metrics['best_mode_compare_rate'] = (
+            float(oracle_valid_count) / decision_den if oracle_valid_count > 0 else float("nan")
+        )
+        episode_metrics['best_mode_local_rate'] = (
+            float(oracle_mode_counts.get("local", 0)) / oracle_den if oracle_valid_count > 0 else float("nan")
+        )
+        episode_metrics['best_mode_rsu_rate'] = (
+            float(oracle_mode_counts.get("rsu", 0)) / oracle_den if oracle_valid_count > 0 else float("nan")
+        )
+        episode_metrics['best_mode_v2v_rate'] = (
+            float(oracle_mode_counts.get("v2v", 0)) / oracle_den if oracle_valid_count > 0 else float("nan")
+        )
+        episode_metrics['v2v_beats_rsu_rate'] = self._safe_mean_or_nan(getattr(self, "_episode_v2v_beats_rsu_flags", []))
+        episode_metrics['mean_cost_gap_v2v_minus_rsu'] = self._safe_mean_or_nan(
+            getattr(self, "_episode_cost_gap_v2v_minus_rsu", [])
+        )
+        episode_metrics['mean_cost_rsu'] = self._safe_mean_or_nan(getattr(self, "_episode_mean_cost_rsu", []))
+        episode_metrics['mean_cost_v2v'] = self._safe_mean_or_nan(getattr(self, "_episode_mean_cost_v2v", []))
+
+        episode_metrics["oracle_match_rate"] = self._safe_mean_or_nan(getattr(self, "_episode_oracle_match_flags", []))
+        episode_metrics["mode_match_rate"] = self._safe_mean_or_nan(getattr(self, "_episode_mode_match_flags", []))
+        episode_metrics["oracle_match_eps_abs_rate"] = float("nan")
+        episode_metrics["oracle_match_eps_rel_rate"] = float("nan")
+        episode_metrics["oracle_match_rate_on_task"] = self._safe_mean_or_nan(getattr(self, "_episode_oracle_match_flags", []))
+        episode_metrics["action_regret_mean"] = self._safe_mean_or_nan(getattr(self, "_episode_action_regrets", []))
+        episode_metrics["action_regret_p50"] = self._safe_quantile_or_nan(getattr(self, "_episode_action_regrets", []), 0.5)
+        episode_metrics["action_regret_p95"] = self._safe_quantile_or_nan(getattr(self, "_episode_action_regrets", []), 0.95)
+        episode_metrics["action_regret_mean_on_task"] = self._safe_mean_or_nan(
+            getattr(self, "_episode_action_regrets_on_task", [])
+        )
+        episode_metrics["target_match_within_mode_rate"] = self._safe_mean_or_nan(
+            getattr(self, "_episode_target_match_flags", [])
+        )
+        episode_metrics["target_regret_within_mode_mean"] = self._safe_mean_or_nan(
+            getattr(self, "_episode_target_regrets", [])
+        )
+        episode_metrics["oracle_valid_count"] = oracle_valid_count
         for om in ("local", "rsu", "v2v"):
+            om_total = float(max(int(oracle_mode_counts.get(om, 0)), 1))
             for cm in ("local", "rsu", "v2v"):
-                episode_metrics[f"oracle_{om}_chosen_{cm}_rate"] = 0.0
+                key = (om, cm)
+                episode_metrics[f"oracle_{om}_chosen_{cm}_rate"] = (
+                    float(oracle_choice_counts.get(key, 0)) / om_total if oracle_mode_counts.get(om, 0) > 0 else float("nan")
+                )
 
         if self._episode_dT_eff_values:
             episode_metrics['dT_eff_mean'] = float(np.mean(self._episode_dT_eff_values))
@@ -8347,6 +8617,11 @@ class VecOffloadingEnv(gym.Env):
         else:
             episode_metrics['dT_eff_mean'] = 0.0
             episode_metrics['dT_eff_p95'] = 0.0
+
+        episode_metrics['comm_wait_guard_total'] = int(sum(getattr(self, "_comm_wait_guard_counts", {}).values()))
+        episode_metrics['comm_wait_guard_counts'] = dict(getattr(self, "_comm_wait_guard_counts", {}))
+        guard_trem = getattr(self, "_comm_wait_guard_trem", [])
+        episode_metrics['comm_wait_guard_trem_p95'] = float(np.percentile(guard_trem, 95)) if guard_trem else 0.0
 
         if self._episode_energy_norm_values:
             episode_metrics['energy_norm_mean'] = float(np.mean(self._episode_energy_norm_values))

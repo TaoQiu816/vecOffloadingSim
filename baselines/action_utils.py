@@ -15,8 +15,8 @@ def choose_subtask_from_obs(obs: Dict, preferred: Optional[int] = None) -> int:
 
     Priority:
     1) explicit preferred index if valid in subtask_mask
-    2) env-provided subtask_index if valid in subtask_mask
-    3) first valid index in subtask_mask
+    2) first valid index in subtask_mask
+    3) env-provided subtask_index only as compatibility fallback
     4) first valid index in node_valid_mask (fallback for no-task states)
     5) 0
     """
@@ -32,17 +32,17 @@ def choose_subtask_from_obs(obs: Dict, preferred: Optional[int] = None) -> int:
         except Exception:
             pass
 
+    if valid_subtasks.size > 0:
+        return int(valid_subtasks[0])
+
     env_idx = obs.get("subtask_index", None)
     try:
         if env_idx is not None:
             e = int(env_idx)
-            if 0 <= e < len(subtask_mask) and subtask_mask[e] > 0:
+            if 0 <= e < len(node_valid_mask) and node_valid_mask[e] > 0:
                 return e
     except Exception:
         pass
-
-    if valid_subtasks.size > 0:
-        return int(valid_subtasks[0])
 
     valid_nodes = np.where(node_valid_mask > 0)[0]
     if valid_nodes.size > 0:
@@ -55,4 +55,3 @@ def attach_subtask(obs: Dict, action: Dict, preferred: Optional[int] = None) -> 
     out = dict(action)
     out["subtask"] = int(choose_subtask_from_obs(obs, preferred=preferred))
     return out
-

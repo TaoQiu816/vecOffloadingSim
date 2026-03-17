@@ -5,15 +5,14 @@ set -euo pipefail
 # Runs baselines in parallel by policy and merges parts.
 #
 # Usage:
-#   ./scripts/run_baselines_cpu_parallel.sh runs/exp_n20_chain 42 500 200
+#   ./scripts/run_baselines_cpu_parallel.sh runs/exp_n20_chain 42 500
 #
 # Args:
-#   run_dir seed num_episodes max_steps
+#   run_dir seed num_episodes
 
 RUN_DIR="${1:?run_dir required}"
 SEED="${2:-42}"
 NUM_EP="${3:-}"
-MAX_STEPS="${4:-200}"
 
 cd "$(dirname "$0")/.."
 
@@ -34,7 +33,7 @@ if [[ -z "${NUM_EP}" ]]; then
   fi
 fi
 
-echo "[BaselinesParallel] run_dir=${RUN_DIR} seed=${SEED} episodes=${NUM_EP} max_steps=${MAX_STEPS}"
+echo "[BaselinesParallel] run_dir=${RUN_DIR} seed=${SEED} episodes=${NUM_EP}"
 
 pids=()
 for p in "${POLICIES[@]}"; do
@@ -44,7 +43,6 @@ for p in "${POLICIES[@]}"; do
     --run-dir "${RUN_DIR}" \
     --num-episodes "${NUM_EP}" \
     --seed "${SEED}" \
-    --max-steps "${MAX_STEPS}" \
     --policies "${p}" \
     --output-csv "${out}" \
     >/dev/null 2>"${PARTS_DIR}/${p}.err" &

@@ -1,0 +1,17 @@
+{
+  "run_id": "latency_cleanup_300ep_seed42",
+  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42",
+  "status": "completed",
+  "created_at": "2026-03-16 20:56:01",
+  "git_commit": "3dec97759fecda09020643c5c0f4b71150e62267",
+  "config_hash": "faa0421556e7a98fa8d139c3fa0e8636270a8462fb1372455fff61298b6be469",
+  "config_snapshot_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42/logs/config_snapshot.json",
+  "completed_at": "2026-03-16 21:59:58",
+  "episodes_completed": 300,
+  "best_reward": 0.4890212491461446,
+  "best_success_rate_50ep": 0.9480000000000001,
+  "best_model_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42/models/best_model.pth",
+  "last_model_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42/models/last_model.pth",
+  "metrics_csv_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42/logs/metrics.csv",
+  "training_stats_csv_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/latency_cleanup_300ep_seed42/logs/training_stats.csv"
+}

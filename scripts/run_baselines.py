@@ -35,6 +35,15 @@ from train import (
 )
 
 
+def _bind_baseline_gate_horizon():
+    gate_steps = int(getattr(Cfg, "BASELINE_GATE_MAX_STEPS", getattr(Cfg, "MAX_STEPS", 0)))
+    if gate_steps <= 0:
+        raise ValueError(f"BASELINE_GATE_MAX_STEPS must be positive, got {gate_steps}")
+    Cfg.MAX_STEPS = gate_steps
+    TC.MAX_STEPS = gate_steps
+    return gate_steps
+
+
 def _get_git_commit() -> str:
     try:
         proc = subprocess.run(
@@ -132,19 +141,11 @@ def _apply_run_config_dump(run_dir):
         "k_epochs": "PPO_EPOCH",
         "entropy_coef": "ENTROPY_COEF",
         "max_episodes": "MAX_EPISODES",
-        "max_steps_per_ep": "MAX_STEPS",
         "device": "DEVICE_NAME",
     }
     for src_key, dst_key in tc_map.items():
         if src_key in data and hasattr(TC, dst_key):
             setattr(TC, dst_key, data[src_key])
-
-    # Some dumps also include MAX_STEPS at SystemConfig level; keep TrainConfig aligned.
-    if "MAX_STEPS" in data and hasattr(TC, "MAX_STEPS"):
-        try:
-            TC.MAX_STEPS = int(data["MAX_STEPS"])
-        except Exception:
-            pass
 
     return True
 
@@ -167,7 +168,6 @@ def _parse_args():
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--num-episodes", type=int, default=10)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--append", action="store_true", default=False)
     parser.add_argument("--episode-start", type=int, default=1)
     parser.add_argument(
@@ -208,8 +208,7 @@ def main():
 
     if args.seed is not None:
         Cfg.SEED = int(args.seed)
-    if args.max_steps is not None:
-        TC.MAX_STEPS = int(args.max_steps)
+    gate_steps = _bind_baseline_gate_horizon()
 
     _ensure_reward_jsonl(logs_dir)
 
@@ -221,7 +220,7 @@ def main():
         "git_commit": _get_git_commit(),
         "config_hash": snapshot_hash,
         "seed": int(getattr(Cfg, "SEED", 0)),
-        "max_steps": int(getattr(TC, "MAX_STEPS", 0)),
+        "max_steps": gate_steps,
         "num_episodes": int(args.num_episodes),
     }
     with open(os.path.join(run_dir, "baseline_run_meta.json"), "w", encoding="utf-8") as f:
@@ -272,7 +271,7 @@ def main():
     total_episodes = int(args.num_episodes)
 
     print(f"[Baselines] run_dir={run_dir}")
-    print(f"[Baselines] num_episodes={total_episodes} seed={Cfg.SEED} max_steps={getattr(TC, 'MAX_STEPS', None)}")
+    print(f"[Baselines] num_episodes={total_episodes} seed={Cfg.SEED} max_steps={gate_steps}")
     print(f"[Baselines] policies={baseline_policies}")
     t0 = time.time()
     rows_written = 0

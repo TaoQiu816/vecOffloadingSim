@@ -48,6 +48,15 @@ from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, EFTPPolicy
 from models.offloading_policy import OffloadingPolicyNetwork
 
 
+def _bind_eval_horizon():
+    eval_steps = int(getattr(Cfg, "EVAL_MAX_STEPS", getattr(Cfg, "MAX_STEPS", 0)))
+    if eval_steps <= 0:
+        raise ValueError(f"EVAL_MAX_STEPS must be positive, got {eval_steps}")
+    Cfg.MAX_STEPS = eval_steps
+    TC.MAX_STEPS = eval_steps
+    return eval_steps
+
+
 def _json_default(obj):
     if isinstance(obj, (np.floating,)):
         return float(obj)
@@ -117,6 +126,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
     avg_makespans = []
     deadline_meet_ratios = []
     
+    eval_steps = _bind_eval_horizon()
     for ep in tqdm(range(num_episodes), desc=f"{policy_name}"):
         obs_list, _ = env.reset(seed=ep)
         if hasattr(policy, "reset") and callable(getattr(policy, "reset")):
@@ -129,7 +139,7 @@ def evaluate_policy(env, policy, policy_name, num_episodes=50, use_network=False
         total_decisions = 0
         last_info = None
         
-        for step in range(TC.MAX_STEPS):
+        for step in range(eval_steps):
             # 获取动作
             current_obs = obs_list
             if use_network:

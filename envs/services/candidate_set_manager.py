@@ -13,6 +13,34 @@ class CandidateSetManager:
     def __init__(self, config):
         self.config = config
 
+    def _v2v_gate_reason(self, info: Dict) -> Optional[str]:
+        if not getattr(self.config, "V2V_CAND_GATE_ENABLED", False):
+            return None
+        rem_deadline = max(float(info.get("remaining_deadline", 0.0)), 0.0)
+        if rem_deadline <= 0.0:
+            return "deadline_nonpositive"
+        finish = float(info.get("predicted_finish_time", info.get("total_time", float("inf"))))
+        if not np.isfinite(finish):
+            return "finish_nonfinite"
+        return None
+
+    def _passes_v2v_gate(self, info: Dict) -> bool:
+        return self._v2v_gate_reason(info) is None
+
+    def _rsu_gate_reason(self, info: Dict) -> Optional[str]:
+        if not getattr(self.config, "RSU_CAND_GATE_ENABLED", False):
+            return None
+        rem_deadline = max(float(info.get("remaining_deadline", 0.0)), 0.0)
+        if rem_deadline <= 0.0:
+            return "deadline_nonpositive"
+        finish = float(info.get("predicted_finish_time", info.get("total_time", float("inf"))))
+        if not np.isfinite(finish):
+            return "finish_nonfinite"
+        return None
+
+    def _passes_rsu_gate(self, info: Dict) -> bool:
+        return self._rsu_gate_reason(info) is None
+
     def _sort_candidates(self, candidates: List[Dict]) -> List[Dict]:
         sort_by = getattr(self.config, "CANDIDATE_SORT_BY", "t_finish")
         if sort_by == "distance":
@@ -51,6 +79,7 @@ class CandidateSetManager:
         v2v_candidates: List[Dict],
         serving_rsu_id: Optional[int],
         rsus_in_range: Optional[List[int]] = None,  # 新增：覆盖范围内的RSU列表
+        rsu_candidates: Optional[List[Dict]] = None,
     ) -> Dict:
         max_targets = int(getattr(self.config, "MAX_TARGETS", 2))
         enable_rsu_selection = True
@@ -72,18 +101,43 @@ class CandidateSetManager:
         mask[0] = True
 
         rsus_available = set(rsus_in_range) if rsus_in_range else set()
+        rsu_info_map = {
+            int(info.get("id")): info
+            for info in (rsu_candidates or [])
+            if info is not None and info.get("id") is not None
+        }
+        rsu_gate_total = 0
+        rsu_gate_blocked = 0
+        rsu_gate_reason_counts: Dict[str, int] = {}
         for rsu_id in range(num_rsu):
             idx = rsu_start_idx + rsu_id
             if idx < max_targets:
                 ids[idx] = rsu_id
                 types[idx] = 2
-                mask[idx] = (rsu_id in rsus_available)
+                mask_val = bool(rsu_id in rsus_available)
+                if mask_val:
+                    rsu_gate_total += 1
+                    rsu_info = rsu_info_map.get(rsu_id)
+                    gate_reason = self._rsu_gate_reason(rsu_info) if rsu_info is not None else None
+                    if gate_reason is not None:
+                        mask_val = False
+                        rsu_gate_blocked += 1
+                        rsu_gate_reason_counts[gate_reason] = rsu_gate_reason_counts.get(gate_reason, 0) + 1
+                mask[idx] = mask_val
 
         # V2V candidates
-        sorted_info = self._sort_candidates(v2v_candidates)
+        admissible_v2v = [info for info in v2v_candidates if self._passes_v2v_gate(info)]
+        sorted_info = self._sort_candidates(admissible_v2v)
         reachable_cnt = len(sorted_info)
         mode = str(getattr(self.config, "CANDIDATE_MODE", "TOPK")).upper()
         if mode == "ALL":
+            # ALL means every currently in-range and action-mask-feasible helper.
+            # Fixed-length V2V slots are only padding carriers for the observation tensor.
+            if reachable_cnt > max_neighbors:
+                raise AssertionError(
+                    f"ALL mode requires padding capacity for all feasible helpers: "
+                    f"reachable_cnt={reachable_cnt}, max_neighbors={max_neighbors}"
+                )
             selected_info = sorted_info
         elif mode == "RANDOMK":
             max_k = int(getattr(self.config, "RANDOMK_K", self.config.MAX_NEIGHBORS))
@@ -140,6 +194,9 @@ class CandidateSetManager:
             "feasible_cnt_v2v": selected_cnt,
             "padded_cnt_v2v": padded_cnt_v2v,
             "masked_cnt_total": int(np.sum(mask)),
+            "rsu_gate_total": int(rsu_gate_total),
+            "rsu_gate_blocked": int(rsu_gate_blocked),
+            "rsu_gate_reason_counts": dict(rsu_gate_reason_counts),
         }
 
 

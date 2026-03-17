@@ -90,13 +90,14 @@ def apply_overfit_config(Cfg, TC):
     # Keep unified reward path with scaling (from previous fix)
     Cfg.REWARD_SCHEME = "UNIFIED"
     Cfg.REWARD_SCALE = 10.0
-    Cfg.MAX_STEPS = 40
+    Cfg.TRAIN_MAX_STEPS = 40
+    Cfg.BASELINE_GATE_MAX_STEPS = 40
+    Cfg.EVAL_MAX_STEPS = 40
 
     # ------------------------------------------------------------------
     # PPO / network settings for fast micro-overfit
     # ------------------------------------------------------------------
     TC.MAX_EPISODES = 300
-    TC.MAX_STEPS = 40
     TC.LOG_INTERVAL = 10
     TC.SAVE_INTERVAL = 1000
     TC.EVAL_INTERVAL = 1000

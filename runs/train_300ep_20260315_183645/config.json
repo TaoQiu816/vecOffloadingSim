@@ -1,0 +1,525 @@
+{
+    "SEED": 42,
+    "MAP_SIZE": 1000.0,
+    "NUM_LANES": 2,
+    "LANE_WIDTH": 3.5,
+    "NUM_VEHICLES": 20,
+    "V2V_TOP_K": 5,
+    "CANDIDATE_MODE": "ALL",
+    "TOPK_K": 5,
+    "RANDOMK_K": 5,
+    "CANDIDATE_SORT_BY": "t_finish",
+    "DEBUG_CANDIDATE_SET": false,
+    "V2V_DYNAMIC_K": true,
+    "V2V_TOP_K_MIN": 2,
+    "V2V_CANDIDATE_REL_TOL": 0.25,
+    "V2V_CANDIDATE_ABS_TOL": 0.2,
+    "ALL_FEASIBLE": true,
+    "MAX_NEIGHBORS": 19,
+    "VEHICLE_ARRIVAL_RATE": 0.0,
+    "VEL_MEAN": 10.0,
+    "VEL_STD": 2.0,
+    "VEL_MIN": 5.56,
+    "VEL_MAX": 13.89,
+    "MAX_VELOCITY": 13.89,
+    "VEHICLE_SPAWN_X_MIN": 0.0,
+    "VEHICLE_SPAWN_X_MAX": 1.0,
+    "DT": 0.1,
+    "TRAIN_MAX_STEPS": 300,
+    "BASELINE_GATE_MAX_STEPS": 300,
+    "EVAL_MAX_STEPS": 300,
+    "MAX_STEPS": 300,
+    "TERMINATE_ON_ALL_FINISHED": true,
+    "MAX_SCHEDULE_PER_STEP": 1,
+    "MAX_INFLIGHT_SUBTASKS_PER_VEHICLE": 0,
+    "NUM_RSU": 2,
+    "RSU_Y_DIST": 10.0,
+    "RSU_RANGE": 300.0,
+    "RSU_POS": [
+        500.0,
+        500.0
+    ],
+    "ENABLE_RSU_SELECTION": true,
+    "MAX_TARGETS": 22,
+    "USE_BLOCK_FADING": false,
+    "CFT_CACHE_STRICT_KEY": true,
+    "FC": 5900000000.0,
+    "C_LIGHT": 300000000.0,
+    "BW_V2I": 10000000.0,
+    "BW_V2V": 20000000.0,
+    "V2I_RATE_MODEL": "RB_SINR",
+    "V2I_RB_BW_HZ": 180000.0,
+    "V2I_NUM_RB": 24,
+    "V2I_ICI_ENABLED": true,
+    "V2I_FREQ_REUSE_FACTOR": 1,
+    "NOISE_POWER_DENSITY_DBM": -174,
+    "NOISE_FIGURE": 9,
+    "NOISE_POWER_DBM": -95.0,
+    "TX_POWER_UP_DBM": 20.0,
+    "TX_POWER_V2V_DBM": 20.0,
+    "TX_POWER_MIN_DBM": 13.0,
+    "TX_POWER_MAX_DBM": 23.0,
+    "PL_ALPHA_V2I": 28.0,
+    "PL_BETA_V2I": 2.5,
+    "PL_ALPHA_V2V": 28.0,
+    "PL_BETA_V2V": 3.3,
+    "V2V_INTERFERENCE_DBM": -95.0,
+    "V2V_RANGE": 200.0,
+    "V2V_NUM_RB": 10,
+    "V2V_BW_PER_RB": 2000000.0,
+    "HO_FREEZE_STEPS": 2,
+    "HO_HYST_DB": 3.0,
+    "MIN_RSU_STAY_STEPS": 5,
+    "V2I_HANDOVER_DELAY_STEPS": 2,
+    "MAX_V2V_RETRY": 2,
+    "TRUST_ENABLED": true,
+    "TRUST_P_RELIABLE_RANGE": [
+        0.9,
+        1.0
+    ],
+    "TRUST_P_UNRELIABLE_RANGE": [
+        0.3,
+        0.7
+    ],
+    "TRUST_P_RSU_RANGE": null,
+    "TRUST_P_VEH_RANGE": null,
+    "TRUST_RELIABLE_PROB": 1.0,
+    "TRUST_PRIOR_A": 4.0,
+    "TRUST_PRIOR_B": 1.0,
+    "TRUST_DELAY_STEPS": 3,
+    "TRUST_RESET_PER_EPISODE": true,
+    "TRUST_LCB_Z": 1.0,
+    "TRUST_LCB_MIN": 0.35,
+    "CHAIN_TRUST_DELAY_COUPLED": false,
+    "CHAIN_TRUST_DELAY_BASE_STEPS": 0,
+    "CHAIN_TRUST_DELAY_MIN_STEPS": 0,
+    "CHAIN_TRUST_DELAY_MAX_STEPS": 50,
+    "MALICIOUS_RATIO": 0.0,
+    "REP_INIT_MODE": "beta",
+    "REP_HONEST_BETA": [
+        18,
+        4
+    ],
+    "REP_MAL_BETA": [
+        4,
+        18
+    ],
+    "REP_OVERLAP": 0.05,
+    "RSU_REPUTATION": 0.95,
+    "RHO_MAP_MODE": "sigmoid",
+    "RHO_SIGMOID_K": 8.0,
+    "RHO_SIGMOID_TAU": 0.5,
+    "TRUST_OUTCOME_MODE": "prob_fail",
+    "TRUST_FAIL_SCOPE": "v2v_only",
+    "TRUST_FAIL_COST_MODE": "no_progress",
+    "DOMAIN_RANDOMIZATION": false,
+    "DR_V2V_RANGE_MIN": 200.0,
+    "DR_V2V_RANGE_MAX": 300.0,
+    "DR_RSU_RANGE_MIN": 280.0,
+    "DR_RSU_RANGE_MAX": 420.0,
+    "DR_DAG_FAT_MIN": 0.3,
+    "DR_DAG_FAT_MAX": 0.7,
+    "DR_DAG_DENSITY_MIN": 0.1,
+    "DR_DAG_DENSITY_MAX": 0.4,
+    "SNR_MIN_DB": -10.0,
+    "SNR_MAX_DB": 25.0,
+    "SNR_OFFSET_DB": 10.0,
+    "RICIAN_K_DB": 6.0,
+    "BETA_0_DB": -30,
+    "MIN_VEHICLE_CPU_FREQ": 1000000000.0,
+    "MAX_VEHICLE_CPU_FREQ": 1800000000.0,
+    "VEH_CPU_DIST_MODE": "uniform",
+    "VEH_CPU_HELPER_PROB": 0.25,
+    "VEH_CPU_WEAK_MIN": 1000000000.0,
+    "VEH_CPU_WEAK_MAX": 2000000000.0,
+    "VEH_CPU_HELPER_MIN": 2800000000.0,
+    "VEH_CPU_HELPER_MAX": 3600000000.0,
+    "WORKLOAD_PROFILE_SPECS": {
+        "light": {
+            "node_range": [
+                5,
+                8
+            ],
+            "total_comp": [
+                250000000.0,
+                800000000.0
+            ],
+            "total_data": [
+                300000.0,
+                1800000.0
+            ],
+            "edge_data": [
+                20000.0,
+                150000.0
+            ],
+            "deadline_alpha": [
+                1.9,
+                2.3
+            ],
+            "deadline_slack": 0.6
+        },
+        "medium": {
+            "node_range": [
+                8,
+                12
+            ],
+            "total_comp": [
+                1200000000.0,
+                2900000000.0
+            ],
+            "total_data": [
+                1130000.0,
+                4350000.0
+            ],
+            "edge_data": [
+                76000.0,
+                586000.0
+            ],
+            "deadline_alpha": [
+                1.8,
+                2.18
+            ],
+            "deadline_slack": 0.82
+        },
+        "heavy": {
+            "node_range": [
+                10,
+                18
+            ],
+            "total_comp": [
+                2700000000.0,
+                4800000000.0
+            ],
+            "total_data": [
+                2770000.0,
+                6340000.0
+            ],
+            "edge_data": [
+                178000.0,
+                871000.0
+            ],
+            "deadline_alpha": [
+                2.08,
+                2.46
+            ],
+            "deadline_slack": 1.2
+        }
+    },
+    "EXOGENOUS_LEVELS": [
+        "low",
+        "medium",
+        "high"
+    ],
+    "EXOGENOUS_FACTOR_PROBS": {
+        "workload_level": [
+            0.3,
+            0.45,
+            0.25
+        ],
+        "traffic_density": [
+            0.33,
+            0.34,
+            0.33
+        ],
+        "helper_availability": [
+            0.33,
+            0.34,
+            0.33
+        ],
+        "contact_stability": [
+            0.33,
+            0.34,
+            0.33
+        ],
+        "rsu_accessibility_or_load": [
+            0.33,
+            0.34,
+            0.33
+        ]
+    },
+    "TRAFFIC_DENSITY_SPECS": {
+        "low": {
+            "spawn_mode": "uniform",
+            "anchor_prob": 0.15,
+            "cluster_spread": 120.0
+        },
+        "medium": {
+            "spawn_mode": "anchored",
+            "anchor_prob": 0.65,
+            "cluster_spread": 85.0
+        },
+        "high": {
+            "spawn_mode": "anchored",
+            "anchor_prob": 0.9,
+            "cluster_spread": 50.0
+        }
+    },
+    "HELPER_AVAILABILITY_SPECS": {
+        "low": {
+            "role_probs": {
+                "weak": 0.3,
+                "regular": 0.67,
+                "helper": 0.03
+            },
+            "helper_cpu_range": [
+                2600000000.0,
+                3200000000.0
+            ]
+        },
+        "medium": {
+            "role_probs": {
+                "weak": 0.25,
+                "regular": 0.7,
+                "helper": 0.05
+            },
+            "helper_cpu_range": [
+                2800000000.0,
+                3400000000.0
+            ]
+        },
+        "high": {
+            "role_probs": {
+                "weak": 0.22,
+                "regular": 0.71,
+                "helper": 0.07
+            },
+            "helper_cpu_range": [
+                3000000000.0,
+                3600000000.0
+            ]
+        }
+    },
+    "CONTACT_STABILITY_SPECS": {
+        "low": {
+            "speed_mean": 10.6,
+            "speed_std": 3.0
+        },
+        "medium": {
+            "speed_mean": 10.0,
+            "speed_std": 2.0
+        },
+        "high": {
+            "speed_mean": 9.4,
+            "speed_std": 3.2
+        }
+    },
+    "RSU_ACCESSIBILITY_LOAD_SPECS": {
+        "low": {
+            "anchor_source": "boundaries",
+            "rsu_background_cycles": [
+                450000000.0,
+                700000000.0
+            ]
+        },
+        "medium": {
+            "anchor_source": "mixed",
+            "rsu_background_cycles": [
+                350000000.0,
+                600000000.0
+            ]
+        },
+        "high": {
+            "anchor_source": "rsu_centers",
+            "rsu_background_cycles": [
+                300000000.0,
+                450000000.0
+            ]
+        }
+    },
+    "F_RSU": 6000000000.0,
+    "RSU_NUM_PROCESSORS": 4,
+    "K_ENERGY": 1e-27,
+    "KAPPA": 1e-27,
+    "VEHICLE_QUEUE_CYCLES_LIMIT": 10000000000.0,
+    "RSU_QUEUE_CYCLES_LIMIT": 30000000000.0,
+    "MAX_VEH_QUEUE_SIZE": 20,
+    "DAG_SOURCE": "synthetic_small",
+    "DAG_LARGE_NODE_OPTIONS": [
+        20,
+        50,
+        100
+    ],
+    "WORKFLOW_JSON_PATH": "data/workflows/sample_workflow.json",
+    "MIN_NODES": 8,
+    "MAX_NODES": 18,
+    "DAG_FAT": 1.0,
+    "DAG_DENSITY": 0.24,
+    "DAG_REGULAR": 0.5,
+    "DAG_CCR": 0.2,
+    "TASK_CLASS_MIX_ENABLE": false,
+    "TASK_CLASS_B_PROB": 0.2,
+    "TASK_A_TOTAL_DATA_MIN": 300000.0,
+    "TASK_A_TOTAL_DATA_MAX": 12000000.0,
+    "TASK_A_TOTAL_COMP_MIN": 1000000000.0,
+    "TASK_A_TOTAL_COMP_MAX": 4000000000.0,
+    "TASK_A_DEADLINE_MIN": 0.4,
+    "TASK_A_DEADLINE_MAX": 1.0,
+    "TASK_B_TOTAL_DATA_MIN": 12000000.0,
+    "TASK_B_TOTAL_DATA_MAX": 45000000.0,
+    "TASK_B_TOTAL_COMP_MIN": 3000000000.0,
+    "TASK_B_TOTAL_COMP_MAX": 8000000000.0,
+    "TASK_B_DEADLINE_MIN": 1.0,
+    "TASK_B_DEADLINE_MAX": 2.5,
+    "TASK_COMP_SPLIT_JITTER": 0.6,
+    "TASK_DATA_SPLIT_JITTER": 0.8,
+    "MIN_COMP": 80000000.0,
+    "MAX_COMP": 600000000.0,
+    "MIN_DATA": 800000.0,
+    "MAX_DATA": 6000000.0,
+    "MIN_EDGE_DATA": 50000.0,
+    "MAX_EDGE_DATA": 2000000.0,
+    "MEAN_COMP_LOAD": 340000000.0,
+    "AVG_COMP": 340000000.0,
+    "DEADLINE_MODE": "LB_ALPHA",
+    "DEADLINE_TIGHTENING_MIN": 1.2,
+    "DEADLINE_TIGHTENING_MAX": 1.5,
+    "DEADLINE_ALPHA_MIN": 4.0,
+    "DEADLINE_ALPHA_MAX": 6.0,
+    "DEADLINE_LB_EPS": 0.02,
+    "DEADLINE_STEP_GUARD_DELTA": 3.0,
+    "DEADLINE_FIXED_MIN": 2.0,
+    "DEADLINE_FIXED_MAX": 5.0,
+    "DEADLINE_SLACK_SECONDS": 1.0,
+    "PRIORITY_W1": 100.0,
+    "PRIORITY_W2": 1.0,
+    "PRIORITY_W3": 1.0,
+    "NORM_MAX_CPU": 25000000000.0,
+    "NORM_MAX_COMP": 4000000000.0,
+    "NORM_MAX_DATA": 40000000.0,
+    "NORM_MAX_RATE_V2I": 50000000.0,
+    "NORM_MAX_RATE_V2V": 20000000.0,
+    "_RSU_MAX_WAIT": 5.0,
+    "_VEHICLE_MAX_WAIT": 10.0,
+    "NORM_MAX_WAIT_TIME": 12.0,
+    "SNAPSHOT_ORACLE_EPS_ABS": 0.01,
+    "SNAPSHOT_ORACLE_EPS_REL": 0.05,
+    "DELTA_CFT_SCALE": 10.0,
+    "DELTA_CFT_ENERGY_WEIGHT": 0.2,
+    "DELTA_CFT_CLIP_MIN": -1.0,
+    "DELTA_CFT_CLIP_MAX": 1.0,
+    "DIST_PENALTY_WEIGHT": 2.0,
+    "DIST_SAFE_FACTOR": 0.8,
+    "DIST_SENSITIVITY": 2.0,
+    "TIMEOUT_PENALTY_WEIGHT": 1.0,
+    "TIMEOUT_STEEPNESS": 3.0,
+    "PENALTY_LINK_BREAK": -20.0,
+    "PENALTY_OVERFLOW": -20.0,
+    "PENALTY_FAILURE": -20.0,
+    "TIME_LIMIT_PENALTY": -1.0,
+    "TIME_LIMIT_PENALTY_MODE": "fixed",
+    "TIME_LIMIT_PENALTY_K": 2.0,
+    "TIME_LIMIT_PENALTY_RATIO_CLIP": 3.0,
+    "SUCCESS_BONUS": 30.0,
+    "SUBTASK_SUCCESS_BONUS": 2.0,
+    "REWARD_MAX": 40.0,
+    "REWARD_MIN": -25.0,
+    "REWARD_SCALE": 10.0,
+    "REWARD_SCHEME": "UNIFIED",
+    "REWARD_ALPHA": 1.5,
+    "REWARD_BETA": 0.1,
+    "REWARD_GAMMA": 0.99,
+    "T_REF": 0.7,
+    "PHI_CLIP": 5.0,
+    "SHAPE_CLIP": 10.0,
+    "R_CLIP": 40.0,
+    "EPS_RATE": 1e-09,
+    "TX_TIMEOUT_SECONDS": 2.0,
+    "ILLEGAL_PENALTY": -2.0,
+    "PBRS_PHI_MODE": "STATE_ONLY",
+    "PBRS_PHI_POWER_DBM": 23.0,
+    "PBRS_PHI_ACTION_INVARIANT_CHECK": false,
+    "NO_TASK_PENALTY_DAG_DONE": 0.0,
+    "NO_TASK_PENALTY_BLOCKED": 0.0,
+    "NO_TASK_PENALTY_ASSIGNED": 0.0,
+    "ILLEGAL_ENABLE_DYNAMIC_PENALTY": false,
+    "TERMINAL_BONUS_SUCC": 30.0,
+    "TERMINAL_PENALTY_FAIL": -20.0,
+    "ENERGY_LAMBDA_PBRS": 0.0,
+    "P_MAX_WATT": 0.19952623149688797,
+    "E_REF": 1.0,
+    "E_CLIP": 10.0,
+    "LAT_ALPHA": 2.0,
+    "TIMEOUT_L1": 1.5,
+    "TIMEOUT_L2": 1.5,
+    "TIMEOUT_O0": 0.2,
+    "TIMEOUT_K": 3.0,
+    "ENERGY_LAMBDA": 0.03,
+    "POWER_LAMBDA": 0.015,
+    "R_SUCC": 24.0,
+    "R_FAIL": 24.0,
+    "P_SUCC": 1.0,
+    "P_FAIL": 1.0,
+    "W_TIME": 0.35,
+    "DT_IDLE": 0.01,
+    "W_ENERGY": 0.05,
+    "P_ENERGY": 1.5,
+    "W_INTERF": 0.03,
+    "P_INTERF": 1.5,
+    "W_ILLEGAL": 30.0,
+    "REWARD_PROGRESS_TNORM": 2.5,
+    "REWARD_PROGRESS_RMAX": 1.0,
+    "R_SUCCESS_ANCHOR": 3.0,
+    "ALPHA_SUCCESS": 2.0,
+    "R_FAIL_ANCHOR": 3.0,
+    "ALPHA_FAIL": 2.0,
+    "ALPHA_MISS": 2.0,
+    "MISS_CAP": 1.0,
+    "E_REF_UNIFIED": 0.02,
+    "I_REF_D0": 100.0,
+    "REWARD_REF_ENERGY_MIN": 0.02,
+    "REWARD_REF_EMA_ALPHA": 0.05,
+    "REWARD_REF_EMA_CAP": 1000.0,
+    "REWARD_REF_WARMUP_EPISODES": 200,
+    "REWARD_REF_FREEZE_AFTER_WARMUP": true,
+    "I_REF_MIN_UNIFIED": 3e-09,
+    "INTERF_RATIO_CLIP_UNIFIED": 3.0,
+    "REWARD_SCALE_E_RATIO_CAP": 1.5,
+    "ENABLE_PBRS": false,
+    "PBRS_BETA": 0.02,
+    "PBRS_GAMMA": 0.99,
+    "PBRS_Q": 1.0,
+    "PBRS_EPS": 0.001,
+    "PBRS_PHI_CLIP_UNIFIED": 5.0,
+    "CHAIN_ENABLED": false,
+    "CHAIN_MODE": "NONE",
+    "CHAIN_OBS_DIM": 5,
+    "CHAIN_USE_IN_OBS": true,
+    "CHAIN_RISK_WEIGHT_DEPOSIT": 0.0,
+    "CHAIN_RISK_WEIGHT_FAIL": 0.0,
+    "CHAIN_DEPOSIT_BASE": 1.0,
+    "CHAIN_DEPOSIT_SCALE": 0.0,
+    "CHAIN_CHARGE_RSU": true,
+    "CHAIN_BATCH_K": 1,
+    "CHAIN_SWITCH_PERIOD_STEPS": 200,
+    "CHAIN_P50_LOW": 0.0,
+    "CHAIN_P95_LOW": 0.0,
+    "CHAIN_PFAIL_LOW": 0.0,
+    "CHAIN_P50_HIGH": 0.0,
+    "CHAIN_P95_HIGH": 0.0,
+    "CHAIN_PFAIL_HIGH": 0.0,
+    "CHAIN_NOISE_STD": 0.0,
+    "DEBUG_PBRS_AUDIT": false,
+    "AUDIT_PER_DECISION_REWARD": false,
+    "AUDIT_FATAL_ON_SCHEME_ERROR": false,
+    "EDGE_RATE_RECOMPUTE_AUDIT": false,
+    "DEBUG_ASSERT_METRICS": false,
+    "EPISODE_JSONL_STDOUT": false,
+    "RESOURCE_RAW_DIM": 16,
+    "NORM_MAX_COMM_WAIT": 2.0,
+    "RATE_EMA_ALPHA": 0.05,
+    "RATE_RESERVOIR_SIZE": 256,
+    "RATE_MIN_SAMPLES": 32,
+    "STATS_RESERVOIR_SIZE": 256,
+    "STATS_SEED": 0,
+    "lr_actor": 0.0002,
+    "lr_critic": 0.0005,
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "clip_param": 0.25,
+    "batch_size": 256,
+    "k_epochs": 5,
+    "entropy_coef": 0.012,
+    "max_episodes": 300,
+    "max_steps_per_ep": 300,
+    "device": "cpu"
+}

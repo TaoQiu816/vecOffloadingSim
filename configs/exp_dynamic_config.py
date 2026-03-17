@@ -115,8 +115,9 @@ def apply_exp_dynamic_config(Cfg, TC):
     # 训练 / 评估默认参数
     # ------------------------------------------------------------------
     TC.MAX_EPISODES = 2000
-    Cfg.MAX_STEPS = 200
-    TC.MAX_STEPS = 200
+    Cfg.TRAIN_MAX_STEPS = 200
+    Cfg.BASELINE_GATE_MAX_STEPS = 200
+    Cfg.EVAL_MAX_STEPS = 200
     TC.LOG_INTERVAL = 20
     TC.EVAL_INTERVAL = 100
     TC.SAVE_INTERVAL = 200

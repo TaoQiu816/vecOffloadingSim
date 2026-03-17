@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from configs.config import SystemConfig as Cfg
+from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from train import evaluate_single_baseline_episode
 
@@ -29,6 +30,15 @@ AXIS_BUCKETS = {
 def _safe_mean(rows, key):
     vals = [float(r.get(key, float("nan"))) for r in rows if r.get(key) is not None and np.isfinite(float(r.get(key, float("nan"))))]
     return float(np.mean(vals)) if vals else float("nan")
+
+
+def _bind_baseline_gate_horizon():
+    gate_steps = int(getattr(Cfg, "BASELINE_GATE_MAX_STEPS", getattr(Cfg, "MAX_STEPS", 0)))
+    if gate_steps <= 0:
+        raise ValueError(f"BASELINE_GATE_MAX_STEPS must be positive, got {gate_steps}")
+    Cfg.MAX_STEPS = gate_steps
+    TC.MAX_STEPS = gate_steps
+    return gate_steps
 
 
 def _pilot_select_policy(episodes: int, seed: int):
@@ -106,6 +116,7 @@ def main():
     ap.add_argument("--out", type=str, default="runs/exogenous_gate_20260314/feasibility_records.csv")
     args = ap.parse_args()
 
+    _bind_baseline_gate_horizon()
     selected = {"policy": args.policy}
     pilot_rows = []
     if args.policy == "auto":

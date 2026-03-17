@@ -99,7 +99,7 @@ TRAINING_STATS_FIELDS = [
     "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_term",
     "actor_loss", "critic_loss", "critic_loss_raw_mean", "normalized_value_loss", "entropy", "approx_kl", "clip_frac",
     "cost_power_value_loss", "cost_trust_value_loss", "lambda_power", "lambda_trust",
-    "grad_norm", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
+    "grad_norm", "grad_norm_preclip", "grad_norm_postclip", "active_ratio", "actor_update_active_frac", "value_clip_fraction",
     "critic_loss_active", "critic_loss_inactive", "mode_aux_loss", "mode_aux_acc",
     "ppo_epochs_executed", "num_minibatches_executed", "mb_kl_max", "mb_kl_p95",
     "early_stop_epoch_idx", "early_stop_batch_idx",
@@ -108,6 +108,16 @@ TRAINING_STATS_FIELDS = [
 ]
 
 LEGACY_UNUSED = float("nan")
+
+
+def _reset_t_est_audit_file(audit_results_dir: str) -> str:
+    """Keep t_est audit scoped to the current training invocation, even for reused run-dirs."""
+    path = os.path.join(audit_results_dir, "t_est_real_records.jsonl")
+    _ensure_dir(audit_results_dir)
+    with open(path, "w", encoding="utf-8"):
+        pass
+    return path
+
 
 REQUIRED_COMPARE_COLUMNS = [
     "illegal_action_rate",
@@ -1528,17 +1538,11 @@ def main():
         if profile_max is not None:
             TC.MAX_EPISODES = int(profile_max)
 
-    if args.max_steps is not None:
-        TC.MAX_STEPS = int(args.max_steps)
-    elif env_max_steps is not None:
-        TC.MAX_STEPS = int(env_max_steps)
-    else:
-        # Respect SystemConfig overrides (e.g., CFG_PROFILE) if MAX_STEPS not explicitly set.
-        try:
-            if int(TC.MAX_STEPS) != int(Cfg.MAX_STEPS):
-                TC.MAX_STEPS = int(Cfg.MAX_STEPS)
-        except Exception:
-            pass
+    train_max_steps = int(getattr(Cfg, "TRAIN_MAX_STEPS", getattr(Cfg, "MAX_STEPS", 0)))
+    if train_max_steps <= 0:
+        raise ValueError(f"TRAIN_MAX_STEPS must be positive, got {train_max_steps}")
+    Cfg.MAX_STEPS = train_max_steps
+    TC.MAX_STEPS = train_max_steps
 
     if env_time_penalty_mode:
         Cfg.TIME_LIMIT_PENALTY_MODE = env_time_penalty_mode
@@ -1635,12 +1639,13 @@ def main():
     _ensure_dir(plots_dir)
     _ensure_dir(models_dir)
     _ensure_dir(audit_results_dir)
+    audit_t_est_path = _reset_t_est_audit_file(audit_results_dir)
     os.environ["RUN_ID"] = run_id
     os.environ["RUN_DIR"] = run_dir
     os.environ["MAX_EPISODES"] = str(TC.MAX_EPISODES)
     os.environ["SEED"] = str(Cfg.SEED)
     os.environ["AUDIT_RESULTS_DIR"] = audit_results_dir
-    os.environ["AUDIT_T_EST_REAL_PATH"] = os.path.join(audit_results_dir, "t_est_real_records.jsonl")
+    os.environ["AUDIT_T_EST_REAL_PATH"] = audit_t_est_path
 
     reward_jsonl_path = os.environ.get("REWARD_JSONL_PATH")
     if not reward_jsonl_path:
@@ -2101,6 +2106,7 @@ def main():
         "best_mode_local_rate",
         "best_mode_rsu_rate",
         "best_mode_v2v_rate",
+        "mode_match_rate",
         "oracle_match_rate",
         "oracle_match_eps_abs_rate",
         "oracle_match_eps_rel_rate",
@@ -2906,6 +2912,7 @@ def main():
         best_mode_local_rate = env_stats.get("best_mode_local_rate") if env_stats else None
         best_mode_rsu_rate = env_stats.get("best_mode_rsu_rate") if env_stats else None
         best_mode_v2v_rate = env_stats.get("best_mode_v2v_rate") if env_stats else None
+        mode_match_rate = env_stats.get("mode_match_rate") if env_stats else None
         oracle_match_rate = env_stats.get("oracle_match_rate") if env_stats else None
         oracle_match_eps_abs_rate = env_stats.get("oracle_match_eps_abs_rate") if env_stats else None
         oracle_match_eps_rel_rate = env_stats.get("oracle_match_eps_rel_rate") if env_stats else None
@@ -2945,29 +2952,6 @@ def main():
             r_time_on_task_abs_mean = LEGACY_UNUSED
             abs_ratio_on_task_r_margin = LEGACY_UNUSED
             abs_ratio_on_task_r_time = LEGACY_UNUSED
-            best_mode_compare_rate = LEGACY_UNUSED
-            best_mode_local_rate = LEGACY_UNUSED
-            best_mode_rsu_rate = LEGACY_UNUSED
-            best_mode_v2v_rate = LEGACY_UNUSED
-            oracle_match_rate = LEGACY_UNUSED
-            oracle_match_eps_abs_rate = LEGACY_UNUSED
-            oracle_match_eps_rel_rate = LEGACY_UNUSED
-            action_regret_mean = LEGACY_UNUSED
-            action_regret_p50 = LEGACY_UNUSED
-            action_regret_p95 = LEGACY_UNUSED
-            oracle_match_rate_on_task = LEGACY_UNUSED
-            action_regret_mean_on_task = LEGACY_UNUSED
-            target_match_within_mode_rate = LEGACY_UNUSED
-            target_regret_within_mode_mean = LEGACY_UNUSED
-            oracle_local_chosen_local_rate = LEGACY_UNUSED
-            oracle_local_chosen_rsu_rate = LEGACY_UNUSED
-            oracle_local_chosen_v2v_rate = LEGACY_UNUSED
-            oracle_rsu_chosen_local_rate = LEGACY_UNUSED
-            oracle_rsu_chosen_rsu_rate = LEGACY_UNUSED
-            oracle_rsu_chosen_v2v_rate = LEGACY_UNUSED
-            oracle_v2v_chosen_local_rate = LEGACY_UNUSED
-            oracle_v2v_chosen_rsu_rate = LEGACY_UNUSED
-            oracle_v2v_chosen_v2v_rate = LEGACY_UNUSED
         if avail_L is None: avail_L = 0.0
         if avail_R is None: avail_R = 0.0
         if avail_V is None: avail_V = 0.0
@@ -3402,6 +3386,7 @@ def main():
             "best_mode_local_rate": best_mode_local_rate,
             "best_mode_rsu_rate": best_mode_rsu_rate,
             "best_mode_v2v_rate": best_mode_v2v_rate,
+            "mode_match_rate": mode_match_rate,
             "oracle_match_rate": oracle_match_rate,
             "oracle_match_eps_abs_rate": oracle_match_eps_abs_rate,
             "oracle_match_eps_rel_rate": oracle_match_eps_rel_rate,
@@ -3600,6 +3585,8 @@ def main():
             "lambda_power": update_stats.get("lambda_power"),
             "lambda_trust": update_stats.get("lambda_trust"),
             "grad_norm": update_stats.get("grad_norm"),
+            "grad_norm_preclip": update_stats.get("grad_norm_preclip"),
+            "grad_norm_postclip": update_stats.get("grad_norm_postclip"),
             "active_ratio": update_stats.get("active_ratio"),
             "actor_update_active_frac": update_stats.get("actor_update_active_frac"),
             "value_clip_fraction": update_stats.get("value_clip_fraction"),
@@ -3776,6 +3763,7 @@ def main():
             "best_mode_local_rate": best_mode_local_rate,
             "best_mode_rsu_rate": best_mode_rsu_rate,
             "best_mode_v2v_rate": best_mode_v2v_rate,
+            "mode_match_rate": mode_match_rate,
             "oracle_match_rate": oracle_match_rate,
             "oracle_match_eps_abs_rate": oracle_match_eps_abs_rate,
             "oracle_match_eps_rel_rate": oracle_match_eps_rel_rate,

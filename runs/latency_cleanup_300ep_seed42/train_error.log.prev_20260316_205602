@@ -1,0 +1,26 @@
+[2026-03-16 19:25:17] Abnormal termination
+run_id=latency_cleanup_300ep_seed42
+run_dir=/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/latency_cleanup_300ep_seed42
+episode=1
+step=21
+exception=RuntimeError: [Assert] Snapshot rate missing for key=('V2I', 'VEH', 9, 'RSU', 1)
+traceback:
+Traceback (most recent call last):
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/train.py", line 4124, in <module>
+    main()
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/train.py", line 2298, in main
+    next_obs_list, rewards, terminated, truncated, info = env.step(actions)
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 4564, in step
+    phi_curr = float(self._estimate_decision_phi(v))
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 2680, in _estimate_decision_phi
+    est = self._estimate_snapshot_target_cost(
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 2597, in _estimate_snapshot_target_cost
+    return self._estimate_latency_oracle(
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 2514, in _estimate_latency_oracle
+    rate = _resolve_rate(("RSU", int(rsu_id)), "V2I")
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 2455, in _resolve_rate
+    return max(float(self._get_rate_from_snapshot(src_node, dst_node, link_type)), eps_rate)
+  File "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/envs/vec_offloading_env.py", line 1000, in _get_rate_from_snapshot
+    raise RuntimeError(f"[Assert] Snapshot rate missing for key={key}")
+RuntimeError: [Assert] Snapshot rate missing for key=('V2I', 'VEH', 9, 'RSU', 1)
+

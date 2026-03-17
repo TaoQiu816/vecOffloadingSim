@@ -55,7 +55,6 @@ def compute_unified_terminal_reward(success, finish_time, deadline, severity_fai
     alpha_fail = float(getattr(Cfg, "ALPHA_FAIL", 6.0))
     alpha_miss = float(getattr(Cfg, "ALPHA_MISS", 6.0))
     miss_cap = float(getattr(Cfg, "MISS_CAP", 2.0))
-
     if success and finish_time <= deadline:
         early_ratio = np.clip((deadline - finish_time) / deadline, 0.0, 1.0)
         r_term = r_success + alpha_success * early_ratio
