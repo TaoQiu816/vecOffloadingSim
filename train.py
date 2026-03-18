@@ -3159,9 +3159,12 @@ def main():
         deci_str = f"{_fmt_pct(frac_local, 0)}/{_fmt_pct(frac_rsu, 0)}/{_fmt_pct(frac_v2v, 0)}"
         lat_str = _fmt_float(task_duration_mean, 3)
         en_str = _fmt_float(energy_norm_mean, 3)
-        if task_success_rate > 0.01 and (task_duration_mean is None or task_duration_mean < 0.001):
+        # 合理性检查：只有当成功任务存在但缺少时长数据时才显示 !ERR
+        # completed_tasks_count > 0 表示确实有完成的任务（与 _episode_task_durations 非空对应）
+        # 排除 deadline=0 场景下的 "假性不一致"
+        if completed_tasks_count > 0 and (task_duration_mean is None or task_duration_mean < 0.001):
             lat_str = "!ERR"
-        if task_success_rate > 0.01 and (energy_norm_mean is None or energy_norm_mean < 0.001):
+        if completed_tasks_count > 0 and (energy_norm_mean is None or energy_norm_mean < 0.001):
             en_str = "!ERR"
         print(
             f"{episode:6d} {duration:7.1f}s {reward_mean:9.4f} "
