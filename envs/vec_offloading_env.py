@@ -4692,28 +4692,40 @@ class VecOffloadingEnv(gym.Env):
         # =====================================================================
         # [P03修复: Deadline检查] 在时间推进后立即检查所有任务的deadline
         # 修复问题: 原逻辑仅检查未完成任务，导致完成但超时的任务被误判为成功
-        # 正确逻辑:
-        #   1. 任务刚完成（is_finished且completion_time为None）：记录完成时间并检查
-        #   2. 任务未完成且未失败：检查当前时间是否超过deadline
+        # [关键修复] 任务完成时间记录必须独立于deadline检查
+        # 原因：deadline<=0的任务也需要记录completion_time用于统计
         # =====================================================================
         for v in self.vehicles:
             dag = v.task_dag
+            
+            # [Step 1] 记录任务完成时间（独立于deadline检查）
+            if dag.is_finished and not dag.is_failed:
+                if not getattr(dag, "_completion_logged", False):
+                    completion_abs = dag.get_completion_time_abs()
+                    elapsed = self.time - dag.start_time
+                    
+                    # 计算completion_time（如果还没有）
+                    if dag.completion_time is None:
+                        if completion_abs is not None:
+                            dag.completion_time = float(max(completion_abs - dag.start_time, 0.0))
+                        else:
+                            dag.completion_time = elapsed
+                    
+                    # 记录到列表（确保有效值）
+                    if dag.completion_time is not None and dag.completion_time > 0:
+                        self._episode_task_durations.append(dag.completion_time)
+                        dag._completion_logged = True
+            
+            # [Step 2] Deadline检查（仅对有deadline约束的任务）
             if dag.deadline <= 0:
-                continue  # 无deadline约束
+                continue  # 无deadline约束，跳过deadline检查
 
             completion_abs = dag.get_completion_time_abs()
             elapsed = self.time - dag.start_time
 
-            # Case 1: 任务刚完成，记录完成时间并检查是否超时
-            if dag.is_finished and dag.completion_time is None and not dag.is_failed:
-                if completion_abs is not None:
-                    dag.completion_time = float(max(completion_abs - dag.start_time, 0.0))
-                else:
-                    dag.completion_time = elapsed
-                if not getattr(dag, "_completion_logged", False):
-                    self._episode_task_durations.append(dag.completion_time)
-                    dag._completion_logged = True
-                if dag.completion_time > dag.deadline:
+            # Case 1: 任务完成，检查是否超时
+            if dag.is_finished and not dag.is_failed:
+                if dag.completion_time is not None and dag.completion_time > dag.deadline:
                     # 完成但超时，标记为失败
                     self._audit_deadline_checks += 1
                     self._audit_deadline_misses += 1
@@ -4895,7 +4907,9 @@ class VecOffloadingEnv(gym.Env):
                     self._reward_stats.add_metric("energy_norm", cost_power)
                     self._reward_stats.add_metric("I_total", float(i_total_all))
                     self._reward_stats.add_metric("I_total_abs", abs(float(i_total_all)))
-                self._episode_energy_norm_values.append(cost_power)
+                # [修复] 确保能耗值有效且被收集
+                if cost_power is not None and np.isfinite(cost_power):
+                    self._episode_energy_norm_values.append(float(cost_power))
                 self._episode_t_tx_values.append(float(step_tx_time.get(v.id, 0.0)))
                 self._episode_I_total_values.append(float(i_total_all))
                 self._episode_I_caused_input_values.append(float(i_caused_input))
@@ -4923,6 +4937,10 @@ class VecOffloadingEnv(gym.Env):
                     break
             if self.steps >= self.config.MAX_STEPS:
                 truncated = True
+            
+            # [关键修复] 在episode结束时记录统计信息
+            if terminated or truncated:
+                self._log_episode_stats(terminated, truncated)
             
             info = {
                 "episode_steps": self._episode_steps,

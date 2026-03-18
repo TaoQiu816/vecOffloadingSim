@@ -3157,6 +3157,7 @@ def main():
             print("-" * 128, flush=True)
 
         deci_str = f"{_fmt_pct(frac_local, 0)}/{_fmt_pct(frac_rsu, 0)}/{_fmt_pct(frac_v2v, 0)}"
+        
         lat_str = _fmt_float(task_duration_mean, 3)
         en_str = _fmt_float(energy_norm_mean, 3)
         # 合理性检查：只有当成功任务存在但缺少时长数据时才显示 !ERR
@@ -3186,6 +3187,16 @@ def main():
                 f"time_limit={ma_tl*100:.1f}% v2v={ma_v2v*100:.1f}%",
                 flush=True,
             )
+            # 添加奖励组成统计（UNIFIED方案）
+            if _is_unified:
+                r_prog_val = float(r_prog_mean) if r_prog_mean is not None and np.isfinite(r_prog_mean) else 0.0
+                r_term_val = float(r_term_mean) if r_term_mean is not None and np.isfinite(r_term_mean) else 0.0
+                r_illegal_val = float(r_illegal_mean) if r_illegal_mean is not None and np.isfinite(r_illegal_mean) else 0.0
+                print(
+                    f"  [RWRD] r_prog={_fmt_float(r_prog_val, 4)} r_term={_fmt_float(r_term_val, 4)} "
+                    f"r_illegal={_fmt_float(r_illegal_val, 4)}",
+                    flush=True,
+                )
             print(
                 f"  [PPO ] p_loss={_fmt_float(actor_loss, 4)} v_loss={_fmt_float(critic_loss, 4)} "
                 f"entropy={_fmt_float(entropy_val, 4)} grad={_fmt_float(grad_norm_val, 4)} "
