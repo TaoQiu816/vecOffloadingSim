@@ -1,2 +1,0 @@
-episodes,on_task_rate_mean,p_local_on_task,p_rsu_on_task,p_v2v_on_task,decision_collapse_max_frac,entropy_mean,power_ratio_std,interf_metric_nonzero_rate,r_interf_abs_nonzero_rate,r_risk_abs_nonzero_rate,flag_policy_collapse,flag_interf_not_activated,flag_power_head_nearly_constant,flag_no_task_dilution
-100,0.24371404430823207,0.0002538411985061,0.9986327685858077,0.0011133902156861921,0.9986327685858077,0.3128289262147709,0.01572808102844795,0.0,0.0,1.0,1.0,1.0,0.0,1.0

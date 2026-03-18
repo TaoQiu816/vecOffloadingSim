@@ -1,2 +1,0 @@
-   n           min            p5  p50  p95  max                                                                                 source
-1000 -6.329087e+09 -1.037400e+09  0.0  0.0  0.0 metrics_csv:runs/formal_rerun_n20_all_seed42_latest_patch_paperfix_v1/logs/metrics.csv

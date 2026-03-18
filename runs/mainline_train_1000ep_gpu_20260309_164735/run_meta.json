@@ -1,9 +1,0 @@
-{
-  "run_id": "mainline_train_1000ep_gpu_20260309_164735",
-  "run_dir": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260309_164735",
-  "status": "running",
-  "created_at": "2026-03-09 16:47:38",
-  "git_commit": "37258f4ce8d62de137395fb490405374ace5415a",
-  "config_hash": "2f86590eb900169ee070cb8cd5bdc68ae75c3dcd0202e18e6aba80942ef3c450",
-  "config_snapshot_path": "/root/vecOffloadingSim/runs/mainline_train_1000ep_gpu_20260309_164735/logs/config_snapshot.json"
-}

@@ -1,0 +1,296 @@
+{
+  "algorithm_style": "多智能体近端策略优化 (Multi-Agent PPO, MAPPO) with 集中式训练分布式执行 (CTDE)",
+  "global_structure": "集中式训练、分布式执行 (Centralized Training with Decentralized Execution, CTDE)",
+  "key_entities": {
+    "environment": {
+      "name": "VecOffloadingEnv (车联网边缘计算仿真环境)",
+      "inputs": [
+        "Actions (subtask, target, power) from N agents"
+      ],
+      "outputs": [
+        "Observations $O_t$ (node_x, adj, resource_raw, action_mask, etc.)",
+        "Rewards $R_t$ (unified step reward + terminal reward)",
+        "Done signals (terminated, truncated)",
+        "Info dict (episode_metrics, decision_step_mask)"
+      ],
+      "internal_details": [
+        "DAG Task Dynamics (依赖关系、状态转移)",
+        "Channel Model (V2V/V2I通信)",
+        "Queue System (FIFO传输队列、计算队列)",
+        "Reward Engine (UNIFIED奖励方案: 时延、能耗、干扰、终止奖励)",
+        "Trust Manager (信誉评估、恶意节点模拟)",
+        "Chain Proxy (区块链结算风险代理)"
+      ]
+    },
+    "agent_n": {
+      "name": "Agent N (车辆智能体)",
+      "sub_modules": {
+        "policy_network": {
+          "name": "OffloadingPolicyNetwork (Actor)",
+          "components": [
+            "DAG Embedding (节点特征、边特征、空间距离编码)",
+            "Edge-Enhanced Transformer (多头注意力 + 边偏置 + 空间偏置)",
+            "Resource Feature Encoder (资源特征编码)",
+            "Actor Head (Subtask选择 + Target选择 + Power控制)",
+            "Subtask Head: Categorical分布",
+            "Target Head: Categorical分布 (带Logit Bias)",
+            "Power Head: Beta分布 (条件于Target)"
+          ],
+          "outputs": [
+            "Subtask action (离散)",
+            "Target action (离散: Local/RSU/V2V)",
+            "Power action (连续: Beta分布)",
+            "Log probabilities"
+          ]
+        },
+        "value_network": {
+          "name": "Centralized Critic (集中式价值网络)",
+          "components": [
+            "共享Transformer编码器 (与Actor共享)",
+            "Global State Input (CTDE全局摘要)",
+            "Critic Head (状态价值估计)",
+            "Cost-Power Head (功率成本���值)",
+            "Cost-Trust Head (信任成本价值)"
+          ],
+          "outputs": [
+            "State Value $V(s)$",
+            "Cost-Power Value $V_{power}(s)$",
+            "Cost-Trust Value $V_{trust}(s)$"
+          ]
+        }
+      }
+    },
+    "replay_buffer": {
+      "name": "RolloutBuffer (经验回放缓冲区)",
+      "inputs": [
+        "Observations $O_t$",
+        "Actions $A_t$",
+        "Rewards $R_t$",
+        "Values $V_t$",
+        "Log probabilities",
+        "Active masks (区分有效决策与idle状态)",
+        "Cost values (power, trust)"
+      ],
+      "outputs": [
+        "Mini-batches for PPO update",
+        "GAE Advantages $\\hat{A}_t$",
+        "Returns $\\hat{R}_t$"
+      ],
+      "internal_details": [
+        "GAE (Generalized Advantage Estimation) 计算",
+        "支持动态车辆数量 (每步agent数可变)",
+        "Per-agent trajectory tracking",
+        "Advantage normalization (仅使用active样本)"
+      ]
+    },
+    "mappo_agent": {
+      "name": "MAPPOAgent (训练控制器)",
+      "inputs": [
+        "Network (OffloadingPolicyNetwork)",
+        "Buffer (RolloutBuffer)",
+        "Hyperparameters (LR, clip_param, entropy_coef, etc.)"
+      ],
+      "outputs": [
+        "Updated network parameters",
+        "Training statistics (loss, KL, clip_fraction, etc.)"
+      ],
+      "internal_details": [
+        "PPO Clipped Objective (策略梯度)",
+        "Value Loss (MSE with optional clipping)",
+        "Entropy Regularization (探索鼓励)",
+        "Dual Variable Update (Lagrangian约束: power, trust)",
+        "Gradient Clipping (MAX_GRAD_NORM)",
+        "Early Stopping (基于KL散度)",
+        "Separate optimizers for Actor/Critic heads"
+      ]
+    },
+    "training_loop": {
+      "name": "Training Loop (train.py主循环)",
+      "inputs": [
+        "Environment",
+        "Agent",
+        "Buffer",
+        "Training config"
+      ],
+      "outputs": [
+        "Trained model checkpoints",
+        "Training logs (CSV, JSONL)",
+        "Evaluation metrics"
+      ],
+      "internal_details": [
+        "Episode rollout (收集轨迹)",
+        "Decision-level sampling (仅在decision step采样)",
+        "Pending sample accumulation (跨物理步累积奖励)",
+        "Bootstrap value computation (episode结束时)",
+        "Multi-epoch PPO update (K epochs per episode)",
+        "Learning rate decay (optional)",
+        "Logit bias annealing (探索-利用平衡)",
+        "Late Guard (性能下降检测与回滚)",
+        "Baseline evaluation (对比Random/Local-Only/Greedy/EFT等)"
+      ]
+    }
+  },
+  "data_flows": [
+    {
+      "from": "Environment",
+      "to": "Agent N (Actor)",
+      "data": "Observations $O_t$ (node_x, adj, resource_raw, action_mask, global_state)"
+    },
+    {
+      "from": "Agent N (Actor)",
+      "to": "Environment",
+      "data": "Actions $A_t$ (subtask, target, power)"
+    },
+    {
+      "from": "Environment",
+      "to": "RolloutBuffer",
+      "data": "Transition tuple $(O_t, A_t, R_t, O_{t+1}, done)$"
+    },
+    {
+      "from": "Agent N (Critic)",
+      "to": "RolloutBuffer",
+      "data": "Value estimates $V_t$, Cost values"
+    },
+    {
+      "from": "RolloutBuffer",
+      "to": "RolloutBuffer (GAE)",
+      "data": "Raw trajectories → GAE Advantages $\\hat{A}_t$ and Returns $\\hat{R}_t$"
+    },
+    {
+      "from": "RolloutBuffer",
+      "to": "MAPPOAgent",
+      "data": "Mini-batches (obs, actions, advantages, returns, old_log_probs)"
+    },
+    {
+      "from": "MAPPOAgent",
+      "to": "Policy Network",
+      "data": "Gradient updates (backpropagation)"
+    },
+    {
+      "from": "MAPPOAgent",
+      "to": "Value Network",
+      "data": "Gradient updates (backpropagation)"
+    },
+    {
+      "from": "Training Loop",
+      "to": "Environment",
+      "data": "Reset signal (new episode)"
+    },
+    {
+      "from": "Training Loop",
+      "to": "MAPPOAgent",
+      "data": "Update trigger (after episode rollout)"
+    },
+    {
+      "from": "MAPPOAgent",
+      "to": "Training Loop",
+      "data": "Training statistics (loss, KL, entropy, etc.)"
+    }
+  ],
+  "special_features": [
+    "Parameter Sharing (所有车辆共享同一策略网络)",
+    "CTDE Architecture (集中式Critic读取global_state，分布式Actor仅用local observation)",
+    "Edge-Enhanced Transformer (边偏置 + 空间偏置增强DAG依赖建模)",
+    "Hybrid Action Space (离散Subtask/Target + 连续Power)",
+    "Conditional Power Distribution (Power分布显式依赖Target选择)",
+    "Logit Bias Annealing (Local/RSU/V2V探索偏置线性退火)",
+    "Active Sample Masking (区分有效决策与idle状态，避免无效样本污染)",
+    "Decision-level Sampling (仅在decision step采样，跨物理步累积奖励)",
+    "Dual Variable Lagrangian (约束优化: power budget, trust budget)",
+    "GAE with Dynamic Agent Count (支持每步车辆数变化)",
+    "Early Stopping based on KL Divergence (防止策略更新过大)",
+    "Late Guard Mechanism (检测性能下降并回滚到最佳checkpoint)",
+    "Multi-RSU Awareness (serving_rsu_onehot编码当前服务RSU)",
+    "Rate History (rate_prev编码上步链路速率，时序信号补齐)",
+    "Trust-aware Reward (信誉评估、恶意节点惩罚)",
+    "Chain Settlement Risk (区块链确认延迟与失败风险建模)"
+  ],
+  "training_paradigm": {
+    "algorithm": "PPO (Proximal Policy Optimization)",
+    "policy_update": "Clipped surrogate objective with KL penalty",
+    "value_update": "MSE loss with optional value clipping",
+    "advantage_estimation": "GAE (Generalized Advantage Estimation)",
+    "exploration": "Entropy regularization + Logit bias annealing",
+    "constraint_handling": "Lagrangian dual variables (power, trust budgets)",
+    "sample_efficiency": "Multi-epoch updates (K=10 epochs per episode)",
+    "stability": "Gradient clipping + Early stopping + Value normalization"
+  },
+  "network_architecture": {
+    "input_processing": [
+      "DAG Node Embedding (comp, data, status, in_degree, location)",
+      "Edge Feature Encoding (data_matrix → edge_bias)",
+      "Spatial Distance Encoding (shortest_path_matrix → spatial_bias)",
+      "Resource Feature Encoding (CPU, backlog, distance, contact, competition)"
+    ],
+    "backbone": "Edge-Enhanced Transformer (Multi-head Attention + Edge Bias + Spatial Bias)",
+    "actor_heads": [
+      "Subtask Head: Linear → Categorical (选择待执行子任务)",
+      "Target Head: Cross-Attention + Linear → Categorical (选择卸载目标)",
+      "Power Head: MLP → Beta(alpha, beta) (功率控制，条件于Target)"
+    ],
+    "critic_heads": [
+      "Value Head: Global Pooling + MLP → Scalar (状态价值)",
+      "Cost-Power Head: Global Pooling + MLP → Scalar (功率成本价值)",
+      "Cost-Trust Head: Global Pooling + MLP → Scalar (信任成本价值)"
+    ],
+    "parameter_sharing": "所有车辆共享同一网络参数 (Parameter Sharing)",
+    "ctde_mechanism": "Critic读取global_state (集中式训练)，Actor仅用local observation (分布式执行)"
+  },
+  "reward_structure": {
+    "scheme": "UNIFIED (统一奖励方案)",
+    "step_reward_components": [
+      "Time penalty: $-w_{time} \\cdot \\frac{\\Delta t}{T_d}$ (时延惩罚)",
+      "Energy penalty: $-w_{energy} \\cdot (\\frac{E}{E_{ref}})^{p_e}$ (能耗惩罚)",
+      "Interference penalty: $-w_{interf} \\cdot (\\frac{I}{I_{ref}})^{p_i}$ (干扰惩罚)",
+      "Illegal action penalty: $-w_{illegal}$ (非法动作惩罚)"
+    ],
+    "terminal_reward": [
+      "Success: $+R_{succ}$ (任务成功完成)",
+      "Failure: $-R_{fail}$ (任务失败)",
+      "Time limit: $-R_{fail} \\cdot severity$ (超时惩罚，基于失败严重程度)"
+    ],
+    "cost_signals": [
+      "Power cost: 功率消耗归一化 (用于Lagrangian约束)",
+      "Trust cost: 信任失败率 (用于Lagrangian约束)"
+    ]
+  },
+  "key_hyperparameters": {
+    "learning_rate_actor": "3e-4",
+    "learning_rate_critic": "1e-3",
+    "gamma": "0.99 (discount factor)",
+    "gae_lambda": "0.95 (GAE smoothing)",
+    "clip_param": "0.2 (PPO clipping range)",
+    "entropy_coef": "0.01 (entropy regularization)",
+    "value_coef": "0.5 (value loss weight)",
+    "max_grad_norm": "0.5 (gradient clipping)",
+    "ppo_epochs": "10 (K epochs per episode)",
+    "mini_batch_size": "64",
+    "target_kl": "0.01 (early stopping threshold)",
+    "embed_dim": "128 (d_model)",
+    "num_heads": "4 (multi-head attention)",
+    "num_layers": "3 (Transformer layers)"
+  },
+  "evaluation_metrics": {
+    "primary": [
+      "Task Success Rate (任务成功率)",
+      "Vehicle Success Rate (车辆成功率)",
+      "Subtask Success Rate (子任务成功率)"
+    ],
+    "secondary": [
+      "Mean CFT (平均任务完成时间)",
+      "Deadline Miss Rate (截止时间错过率)",
+      "Time Limit Rate (超时率)",
+      "Energy Consumption (能耗)",
+      "Interference Level (干扰水平)",
+      "Decision Distribution (Local/RSU/V2V比例)"
+    ],
+    "training_diagnostics": [
+      "Policy Loss (策略损失)",
+      "Value Loss (价值损失)",
+      "Entropy (策略熵)",
+      "KL Divergence (KL散度)",
+      "Clip Fraction (裁剪比例)",
+      "Gradient Norm (梯度范数)"
+    ]
+  }
+}

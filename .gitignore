@@ -101,3 +101,15 @@ runs/**/models/*.pth
 !runs/**/models/best_model.pth
 !runs/**/models/last_model.pth
 **/audit_results/
+
+# 分析和清理文档（不同步到git）
+REWARD_*.md
+SIMULATION_*.md
+LEGACY_*.md
+FINAL_*.md
+*_CLEANUP_*.md
+*_FIX_*.md
+*_AUDIT_*.md
+*_VERIFICATION_*.md
+*_ANALYSIS_*.md
+PROJECT_CLEANUP_*.md

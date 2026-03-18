@@ -45,27 +45,31 @@ def compute_failure_severity(finish_time, deadline, remaining_ratio=1.0, unrecov
 
 
 def compute_unified_terminal_reward(success, finish_time, deadline, severity_fail=0.0):
+    """
+    计算终止奖励，重标定到[-2, 2]范围
+    - Success: [1.0, 2.0] = 1.0 + early_ratio
+    - Miss: [-2.0, -1.0] = -(1.0 + miss_ratio)
+    - Fail: [-2.0, -1.0] = -(1.0 + fail_ratio)
+    """
     if deadline <= 0:
         deadline = 1.0
     finish_time = float(max(finish_time, 0.0))
     deadline = float(deadline)
-    r_success = float(getattr(Cfg, "R_SUCCESS_ANCHOR", 12.0))
-    alpha_success = float(getattr(Cfg, "ALPHA_SUCCESS", 6.0))
-    r_fail = float(getattr(Cfg, "R_FAIL_ANCHOR", 12.0))
-    alpha_fail = float(getattr(Cfg, "ALPHA_FAIL", 6.0))
-    alpha_miss = float(getattr(Cfg, "ALPHA_MISS", 6.0))
-    miss_cap = float(getattr(Cfg, "MISS_CAP", 2.0))
+    
     if success and finish_time <= deadline:
+        # 成功且未超时：[1.0, 2.0]
         early_ratio = np.clip((deadline - finish_time) / deadline, 0.0, 1.0)
-        r_term = r_success + alpha_success * early_ratio
+        r_term = 1.0 + early_ratio
         term_type = "success"
     elif finish_time > deadline:
-        miss_ratio = np.clip((finish_time - deadline) / deadline, 0.0, miss_cap)
-        r_term = -(r_fail + alpha_miss * miss_ratio)
+        # 超时：[-2.0, -1.0]
+        miss_ratio = np.clip((finish_time - deadline) / deadline, 0.0, 1.0)
+        r_term = -(1.0 + miss_ratio)
         term_type = "miss"
     else:
-        sev = np.clip(float(severity_fail), 0.0, miss_cap)
-        r_term = -(r_fail + alpha_fail * sev)
+        # 失败：[-2.0, -1.0]
+        fail_ratio = np.clip(float(severity_fail), 0.0, 1.0)
+        r_term = -(1.0 + fail_ratio)
         term_type = "fail"
 
     return float(r_term), {
@@ -90,23 +94,6 @@ def compute_cost_trust(trust_lcb, config=None):
     return float(np.clip(1.0 - float(np.clip(trust_lcb, 0.0, 1.0)), 0.0, 1.0))
 
 
-def compute_absolute_reward(*args, **kwargs):
-    dT_rem = float(kwargs.get("dT_rem", args[0] if len(args) > 0 else 0.0))
-    dt = float(kwargs.get("dt", args[3] if len(args) > 3 else getattr(Cfg, "DT", 0.1)))
-    reward_min = float(kwargs.get("reward_min", getattr(Cfg, "REWARD_MIN", -10.0)))
-    reward_max = float(kwargs.get("reward_max", getattr(Cfg, "REWARD_MAX", 10.0)))
-    reward = float(np.clip(dT_rem - dt, reward_min, reward_max))
-    return reward, {"dT": dT_rem, "dt_used": dt}
-
-
-def compute_unified_pbrs(*args, **kwargs):
-    return 0.0
-
-
-def compute_phi_lb(*args, **kwargs):
-    return 0.0
-
-
 __all__ = [
     "clip_reward",
     "compute_progress_reward",
@@ -116,7 +103,4 @@ __all__ = [
     "compute_cost_power",
     "compute_cost_trust",
     "is_benign_trust_mode",
-    "compute_absolute_reward",
-    "compute_unified_pbrs",
-    "compute_phi_lb",
 ]

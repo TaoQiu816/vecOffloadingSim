@@ -1,7 +1,0 @@
-{
-  "run_id": "train600_seed42_20260219_141820",
-  "run_dir": "/root/vecOffloadingSim/runs/train600_seed42_20260219_141820",
-  "created_at": "2026-02-19 14:18:22",
-  "git_commit": "0d82509e6730f4b0b6136afa04e6fade447f2f3c",
-  "config_hash": "739350c59075629a961f115f5ad02de019ebcbb862b7f6f41efaa775e08b1e07"
-}

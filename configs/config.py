@@ -792,28 +792,16 @@ class SystemConfig:
     # 终局 Terminal（注意：UNIFIED 路径使用的是 R_SUCC/R_FAIL，不是 TERMINAL_BONUS_*）
     # 当前主奖励为 margin-term-illegal；终局项需要足够强作为目标锚点，避免 reward 过稀疏。
     # 取 24 作为折中：高于过弱的 12，但显著低于会长期主导的 50。
-    R_SUCC = 24.0                   # 成功奖励系数 R_s（UNIFIED terminal）
-    R_FAIL = 24.0                   # 失败惩罚系数 R_f（UNIFIED terminal）
-    P_SUCC = 1.0                    # 成功奖励指数 p_s
-    P_FAIL = 1.0                    # 失败惩罚指数 p_f
-    # 每步 Step-wise
-    W_TIME = 0.35                   # 时间推进惩罚权重 w_t（保守默认；更大尺度需经中长程验证后再固化）
-    DT_IDLE = 0.01                  # 时间项最小步长，dt_used=max(dt,DT_IDLE) 防止dt=0套利
-    # 主奖励固定为:
-    # 真实时间推进 + 终局成功/失败 + 轻量能耗/真实干扰 + illegal
-    W_ENERGY = 0.05                 # 能耗惩罚权重 w_e
-    P_ENERGY = 1.5                  # 能耗惩罚指数 p_e (>1 超线性惩罚极端功率)
-    W_INTERF = 0.03                 # 干扰惩罚权重 w_I
-    P_INTERF = 1.5                  # 干扰惩罚指数 p_I (>1 超线性惩罚极端干扰)
+    # UNIFIED方案奖励参数
+    # 奖励公式: r = r_prog + r_term + r_illegal
+    # - r_prog: 进度奖励，基于post-decision phi的改善，范围[-1, 1]
+    # - r_term: 终止奖励，重标定到[-2, 2]
+    #   * Success: [1.0, 2.0] = 1.0 + early_ratio
+    #   * Miss: [-2.0, -1.0] = -(1.0 + miss_ratio)
+    #   * Fail: [-2.0, -1.0] = -(1.0 + fail_ratio)
+    # - r_illegal: 非法动作惩罚，-30.0
+    
     W_ILLEGAL = 30.0                # 非法动作惩罚 w_ill
-    REWARD_PROGRESS_TNORM = 2.5
-    REWARD_PROGRESS_RMAX = 1.0
-    R_SUCCESS_ANCHOR = 3.0
-    ALPHA_SUCCESS = 2.0
-    R_FAIL_ANCHOR = 3.0
-    ALPHA_FAIL = 2.0
-    ALPHA_MISS = 2.0
-    MISS_CAP = 1.0
     # E_ref / I_ref
     # 奖励中能耗项仅统计 INPUT_TX 发射能耗（comm_queue_service: energy = p_tx * time_used）。
     # 实测上界: P_MAX_WATT * DT = 0.1995W * 0.1s ≈ 0.02J。将 E_REF 设为与上界同量级，

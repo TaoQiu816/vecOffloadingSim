@@ -1,9 +1,0 @@
-file,title
-cn_algo_fig01_core_convergence.png,核心收敛指标
-cn_algo_fig02_policy_distribution.png,卸载策略占比演化
-cn_algo_fig03_reward_component_ratio.png,奖励分量占比演化
-cn_algo_fig04_trust_interference.png,信誉与干扰演化
-cn_algo_fig05_candidate_diagnostics.png,候选与可行性诊断
-algo_window_summary.csv,窗口统计
-algo_phase_summary.csv,阶段统计
-algo_last200_stability_std.csv,后200稳定性标准差

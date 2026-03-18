@@ -73,9 +73,6 @@ FINAL_ENV = {
     "TRUST_PRIOR_B": 1.0,
     # Paper-unique reward weights (single formula)
     "REWARD_SCHEME": "UNIFIED",
-    "W_TIME": 0.35,
-    "W_ENERGY": 0.10,
-    "W_INTERF": 0.10,
     "W_RISK": 0.10,
     "W_ILLEGAL": 30.0,
     "R_SUCC": 20.0,

@@ -1,3 +1,0 @@
-  n       min        p5       p50  p95  max            source
-512 -44.72136 -0.000643 -0.000007  0.0 -0.0 random_policy:2ep
-[PASS] r_interf min >= -10000 across evaluated sources.

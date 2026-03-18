@@ -62,9 +62,6 @@ STAGE_B_ENV = {
     "DEADLINE_ALPHA_MAX": 4.0,
     "DEADLINE_SLACK_SECONDS": 0.20,
     # 论文统一奖励（与StageA/StageC保持同一套）
-    "W_TIME": 0.35,
-    "W_ENERGY": 0.05,
-    "W_INTERF": 0.03,
     "W_RISK": 0.04,
     "W_ILLEGAL": 30.0,
     "R_SUCC": 50.0,

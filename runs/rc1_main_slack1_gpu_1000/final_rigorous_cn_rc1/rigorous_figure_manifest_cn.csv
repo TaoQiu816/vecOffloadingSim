@@ -1,6 +1,0 @@
-file,title_cn
-cn_fig_01_trends_full.png,全程趋势对比（核心指标）
-cn_fig_02_window_robustness.png,多窗口稳健性对比
-cn_fig_03_phase_evolution.png,分阶段演化对比
-cn_fig_04_pairwise_winrate_heatmap.png,逐Episode配对胜率热图
-cn_fig_05_tail_boxplots.png,尾段分布与稳定性对比
