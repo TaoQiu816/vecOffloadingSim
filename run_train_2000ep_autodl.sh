@@ -13,13 +13,12 @@ echo "========================================="
 echo ""
 echo "[1/4] 开始训练..."
 python train.py \
-    --episodes 2000 \
+    --max-episodes 2000 \
     --seed 42 \
     --device cuda \
-    --save-freq 100 \
-    --eval-freq 100 \
-    --log-freq 10 \
-    --plot-freq 200
+    --save-interval 100 \
+    --eval-interval 100 \
+    --log-interval 10
 
 # 检查训练是否成功
 if [ $? -eq 0 ]; then
