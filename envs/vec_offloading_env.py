@@ -4913,6 +4913,25 @@ class VecOffloadingEnv(gym.Env):
                 if step_unified_illegal_trigger_count > 0:
                     self._reward_stats.add_counter("illegal_trigger_unified", int(step_unified_illegal_trigger_count))
 
+            # [BugFix] UNIFIED分支必须有return语句
+            # 计算终止条件
+            terminated = False
+            truncated = False
+            for v in self.vehicles:
+                if v.task_dag.is_failed or v.task_dag.is_finished:
+                    terminated = True
+                    break
+            if self.steps >= self.config.MAX_STEPS:
+                truncated = True
+            
+            info = {
+                "episode_steps": self._episode_steps,
+                "task_success_rate": float(sum(1 for v in self.vehicles if v.task_dag.is_finished) / max(len(self.vehicles), 1)),
+            }
+            
+            obs_list = self._get_obs()
+            return obs_list, rewards, terminated, truncated, info
+
     def _calculate_global_cft_critical_path(self):
         """
         [关键方法] 计算全局关键路径完成时间 (CFT)
