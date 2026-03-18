@@ -1,0 +1,9 @@
+{
+  "run_id": "run_20260319_032045",
+  "run_dir": "/root/vecOffloadingSim/runs/run_20260319_032045",
+  "status": "running",
+  "created_at": "2026-03-19 03:20:45",
+  "git_commit": "5d3119fe511d1452e20fd8a147e2c2eb623cc33d",
+  "config_hash": "0d61fd321975bd2d4617e9d271ee8414fa6277cc4dfec2f39d97a584963e3b03",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/run_20260319_032045/logs/config_snapshot.json"
+}
