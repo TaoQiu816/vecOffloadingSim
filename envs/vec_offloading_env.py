@@ -7578,14 +7578,28 @@ class VecOffloadingEnv(gym.Env):
             float(v2v_break_count) / float(v2v_tx_jobs) if v2v_tx_jobs > 0 else 0.0
         )
 
+        # 检查数据一致性
+        completed_tasks_count = len(self._episode_task_durations)
+        task_success_count = sum(1 for v in self.vehicles if v.task_dag.is_finished and not v.task_dag.is_failed)
+        
         if self._episode_task_durations:
             episode_metrics['task_duration_mean'] = float(np.mean(self._episode_task_durations))
             episode_metrics['task_duration_p95'] = float(np.percentile(self._episode_task_durations, 95))
-            episode_metrics['completed_tasks_count'] = len(self._episode_task_durations)
+            episode_metrics['completed_tasks_count'] = completed_tasks_count
         else:
             episode_metrics['task_duration_mean'] = 0.0
             episode_metrics['task_duration_p95'] = 0.0
             episode_metrics['completed_tasks_count'] = 0
+            
+            # 一致性检查：如果有成功任务但没有记录时长，发出警告
+            if task_success_count > 0:
+                import warnings
+                warnings.warn(
+                    f"[Metrics Inconsistency] Episode {self.episode_count}: "
+                    f"{task_success_count} tasks succeeded but no durations recorded. "
+                    f"This may indicate a data collection timing issue.",
+                    RuntimeWarning
+                )
 
         # Deadline / CP meta (helps reward scale reasoning)
         try:

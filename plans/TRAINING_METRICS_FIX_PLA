@@ -1,0 +1,336 @@
+# 训练指标统计修复方案（强制正确显示）
+
+## 问题根源
+
+经过深入代码追踪，发现指标收集的关键代码在 [`envs/vec_offloading_env.py:4708-4715`](envs/vec_offloading_env.py:4708):
+
+```python
+# Case 1: 任务刚完成，记录完成时间并检查是否超时
+if dag.is_finished and dag.completion_time is None and not dag.is_failed:
+    if completion_abs is not None:
+        dag.completion_time = float(max(completion_abs - dag.start_time, 0.0))
+    else:
+        dag.completion_time = elapsed
+    if not getattr(dag, "_completion_logged", False):
+        self._episode_task_durations.append(dag.completion_time)  # ← 关键：只在这里记录
+        dag._completion_logged = True
+```
+
+**问题**：
+1. 只有在 `dag.completion_time is None` 时才记录
+2. 如果任务在早期step完成，但后续step没有触发这个条件，就不会记录
+3. 能耗记录在 [`envs/vec_offloading_env.py:4898`](envs/vec_offloading_env.py:4898)，依赖于每步的 reward 计算
+
+## 必须修复的问题
+
+### 问题1：任务完成时间可能漏记
+
+**症状**：
+- Episode有5%任务成功（T_SR=5%）
+- 但 `task_duration_mean=0.0`
+- 说明 `self._episode_task_durations` 列表为空
+
+**根本原因**：
+- 任务完成的判定逻辑可能有时序问题
+- `_completion_logged` 标志可能在某些情况下未正确设置
+
+### 问题2：能耗统计可能不完整
+
+**症状**：
+- `energy_norm_mean` 显示为 `-`（None）
+
+**根本原因**：
+- 能耗记录在 [`step()`](envs/vec_offloading_env.py:4898) 中，依赖 `cost_power`
+- 如果 reward 计算跳过或异常，能耗就不会记录
+
+## 修复方案
+
+### 方案A：增强任务完成时间记录（推荐）
+
+**目标**：确保所有完成任务都被记录
+
+**修改位置**：[`envs/vec_offloading_env.py:7581-7588`](envs/vec_offloading_env.py:7581)
+
+**当前代码**：
+```python
+if self._episode_task_durations:
+    episode_metrics['task_duration_mean'] = float(np.mean(self._episode_task_durations))
+    episode_metrics['task_duration_p95'] = float(np.percentile(self._episode_task_durations, 95))
+    episode_metrics['completed_tasks_count'] = len(self._episode_task_durations)
+else:
+    episode_metrics['task_duration_mean'] = 0.0
+    episode_metrics['task_duration_p95'] = 0.0
+    episode_metrics['completed_tasks_count'] = 0
+```
+
+**修复代码**：
+```python
+# 【修��】确保所有已完成任务都被统计
+if not self._episode_task_durations:
+    # 如果列表为空，但有任务完成，从vehicles重新收集
+    for v in self.vehicles:
+        if v.task_dag.is_finished and not v.task_dag.is_failed:
+            if v.task_dag.completion_time is not None and v.task_dag.completion_time > 0:
+                # 检查是否已记录（避免重复）
+                if not getattr(v.task_dag, "_completion_logged", False):
+                    self._episode_task_durations.append(v.task_dag.completion_time)
+                    v.task_dag._completion_logged = True
+
+if self._episode_task_durations:
+    episode_metrics['task_duration_mean'] = float(np.mean(self._episode_task_durations))
+    episode_metrics['task_duration_p95'] = float(np.percentile(self._episode_task_durations, 95))
+    episode_metrics['completed_tasks_count'] = len(self._episode_task_durations)
+else:
+    # 【修复】如果仍然为空，但success_rate > 0，记录警告
+    if episode_metrics.get('task_success_rate', 0.0) > 0.01:
+        print(
+            f"[WARNING] Episode has {episode_metrics['task_success_rate']*100:.1f}% success rate "
+            f"but no task durations recorded. This indicates a data collection bug.",
+            flush=True
+        )
+    episode_metrics['task_duration_mean'] = 0.0
+    episode_metrics['task_duration_p95'] = 0.0
+    episode_metrics['completed_tasks_count'] = 0
+```
+
+### 方案B：增强能耗统计记录
+
+**修改位置**：[`envs/vec_offloading_env.py:7560-7565`](envs/vec_offloading_env.py:7560)
+
+**当前代码**：
+```python
+if self._episode_energy_norm_values:
+    episode_metrics['energy_norm_mean'] = float(np.mean(self._episode_energy_norm_values))
+    episode_metrics['energy_norm_p95'] = float(np.percentile(self._episode_energy_norm_values, 95))
+else:
+    episode_metrics['energy_norm_mean'] = 0.0
+    episode_metrics['energy_norm_p95'] = 0.0
+```
+
+**修复代码**：
+```python
+if self._episode_energy_norm_values:
+    episode_metrics['energy_norm_mean'] = float(np.mean(self._episode_energy_norm_values))
+    episode_metrics['energy_norm_p95'] = float(np.percentile(self._episode_energy_norm_values, 95))
+else:
+    # 【修复】如果能耗列表为空，但有决策步数，记录警告
+    decision_steps = int(getattr(self, "_episode_decision_steps", 0))
+    if decision_steps > 0:
+        print(
+            f"[WARNING] Episode has {decision_steps} decision steps "
+            f"but no energy values recorded. This indicates a reward calculation issue.",
+            flush=True
+        )
+    episode_metrics['energy_norm_mean'] = 0.0
+    episode_metrics['energy_norm_p95'] = 0.0
+```
+
+### 方案C：增强控制台显示（必须）
+
+**修改位置**：[`train.py:3163`](train.py:3163)
+
+**当前代码**：
+```python
+print(
+    f"{episode:6d} {duration:7.1f}s {reward_mean:9.4f} "
+    f"{_fmt_pct(task_success_rate):>8} {_fmt_pct(vehicle_sr):>8} {_fmt_pct(subtask_success):>8} "
+    f"{deci_str:>16} {_fmt_float(task_duration_mean, 3):>8} {_fmt_float(energy_norm_mean, 3):>8} "
+    f"{_fmt_pct(deadline_miss_rate):>8} {_fmt_pct(illegal_rate_display):>8} "
+    f"{_fmt_float(entropy_val, 4):>8} {_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
+    flush=True,
+)
+```
+
+**修复代码**：
+```python
+# 【修复】检测数据异常并标记
+lat_display = _fmt_float(task_duration_mean, 3)
+en_display = _fmt_float(energy_norm_mean, 3)
+
+# 如果有任务完成但指标为0，标记为异常
+if task_success_rate > 0.01 and (task_duration_mean is None or task_duration_mean < 0.001):
+    lat_display = "!ERR"  # 标记为错误
+if decision_steps > 0 and (energy_norm_mean is None or energy_norm_mean < 1e-9):
+    en_display = "!ERR"  # 标记为错误
+
+print(
+    f"{episode:6d} {duration:7.1f}s {reward_mean:9.4f} "
+    f"{_fmt_pct(task_success_rate):>8} {_fmt_pct(vehicle_sr):>8} {_fmt_pct(subtask_success):>8} "
+    f"{deci_str:>16} {lat_display:>8} {en_display:>8} "
+    f"{_fmt_pct(deadline_miss_rate):>8} {_fmt_pct(illegal_rate_display):>8} "
+    f"{_fmt_float(entropy_val, 4):>8} {_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
+    flush=True,
+)
+```
+
+### 方案D：添加数据完整性校���（必须）
+
+**新增文件**：`scripts/verify_training_metrics.py`
+
+```python
+#!/usr/bin/env python3
+"""
+训练指标完整性校验脚本
+
+用法：
+    python scripts/verify_training_metrics.py --csv runs/run_*/logs/training_stats.csv
+"""
+import pandas as pd
+import numpy as np
+import argparse
+import sys
+
+def verify_metrics(csv_path):
+    """验证训练指标的完整性和一致性"""
+    df = pd.read_csv(csv_path)
+    
+    errors = []
+    warnings = []
+    
+    # 检查1：成功率 > 0 但 task_duration_mean = 0
+    mask1 = (df['task_sr'] > 0.01) & (df['task_duration_mean'] < 0.001)
+    if mask1.any():
+        bad_episodes = df[mask1]['episode'].tolist()
+        errors.append(
+            f"Episodes {bad_episodes} have task_sr > 1% but task_duration_mean ≈ 0. "
+            f"This indicates task completion time is not being recorded."
+        )
+    
+    # 检查2：有决策步数但 energy_mean = 0
+    if 'decision_steps' in df.columns:
+        mask2 = (df['decision_steps'] > 0) & (df['energy_mean'] < 1e-9)
+        if mask2.any():
+            bad_episodes = df[mask2]['episode'].tolist()
+            warnings.append(
+                f"Episodes {bad_episodes} have decision_steps > 0 but energy_mean ≈ 0. "
+                f"This may indicate energy is not being recorded."
+            )
+    
+    # 检查3：completed_tasks 与 task_sr 不一致
+    if 'completed_tasks' in df.columns and 'episode_vehicle_count' in df.columns:
+        expected_completed = (df['task_sr'] * df['episode_vehicle_count']).round()
+        actual_completed = df['completed_tasks']
+        mask3 = (expected_completed > 0) & (actual_completed == 0)
+        if mask3.any():
+            bad_episodes = df[mask3]['episode'].tolist()
+            errors.append(
+                f"Episodes {bad_episodes} have expected completed tasks > 0 "
+                f"but completed_tasks = 0. This indicates a data collection bug."
+            )
+    
+    # 检查4：必需字段是否存在
+    required_fields = [
+        'episode', 'reward_mean', 'task_sr', 'vehicle_sr', 'subtask_sr',
+        'task_duration_mean', 'energy_mean', 'decision_frac_local',
+        'decision_frac_rsu', 'decision_frac_v2v', 'actor_loss', 'critic_loss'
+    ]
+    missing_fields = [f for f in required_fields if f not in df.columns]
+    if missing_fields:
+        errors.append(f"Missing required fields: {missing_fields}")
+    
+    # 输出结果
+    print(f"\n{'='*80}")
+    print(f"Training Metrics Verification Report")
+    print(f"{'='*80}")
+    print(f"CSV: {csv_path}")
+    print(f"Total Episodes: {len(df)}")
+    print(f"{'='*80}\n")
+    
+    if errors:
+        print(f"❌ ERRORS ({len(errors)}):")
+        for i, err in enumerate(errors, 1):
+            print(f"  {i}. {err}")
+        print()
+    
+    if warnings:
+        print(f"⚠️  WARNINGS ({len(warnings)}):")
+        for i, warn in enumerate(warnings, 1):
+            print(f"  {i}. {warn}")
+        print()
+    
+    if not errors and not warnings:
+        print("✅ All checks passed! Training metrics are complete and consistent.")
+    
+    return len(errors) == 0
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Verify training metrics completeness")
+    parser.add_argument("--csv", required=True, help="Path to training_stats.csv")
+    args = parser.parse_args()
+    
+    success = verify_metrics(args.csv)
+    sys.exit(0 if success else 1)
+```
+
+## 实施步骤
+
+### 第1步：应用代码修复（Code模式）
+
+1. 修改 [`envs/vec_offloading_env.py:7581-7588`](envs/vec_offloading_env.py:7581) - 方案A
+2. 修改 [`envs/vec_offloading_env.py:7560-7565`](envs/vec_offloading_env.py:7560) - 方案B
+3. 修改 [`train.py:3163`](train.py:3163) - 方案C
+4. 创建 `scripts/verify_training_metrics.py` - 方案D
+
+### 第2步：验证修复
+
+```bash
+# 运行短期训练
+python train.py --max-episodes 10 --seed 42
+
+# 检查控制台输出
+# 预期：不应出现 !ERR 标记
+
+# 运行完整性校验
+python scripts/verify_training_metrics.py --csv runs/run_*/logs/training_stats.csv
+# 预期：✅ All checks passed!
+```
+
+### 第3步：持续监控
+
+在 [`train.py`](train.py) 的训练循环中添加实时校验：
+
+```python
+# train.py 第3630行（training_stats_row写入后）
+# 【新增】实时数据完整性校验
+if episode % TC.LOG_INTERVAL == 0:
+    if task_success_rate > 0.01 and task_duration_mean < 0.001:
+        print(
+            f"  [DATA ERROR] Episode {episode}: task_sr={task_success_rate*100:.1f}% "
+            f"but task_duration_mean={task_duration_mean:.6f}. Check data collection!",
+            flush=True
+        )
+```
+
+## 预期效果
+
+### 修复前
+```
+Ep    Wall    R/step     T_SR     V_SR     S_SR            L/R/V   Lat(s)       En     Miss      Ill
+     1    13.8s   -0.0108     5.0%     5.0%    51.0%      33%/14%/53%    0.000        -     0.0%     0.0%
+```
+
+### 修复后
+```
+Ep    Wall    R/step     T_SR     V_SR     S_SR            L/R/V   Lat(s)       En     Miss      Ill
+     1    13.8s   -0.0108     5.0%     5.0%    51.0%      33%/14%/53%    2.345    0.123     0.0%     0.0%
+                                                                          ^^^^     ^^^^
+                                                                          正确显示非零值
+```
+
+或者如果确实有问题：
+```
+Ep    Wall    R/step     T_SR     V_SR     S_SR            L/R/V   Lat(s)       En     Miss      Ill
+     1    13.8s   -0.0108     5.0%     5.0%    51.0%      33%/14%/53%     !ERR     !ERR     0.0%     0.0%
+                                                                          ^^^^     ^^^^
+                                                                          明确标记错误
+```
+
+## 总结
+
+**核心修复**：
+1. ✅ 方案A - 确保所有完成任务都被记录（必须）
+2. ✅ 方案B - 增强能耗统计记录（必须）
+3. ✅ 方案C - 增强控制台显示，明确标记异常（必须）
+4. ✅ 方案D - 添加数据完整性校验脚本（必须）
+
+**下一步**：切换到 Code 模式实施这些修复。

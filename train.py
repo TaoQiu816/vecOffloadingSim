@@ -3157,10 +3157,16 @@ def main():
             print("-" * 128, flush=True)
 
         deci_str = f"{_fmt_pct(frac_local, 0)}/{_fmt_pct(frac_rsu, 0)}/{_fmt_pct(frac_v2v, 0)}"
+        lat_str = _fmt_float(task_duration_mean, 3)
+        en_str = _fmt_float(energy_norm_mean, 3)
+        if task_success_rate > 0.01 and (task_duration_mean is None or task_duration_mean < 0.001):
+            lat_str = "!ERR"
+        if task_success_rate > 0.01 and (energy_norm_mean is None or energy_norm_mean < 0.001):
+            en_str = "!ERR"
         print(
             f"{episode:6d} {duration:7.1f}s {reward_mean:9.4f} "
             f"{_fmt_pct(task_success_rate):>8} {_fmt_pct(vehicle_sr):>8} {_fmt_pct(subtask_success):>8} "
-            f"{deci_str:>16} {_fmt_float(task_duration_mean, 3):>8} {_fmt_float(energy_norm_mean, 3):>8} "
+            f"{deci_str:>16} {lat_str:>8} {en_str:>8} "
             f"{_fmt_pct(deadline_miss_rate):>8} {_fmt_pct(illegal_rate_display):>8} "
             f"{_fmt_float(entropy_val, 4):>8} {_fmt_float(approx_kl, 4):>8} {_fmt_pct(clip_frac):>8}",
             flush=True,
