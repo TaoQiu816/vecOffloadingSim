@@ -121,7 +121,7 @@ class TrainConfig:
                             # 推荐范围: 1e-4 ~ 1e-3 (稳定性优先)
                             # Recommended range: 1e-4 ~ 1e-3 (stability first)
 
-    LR_CRITIC = 2e-4        # Critic学习率 - Critic learning rate [5e-4→2e-4: 降低critic更新速度，提升稳定性]
+    LR_CRITIC = 5e-4        # Critic学习率 - Critic learning rate [5e-4→2e-4: 降低critic更新速度，提升稳定性]
                             # 影响: 控制价值网络的更新速度，与Actor保持一致
                             # Impact: Controls value network update speed; consistent with Actor
                             # 推荐范围: 1e-4 ~ 1e-3
@@ -210,8 +210,8 @@ class TrainConfig:
                             # Recommended range: 64-256
 
     ENTROPY_COEF = 0.02     # 当前生效熵系数（固定值，退火关闭）; 0.012→0.02: 进一步提升探索，缓解熵不足/RSU集中
-    ENTROPY_COEF_START = 0.02    # 与END相同 → 等价于关闭退火
-    ENTROPY_COEF_END = 0.02     # 固定熵系数：0.02（进一步增强探索）
+    ENTROPY_COEF_START = 0.012    # 与END相同 → 等价于关闭退火
+    ENTROPY_COEF_END = 0.012     # 固定熵系数：0.02（进一步增强探索）
     ENTROPY_ANNEAL_STEPS = 0    # =0 → 禁用退火，全程使用ENTROPY_COEF_END固定值
                             # 原值140000面向1000ep；3000ep时在ep700(step140000)就完成退火，后2300ep熵固定在END值
                             # 影响: 增加动作探索性，应对动态环境

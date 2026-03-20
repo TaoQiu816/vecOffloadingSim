@@ -1,0 +1,158 @@
+{
+  "generated_at": "2026-03-20 16:17:29",
+  "plots_dir": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots",
+  "plot_count": 13,
+  "tag_counts": {
+    "rl_diagnostics": 4,
+    "baseline": 3,
+    "simulation": 2,
+    "policy": 1,
+    "reward": 1
+  },
+  "jobs": [
+    {
+      "job": "DataRecorder.plot_training_stats",
+      "ok": true,
+      "seconds": 5.256078243255615,
+      "tail": []
+    },
+    {
+      "job": "plot_results.py",
+      "ok": true,
+      "seconds": 15.124952554702759,
+      "tail": [
+        "✓ Saved: fig_latency_with_baselines.png",
+        "✓ Saved: fig_summary_dashboard.png",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots"
+      ]
+    },
+    {
+      "job": "generate_all_plots.py",
+      "ok": false,
+      "seconds": 0.8060622215270996,
+      "tail": [
+        "    return self._apply_columnwise(homogeneous_func, name, numeric_only)",
+        "  File \"/root/miniconda3/lib/python3.10/site-packages/pandas/core/window/rolling.py\", line 472, in _apply_columnwise",
+        "    return self._apply_series(homogeneous_func, name)",
+        "  File \"/root/miniconda3/lib/python3.10/site-packages/pandas/core/window/rolling.py\", line 454, in _apply_series",
+        "    raise DataError(\"No numeric types to aggregate\") from err",
+        "pandas.errors.DataError: No numeric types to aggregate"
+      ]
+    },
+    {
+      "job": "plot_mappo_vs_baselines.py",
+      "ok": true,
+      "skipped": true,
+      "seconds": 0.0,
+      "tail": [
+        "baseline_stats.csv missing/empty or script not found"
+      ]
+    },
+    {
+      "job": "DataRecorder.auto_plot",
+      "ok": true,
+      "seconds": 22.28915762901306,
+      "tail": []
+    }
+  ],
+  "figures": [
+    {
+      "file": "bias_annealing.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/bias_annealing.png",
+      "size_bytes": 114937,
+      "tags": []
+    },
+    {
+      "file": "fig_constraint_health.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_constraint_health.png",
+      "size_bytes": 607569,
+      "tags": []
+    },
+    {
+      "file": "fig_convergence_baseline.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_convergence_baseline.png",
+      "size_bytes": 1263995,
+      "tags": [
+        "rl_diagnostics",
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_convergence_recheck.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_convergence_recheck.png",
+      "size_bytes": 1659283,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_latency_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_latency_with_baselines.png",
+      "size_bytes": 543247,
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_physical_metrics.png",
+      "size_bytes": 822597,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "fig_policy_evolution.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_policy_evolution.png",
+      "size_bytes": 250717,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_summary_dashboard.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_summary_dashboard.png",
+      "size_bytes": 954007,
+      "tags": []
+    },
+    {
+      "file": "fig_training_diagnostics.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/fig_training_diagnostics.png",
+      "size_bytes": 987998,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "loss_curve.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/loss_curve.png",
+      "size_bytes": 702108,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/physical_metrics.png",
+      "size_bytes": 1044629,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "reward_curve_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/reward_curve_with_baselines.png",
+      "size_bytes": 663323,
+      "tags": [
+        "reward",
+        "baseline"
+      ]
+    },
+    {
+      "file": "training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/run_1000ep_A_20260320/plots/training_overview.png",
+      "size_bytes": 1080647,
+      "tags": []
+    }
+  ]
+}
