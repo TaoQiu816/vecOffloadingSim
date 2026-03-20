@@ -1,0 +1,17 @@
+{
+  "run_id": "run_1000ep_A_lrcritic_5e4_20260321",
+  "run_dir": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321",
+  "status": "completed",
+  "created_at": "2026-03-21 00:18:22",
+  "git_commit": "55bccbf4c4280240ddd56e51d4523724b5c340ec",
+  "config_hash": "720b7c5d81cd3fd61e24d89fc126ded64ac319f4cfca343f31132b2a59f01539",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321/logs/config_snapshot.json",
+  "completed_at": "2026-03-21 03:10:01",
+  "episodes_completed": 1000,
+  "best_reward": 0.2471880754270991,
+  "best_success_rate_50ep": 0.9630000000000001,
+  "best_model_path": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321/logs/training_stats.csv"
+}
