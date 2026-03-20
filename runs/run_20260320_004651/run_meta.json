@@ -1,0 +1,9 @@
+{
+  "run_id": "run_20260320_004651",
+  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/run_20260320_004651",
+  "status": "running",
+  "created_at": "2026-03-20 00:46:52",
+  "git_commit": "53d3b9bebf44f50235ff7ed0d2beeb748f0909da",
+  "config_hash": "52a58bd13c64f6dba713e0ff0c6d4cdc6c82982564780f51c79eb25225647310",
+  "config_snapshot_path": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/run_20260320_004651/logs/config_snapshot.json"
+}

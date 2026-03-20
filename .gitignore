@@ -113,3 +113,24 @@ FINAL_*.md
 *_VERIFICATION_*.md
 *_ANALYSIS_*.md
 PROJECT_CLEANUP_*.md
+
+# 诊断/计划目录（不同步到git）
+diagnostics/
+plans/
+
+# 非仿真所需脚本（诊断/分析/验证类，不同步到git）
+scripts/run_authoritative_eval.py
+scripts/run_formal_checkpoint_eval.py
+scripts/run_baseline_consistency_eval.py
+scripts/smoke_test_terminated_reason.py
+scripts/run_rprog_alignment_validation.py
+scripts/run_short_train_validation.py
+scripts/diagnose_metrics.py
+scripts/verify_metrics_fix.py
+scripts/verify_training_metrics.py
+scripts/analyze_training_failure.py
+scripts/clean_reward_schemes.py
+scripts/clean_legacy_pbrs.py
+scripts/clean_pbrs_functions.py
+scripts/cleanup_project.py
+analyze_reward_composition.py

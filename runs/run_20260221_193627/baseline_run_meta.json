@@ -1,9 +1,0 @@
-{
-  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/run_20260221_193627",
-  "created_at": "2026-02-21 23:11:15",
-  "git_commit": "3432231d26a47a3db25cdad4967979020b6ceb87",
-  "config_hash": "47036be753a585e6c8b11d6df46d5f66a477effa978517b240e43e5dba91fd8e",
-  "seed": 42,
-  "max_steps": 200,
-  "num_episodes": 10
-}

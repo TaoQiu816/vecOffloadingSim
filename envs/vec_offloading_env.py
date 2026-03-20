@@ -8,6 +8,15 @@ VEC Offloading Environment
 - 如需使用旧方案，请回退到2026-03-18之前的版本
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [A2] r_prog 对齐 tracing 开关（默认 OFF，不影响训练性能）
+# 开启方式：将下方 False 改为 True，或在运行前设置环境变量
+#   export DEBUG_RPROG_ALIGNMENT=1
+# 落盘路径：diagnostics/reward_alignment/rprog_trace_ep<N>.jsonl
+# ─────────────────────────────────────────────────────────────────────────────
+import os as _os
+DEBUG_RPROG_ALIGNMENT: bool = _os.environ.get("DEBUG_RPROG_ALIGNMENT", "0") == "1"
+
 import gymnasium as gym
 import numpy as np
 import os
@@ -409,6 +418,26 @@ class VecOffloadingEnv(gym.Env):
             f"⚠️  单位缩放警告：典型传输时间为 {typical_tx_time:.2f}s > 1s，"
             f"可能导致任务超时。考虑增加带宽或减少数据量。"
         )
+
+    # =====================================================================
+    # [A2] r_prog 对齐 tracing 方法（默认 OFF）
+    # =====================================================================
+
+    def _rprog_trace(self, event: str, veh_id: int, step: int, episode: int, **kwargs):
+        """写一条 r_prog trace 记录到 JSONL（仅当 DEBUG_RPROG_ALIGNMENT=True 时生效）。
+        
+        event: "WRITE" | "CONSUME"
+        """
+        if not DEBUG_RPROG_ALIGNMENT:
+            return
+        import json, time as _time
+        out_dir = "diagnostics/reward_alignment"
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"rprog_trace_ep{episode:04d}.jsonl")
+        record = {"event": event, "ep": episode, "step": step, "veh": veh_id,
+                  "ts": _time.time(), **kwargs}
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=float) + "\n")
 
     # =====================================================================
     # [P02修复] 统一队列查询方法 - 基于veh_cpu_q/rsu_cpu_q唯一事实源
@@ -4425,6 +4454,13 @@ class VecOffloadingEnv(gym.Env):
                         v, chosen_subtask, chosen_target, chosen_power
                     )
                 phi_debug["phi_post_action"] = float(phi_post_action)
+                # [A2] WRITE trace
+                self._rprog_trace("WRITE", v.id, self.steps, getattr(self, "episode", 0),
+                                  phi_prev=float(phi_debug.get("phi_prev", 0.0)),
+                                  phi_post_action=float(phi_post_action),
+                                  subtask=plan.get("subtask_idx") if plan else None,
+                                  target=str(plan.get("planned_target", "Local")) if plan else "none",
+                                  has_plan=bool(plan and plan.get("subtask_idx") is not None))
             elif use_pbrs and pbrs_phi_mode == "STATE_ONLY":
                 if scheme == "PBRS_KP_V2":
                     phi_prev = phi_prev_cache.get(v.id, 0.0)
@@ -4849,13 +4885,35 @@ class VecOffloadingEnv(gym.Env):
                         fail_cost = alpha_f * deposit * p_fail
                         risk_cost_sum += (lock_cost + fail_cost)
 
-                # 使用post-decision phi计算r_prog
-                # phi_post_action: 上一次decision epoch执行动作后的phi
-                # phi_now: 当前decision epoch的phi
+                # [P0修复] 使用post-decision phi计算r_prog
+                # 修复问题：non-decision场景下phi_post_action默认为0导致异常负r_prog
+                # 解决方案：仅对有效decision计算r_prog，non-decision场景r_prog=0
+                # 参考：plans/FAILURE_ROOTCAUSE_STEP3_RPROG_ALIGNMENT.md
                 phi_post_action = float(ctx.get("phi_post_action", 0.0))
                 phi_now = float(self._estimate_decision_phi(v))
-                # r_prog = clip((phi_post_action - phi_now) / deadline, -1, 1)
-                r_prog = float(np.clip((phi_post_action - phi_now) / max(Td, 1e-6), -1.0, 1.0))
+                
+                # 检查是否为有效decision（有subtask且非no_task_available）
+                has_valid_decision = (
+                    ctx.get("subtask") is not None and
+                    not ctx.get("no_task_available", False)
+                )
+                
+                if has_valid_decision:
+                    # 有效decision：正常计算r_prog
+                    r_prog = float(np.clip((phi_post_action - phi_now) / max(Td, 1e-6), -1.0, 1.0))
+                else:
+                    # non-decision场景：r_prog=0（避免phi_post_action=0导致的异常负值）
+                    r_prog = 0.0
+                # [A2] CONSUME trace
+                self._rprog_trace("CONSUME", v.id, self.steps, getattr(self, "episode", 0),
+                                  phi_post_action=float(phi_post_action),
+                                  phi_now=float(phi_now),
+                                  has_valid_decision=bool(has_valid_decision),
+                                  r_prog=float(r_prog),
+                                  Td=float(Td),
+                                  subtask=ctx.get("subtask"),
+                                  target=str(ctx.get("target", "Local")),
+                                  no_task_available=bool(ctx.get("no_task_available", False)))
                 r_step, step_info = compute_unified_step_reward(r_prog=r_prog, illegal=illegal)
                 r_term = 0.0
                 finished_prev = ctx.get("finished_prev", False)
@@ -4927,16 +4985,39 @@ class VecOffloadingEnv(gym.Env):
                 if step_unified_illegal_trigger_count > 0:
                     self._reward_stats.add_counter("illegal_trigger_unified", int(step_unified_illegal_trigger_count))
 
-            # [BugFix] UNIFIED分支必须有return语句
-            # 计算终止条件
+            # [P0修复] 终止条件：改为ALL车辆完成/失败才终止，而非ANY
+            # 修复问题：任何一辆车完成就终止，导致其他车辆学习不充分
+            # 解决方案：只有当所有车辆都完成或失败时才终止
+            # 参考：plans/FAILURE_ROOTCAUSE_STEP2_GIT_DIFF.md
             terminated = False
             truncated = False
-            for v in self.vehicles:
-                if v.task_dag.is_failed or v.task_dag.is_finished:
-                    terminated = True
-                    break
             if self.steps >= self.config.MAX_STEPS:
                 truncated = True
+            else:
+                # 检查是否所有车辆都终止（完成或失败）
+                all_terminated = all(
+                    v.task_dag.is_failed or v.task_dag.is_finished
+                    for v in self.vehicles
+                )
+                if all_terminated:
+                    terminated = True
+
+            # [PATCH] 设置终止原因，供 _log_episode_stats 使用
+            # 命名规范: success_all_done / time_limit / all_failed
+            if terminated or truncated:
+                if terminated:
+                    # 检查是否全部成功完成（非失败）
+                    all_success = all(
+                        v.task_dag.is_finished and not v.task_dag.is_failed
+                        for v in self.vehicles
+                    )
+                    if all_success:
+                        self._last_terminated_reason = "success_all_done"
+                    else:
+                        # 有车辆失败但全部终止
+                        self._last_terminated_reason = "all_failed"
+                else:
+                    self._last_terminated_reason = "time_limit"
             
             # [关键修复] 在episode结束时记录统计信息
             if terminated or truncated:
@@ -4945,6 +5026,7 @@ class VecOffloadingEnv(gym.Env):
             info = {
                 "episode_steps": self._episode_steps,
                 "task_success_rate": float(sum(1 for v in self.vehicles if v.task_dag.is_finished) / max(len(self.vehicles), 1)),
+                "terminated_reason": getattr(self, "_last_terminated_reason", "none"),
             }
             
             obs_list = self._get_obs()

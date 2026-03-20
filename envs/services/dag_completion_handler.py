@@ -170,6 +170,16 @@ class DagCompletionHandler:
 
         # [完成位置落地] 从exec_locations读取位置码写入task_locations
         exec_loc = vehicle.task_dag.exec_locations[subtask_id]
+        # [Stale Job Guard] exec_locations被mark_retryable()重置为None时，
+        # 说明该ComputeJob是"陈旧作业"（任务已被重试调度），直接丢弃。
+        if exec_loc is None:
+            return {
+                "type": "COMPUTE_DONE_STALE",
+                "owner_vehicle_id": getattr(job, "owner_vehicle_id", -1),
+                "subtask_id": subtask_id,
+                "time": time_now,
+                "reason": "exec_location_reset_by_retryable",
+            }
         dag.task_locations[subtask_id] = exec_loc
         dag.mark_cpu_end(subtask_id, finish_time)
 

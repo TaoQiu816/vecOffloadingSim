@@ -330,8 +330,7 @@ class TrainConfig:
     # =========================================================================
     # 4. 训练流程参数 (Training Loop Control)
     # =========================================================================
-    MAX_EPISODES = 3000      # 总训练Episodes - Total training episodes
-                            # 3000ep × 200steps = 600,000 env steps
+    MAX_EPISODES = 1000      # 总训练Episodes - 正式1000ep run
                             # 前466ep因LateGuard冻结实际无效，修复后需延长至3000ep保证充分收敛
                             # 推荐范围: 500 (验证), 1000-3000 (完整训练)
                             # Recommended range: 500 (validation), 1000-3000 (full training)

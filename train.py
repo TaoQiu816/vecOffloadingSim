@@ -2694,8 +2694,11 @@ def main():
             else:
                 termination_reason_raw = "other"
         termination_reason = str(termination_reason_raw)
+        # [PATCH] 兼容 success_all_done / all_failed / all_done (旧名) / time_limit
         if termination_reason == "time_limit":
             termination_reason_bucket = "time_limit"
+        elif termination_reason in ("success_all_done", "all_done", "all_failed"):
+            termination_reason_bucket = "terminated"
         elif terminated_flag:
             termination_reason_bucket = "terminated"
         else:
