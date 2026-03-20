@@ -1,0 +1,5 @@
+section,key,run_a,run_b
+train_config,ENTROPY_COEF_END,0.02,0.012
+train_config,ENTROPY_COEF_START,0.02,0.012
+train_config,LR_CRITIC,0.0002,0.0005
+system_config,lr_critic,0.0002,0.0005

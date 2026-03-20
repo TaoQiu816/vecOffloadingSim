@@ -10,6 +10,9 @@ import os
 import sys
 from pathlib import Path
 
+BASELINE_POLICIES = ["Local-Only", "Greedy", "EFT", "CP-EFT"]
+NON_NUMERIC_COLUMNS = {"policy", "termination_reason_raw", "termination_reason_bucket", "abs_ratio_basis"}
+
 # 设置matplotlib支持中文
 plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -19,6 +22,83 @@ try:
 except Exception:
     sns = None
     plt.style.use("ggplot")
+
+
+def _coerce_numeric_columns(df):
+    for col in df.columns:
+        if col in NON_NUMERIC_COLUMNS:
+            continue
+        converted = pd.to_numeric(df[col], errors='coerce')
+        non_null = int(df[col].notna().sum())
+        if non_null == 0:
+            continue
+        if int(converted.notna().sum()) >= max(1, int(non_null * 0.95)):
+            df[col] = converted
+    return df
+
+
+def _clean_episode_log_df(df):
+    if df.empty:
+        return df
+
+    header_rows = pd.Series(False, index=df.index)
+    if 'episode' in df.columns:
+        header_rows |= df['episode'].astype(str).str.strip().eq('episode')
+    if 'policy' in df.columns:
+        header_rows |= df['policy'].astype(str).str.strip().eq('policy')
+    df = df.loc[~header_rows].copy()
+    df = _coerce_numeric_columns(df)
+
+    if 'episode' not in df.columns:
+        raise ValueError("episode_log 缺少 episode 列")
+    df['episode'] = pd.to_numeric(df['episode'], errors='coerce')
+    df = df[df['episode'].notna()].copy()
+    df['episode'] = df['episode'].astype(int)
+
+    if 'policy' in df.columns:
+        df['policy'] = df['policy'].fillna('').astype(str)
+        baseline_mask = df['policy'].isin(BASELINE_POLICIES)
+        df_train = df[~baseline_mask].sort_values('episode').drop_duplicates(['episode'], keep='last')
+        df_baseline = df[baseline_mask].sort_values(['policy', 'episode']).drop_duplicates(['policy', 'episode'], keep='last')
+        df = pd.concat([df_train, df_baseline], ignore_index=True, sort=False)
+    elif 'duration' in df.columns:
+        duration_str = df['duration'].astype(str)
+        baseline_mask = duration_str.isin(BASELINE_POLICIES)
+        df_train = df[~baseline_mask].sort_values('episode').drop_duplicates(['episode'], keep='last')
+        df_baseline = df[baseline_mask].sort_values(['duration', 'episode']).drop_duplicates(['duration', 'episode'], keep='last')
+        df = pd.concat([df_train, df_baseline], ignore_index=True, sort=False)
+    else:
+        df = df.sort_values('episode').drop_duplicates(['episode'], keep='last')
+
+    sort_cols = ['episode']
+    if 'policy' in df.columns:
+        sort_cols = ['episode', 'policy']
+    return df.sort_values(sort_cols).reset_index(drop=True)
+
+
+def _load_episode_log(path):
+    df_raw = pd.read_csv(path, dtype=str)
+    cleaned = _clean_episode_log_df(df_raw)
+    removed = len(df_raw) - len(cleaned)
+    return cleaned, removed
+
+
+def _load_baseline_stats(path):
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    df = pd.read_csv(path, dtype=str)
+    if df.empty:
+        return pd.DataFrame()
+    cleaned = _coerce_numeric_columns(df.copy())
+    if 'episode' in cleaned.columns:
+        cleaned['episode'] = pd.to_numeric(cleaned['episode'], errors='coerce')
+        cleaned = cleaned[cleaned['episode'].notna()].copy()
+        cleaned['episode'] = cleaned['episode'].astype(int)
+    if 'policy' in cleaned.columns:
+        cleaned['policy'] = cleaned['policy'].fillna('').astype(str)
+        cleaned = cleaned[cleaned['policy'].isin(BASELINE_POLICIES)].copy()
+        cleaned = cleaned.sort_values(['policy', 'episode']).drop_duplicates(['policy', 'episode'], keep='last')
+    return cleaned.reset_index(drop=True)
 
 def smooth(data, window=20):
     """滑动平均"""
@@ -558,12 +638,15 @@ def plot_convergence_analysis(df, output_dir):
     plt.close()
     print("✓ Saved: fig_convergence_analysis.png")
 
-def plot_baseline_comparison(df, output_dir):
+def plot_baseline_comparison(df, output_dir, df_baseline_external=None):
     """与Baseline对比"""
     # 分离MAPPO和baseline数据
     # 优先使用 policy 字段（新版），兼容使用 duration 字段（旧版）
-    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
-    if 'policy' in df.columns:
+    baseline_policies = list(BASELINE_POLICIES)
+    if df_baseline_external is not None and not df_baseline_external.empty:
+        mappo_df = df[(df['policy'] == '') | (df['policy'].isna())].copy() if 'policy' in df.columns else df.copy()
+        baseline_df = df_baseline_external.copy()
+    elif 'policy' in df.columns:
         mappo_df = df[(df['policy'] == '') | (df['policy'].isna())].copy()
         baseline_df = df[df['policy'].isin(baseline_policies)].copy()
     else:
@@ -574,6 +657,10 @@ def plot_baseline_comparison(df, output_dir):
     if len(baseline_df) == 0:
         print("⚠ No baseline data found, skipping baseline comparison plot")
         return
+
+    baseline_task_col = 'task_success_rate' if 'task_success_rate' in baseline_df.columns else 'task_sr'
+    baseline_reward_col = 'total_reward' if 'total_reward' in baseline_df.columns else 'reward_total'
+    baseline_subtask_col = 'subtask_success_rate' if 'subtask_success_rate' in baseline_df.columns else 'subtask_sr'
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Baseline Comparison', fontsize=16, fontweight='bold')
@@ -586,10 +673,10 @@ def plot_baseline_comparison(df, output_dir):
     # 确定 baseline 数据中用于筛选策略的列（新版用 policy，旧版用 duration）
     policy_col = 'policy' if 'policy' in baseline_df.columns else 'duration'
     
-    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+    for policy in baseline_policies:
         policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
-            ax.plot(policy_df['episode'], policy_df['task_success_rate'] * 100,
+            ax.plot(policy_df['episode'], policy_df[baseline_task_col] * 100,
                    'o-', alpha=0.7, markersize=6, label=policy)
     
     ax.set_ylabel('Task Success Rate (%)')
@@ -602,10 +689,10 @@ def plot_baseline_comparison(df, output_dir):
     ax.plot(mappo_df['episode'], smooth(mappo_df['total_reward'], 50),
             color='blue', linewidth=2.5, label='MAPPO')
     
-    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+    for policy in baseline_policies:
         policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
-            ax.plot(policy_df['episode'], policy_df['total_reward'],
+            ax.plot(policy_df['episode'], policy_df[baseline_reward_col],
                    'o-', alpha=0.7, markersize=6, label=policy)
     
     ax.set_ylabel('Total Reward')
@@ -619,10 +706,10 @@ def plot_baseline_comparison(df, output_dir):
     ax.plot(mappo_df['episode'], smooth(mappo_df['subtask_success_rate'] * 100, 50),
             color='blue', linewidth=2.5, label='MAPPO')
     
-    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+    for policy in baseline_policies:
         policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
-            ax.plot(policy_df['episode'], policy_df['subtask_success_rate'] * 100,
+            ax.plot(policy_df['episode'], policy_df[baseline_subtask_col] * 100,
                    'o-', alpha=0.7, markersize=6, label=policy)
     
     ax.set_ylabel('Subtask Success Rate (%)')
@@ -633,7 +720,7 @@ def plot_baseline_comparison(df, output_dir):
     
     # 4. Bar Chart (Final Performance)
     ax = axes[1, 1]
-    policies = ['MAPPO'] + ['Random', 'Local-Only', 'Greedy', 'Static']
+    policies = ['MAPPO'] + baseline_policies
     task_sr_vals = []
     subtask_sr_vals = []
     
@@ -641,11 +728,11 @@ def plot_baseline_comparison(df, output_dir):
     task_sr_vals.append(mappo_df.tail(50)['task_success_rate'].mean() * 100)
     subtask_sr_vals.append(mappo_df.tail(50)['subtask_success_rate'].mean() * 100)
     
-    for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+    for policy in baseline_policies:
         policy_df = baseline_df[baseline_df[policy_col] == policy]
         if len(policy_df) > 0:
-            task_sr_vals.append(policy_df['task_success_rate'].mean() * 100)
-            subtask_sr_vals.append(policy_df['subtask_success_rate'].mean() * 100)
+            task_sr_vals.append(policy_df[baseline_task_col].mean() * 100)
+            subtask_sr_vals.append(policy_df[baseline_subtask_col].mean() * 100)
         else:
             task_sr_vals.append(0)
             subtask_sr_vals.append(0)
@@ -671,20 +758,26 @@ def main():
     parser = argparse.ArgumentParser(description='Generate all training plots')
     parser.add_argument('--run-dir', type=str, required=True, 
                        help='Run directory (e.g., runs/run_20260105_112351)')
+    parser.add_argument('--episode-log', type=str, default=None,
+                        help='Explicit episode_log.csv path (defaults to <run-dir>/episode_log.csv)')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory for plots (defaults to <run-dir>/plots)')
+    parser.add_argument('--baseline-csv', type=str, default=None,
+                        help='Explicit baseline_stats.csv path (defaults to <run-dir>/logs/baseline_stats.csv)')
     args = parser.parse_args()
     
     # 读取数据
-    episode_log = os.path.join(args.run_dir, 'episode_log.csv')
+    episode_log = os.path.abspath(args.episode_log) if args.episode_log else os.path.join(args.run_dir, 'episode_log.csv')
     if not os.path.exists(episode_log):
         print(f"Error: {episode_log} not found")
         return
     
-    df = pd.read_csv(episode_log)
-    print(f"✓ Loaded {len(df)} episodes from {episode_log}")
+    df, removed_rows = _load_episode_log(episode_log)
+    print(f"✓ Loaded {len(df)} cleaned rows from {episode_log} (removed={removed_rows})")
     
     # 过滤MAPPO数据（用于部分图表）
     # 优先使用 policy 字段（新版），兼容使用 duration 字段（旧版）
-    baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
+    baseline_policies = list(BASELINE_POLICIES)
     if 'policy' in df.columns:
         mappo_df = df[(df['policy'] == '') | (df['policy'].isna())].copy()
     else:
@@ -692,9 +785,11 @@ def main():
     print(f"✓ MAPPO episodes: {len(mappo_df)}")
     
     # 创建输出目录
-    output_dir = os.path.join(args.run_dir, 'plots')
+    output_dir = os.path.abspath(args.output_dir) if args.output_dir else os.path.join(args.run_dir, 'plots')
     os.makedirs(output_dir, exist_ok=True)
     print(f"✓ Output directory: {output_dir}\n")
+    baseline_csv = os.path.abspath(args.baseline_csv) if args.baseline_csv else os.path.join(args.run_dir, 'logs', 'baseline_stats.csv')
+    df_baseline_external = _load_baseline_stats(baseline_csv)
     
     # 生成所有图表
     print("[Generating Comprehensive Plots]")
@@ -705,7 +800,7 @@ def main():
     plot_multi_agent_metrics(mappo_df, output_dir)
     plot_system_metrics(mappo_df, output_dir)
     plot_convergence_analysis(mappo_df, output_dir)
-    plot_baseline_comparison(df, output_dir)
+    plot_baseline_comparison(df, output_dir, df_baseline_external=df_baseline_external)
     
     print(f"\n✓ All plots saved to: {output_dir}")
     print(f"  Total plots: 8")

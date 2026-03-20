@@ -1,0 +1,9 @@
+metric_id,metric_name,direction,run_a_last100,run_b_last100,winner
+reward_mean,平均步奖励,higher,0.010839307513087936,0.011612237286753906,B
+task_sr,任务成功率,higher,0.9285,0.861,A
+subtask_sr,子任务成功率,higher,0.9904133735368374,0.9789521773939873,A
+deadline_miss_rate,超时失败率,lower,0.07150000000000001,0.139,A
+avg_rsu_queue,平均RSU队列,lower,1.2607817400178944,0.17676746906294266,B
+avg_power,平均功率,lower,0.45178318551324104,0.5381829966016467,A
+approx_kl,Approx KL,lower,0.01909641082469593,0.008173957943314191,B
+entropy,策略熵,neutral,1.426622525735507,1.18115232694149,A

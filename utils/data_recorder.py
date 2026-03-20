@@ -7,6 +7,26 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
+BASELINE_PLOT_POLICIES = ["Local-Only", "Greedy", "EFT", "CP-EFT"]
+BASELINE_PLOT_COLORS = {
+    "Local-Only": "#95a5a6",
+    "Greedy": "#f39c12",
+    "EFT": "#16a34a",
+    "CP-EFT": "#0ea5e9",
+}
+BASELINE_PLOT_STYLES = {
+    "Local-Only": "-.",
+    "Greedy": ":",
+    "EFT": "--",
+    "CP-EFT": (0, (3, 1, 1, 1)),
+}
+BASELINE_PLOT_MARKERS = {
+    "Local-Only": "s",
+    "Greedy": "^",
+    "EFT": "o",
+    "CP-EFT": "D",
+}
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_AVAILABLE = True
@@ -75,8 +95,8 @@ class DataRecorder:
         self.step_log_path = os.path.join(self.exp_dir, "step_log.csv")
         self.episode_log_path = os.path.join(self.exp_dir, "episode_log.csv")
 
-        self.step_header_written = False
-        self.episode_header_written = False
+        self.step_header_written = os.path.exists(self.step_log_path) and os.path.getsize(self.step_log_path) > 0
+        self.episode_header_written = os.path.exists(self.episode_log_path) and os.path.getsize(self.episode_log_path) > 0
 
         # [新增] 初始化 TensorBoard Writer
         # log_dir 使用相对路径（兼容本地和AutoDL环境）
@@ -198,7 +218,7 @@ class DataRecorder:
             if df.empty: return
 
             # 分离训练数据和baseline数据（兼容旧版duration字段）
-            baseline_policies = ['Random', 'Local-Only', 'Greedy', 'EFT', 'Static']
+            baseline_policies = list(BASELINE_PLOT_POLICIES)
             if 'policy' in df.columns:
                 df_train = df[df['policy'].isna() | (df['policy'] == '')].copy()
                 df_baseline = df[df['policy'].notna() & (df['policy'] != '')].copy()
@@ -258,20 +278,7 @@ class DataRecorder:
                 # 绘制baseline时间序列（如果提供了数据）
                 # 与训练曲线保持一致的绘图风格：平滑曲线，无marker
                 if df_baseline is not None and metric_key is not None and not df_baseline.empty:
-                    baseline_colors = {
-                        'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                        'Greedy': '#f39c12', 'Static': '#7c3aed'
-                    }
-                    baseline_styles = {
-                        'Random': '--', 'Local-Only': '-.',
-                        'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
-                    }
-                    baseline_linewidths = {
-                        'Random': 2.0, 'Local-Only': 2.0,
-                        'Greedy': 2.0, 'Static': 2.0
-                    }
-                    
-                    for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                    for policy_name in BASELINE_PLOT_POLICIES:
                         policy_data = df_baseline[df_baseline['policy'] == policy_name].copy()
                         if not policy_data.empty and metric_key in policy_data.columns:
                             x_baseline = policy_data['episode'].values
@@ -283,27 +290,18 @@ class DataRecorder:
                             else:
                                 y_smooth = y_baseline
                             
-                            color = baseline_colors.get(policy_name, '#7f8c8d')
-                            style = baseline_styles.get(policy_name, '--')
-                            linewidth = baseline_linewidths.get(policy_name, 2.0)
+                            color = BASELINE_PLOT_COLORS.get(policy_name, '#7f8c8d')
+                            style = BASELINE_PLOT_STYLES.get(policy_name, '--')
                             # 绘制平滑曲线，无marker，与训练曲线风格一致
                             plt.plot(x_baseline, y_smooth, color=color, linestyle=style, 
-                                   linewidth=linewidth, label=f'{policy_name}', 
+                                   linewidth=2.0, label=f'{policy_name}', 
                                    alpha=0.85, zorder=4)
                 
                 # 兼容性：绘制水平线（如果提供了baseline_dict但没有df_baseline）
                 elif baseline_dict is not None:
-                    baseline_colors = {
-                        'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                        'Greedy': '#f39c12', 'Static': '#7c3aed'
-                    }
-                    baseline_styles = {
-                        'Random': '--', 'Local-Only': '-.',
-                        'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
-                    }
                     for baseline_name, baseline_value in baseline_dict.items():
-                        color = baseline_colors.get(baseline_name, '#7f8c8d')
-                        style = baseline_styles.get(baseline_name, '--')
+                        color = BASELINE_PLOT_COLORS.get(baseline_name, '#7f8c8d')
+                        style = BASELINE_PLOT_STYLES.get(baseline_name, '--')
                         plt.axhline(y=baseline_value, color=color, linestyle=style, 
                                    linewidth=2, label=f'{baseline_name} Baseline', alpha=0.8)
 
@@ -363,7 +361,7 @@ class DataRecorder:
                 
                 # 为每个baseline策略绘制卸载决策分布
                 if not df_baseline.empty:
-                    for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                    for policy_name in BASELINE_PLOT_POLICIES:
                         policy_data = df_baseline[df_baseline['policy'] == policy_name]
                         if not policy_data.empty:
                             baseline_offload = {}
@@ -507,20 +505,14 @@ class DataRecorder:
             
             # Baseline数据
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {
-                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                    'Greedy': '#f39c12', 'Static': '#7c3aed'
-                }
-                baseline_markers = {'Random': 'x', 'Local-Only': 's', 'Greedy': '^', 'Static': 'D'}
-                
-                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                for policy_name in BASELINE_PLOT_POLICIES:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty and 'avg_latency' in policy_data.columns:
                         avg_lat = policy_data['avg_latency'].mean()
                         avg_eng = policy_data['avg_energy'].mean()
                         ax.scatter(avg_lat, avg_eng, 
-                                 marker=baseline_markers.get(policy_name, 'o'),
-                                 s=300, color=baseline_colors.get(policy_name, '#7f8c8d'),
+                                 marker=BASELINE_PLOT_MARKERS.get(policy_name, 'o'),
+                                 s=300, color=BASELINE_PLOT_COLORS.get(policy_name, '#7f8c8d'),
                                  label=f'{policy_name}', edgecolors='black', linewidth=2,
                                  zorder=10)
             
@@ -572,11 +564,7 @@ class DataRecorder:
             
             # 绘制Baseline（如果有）
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {
-                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                    'Greedy': '#f39c12', 'Static': '#7c3aed'
-                }
-                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                for policy_name in BASELINE_PLOT_POLICIES:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty:
                         baseline_values = [
@@ -589,7 +577,7 @@ class DataRecorder:
                         baseline_values = [max(0, min(1, v)) for v in baseline_values]
                         baseline_values += baseline_values[:1]
                         ax.plot(angles, baseline_values, 'o--', linewidth=1.5, 
-                               color=baseline_colors.get(policy_name), label=policy_name, alpha=0.7)
+                               color=BASELINE_PLOT_COLORS.get(policy_name), label=policy_name, alpha=0.7)
             
             ax.set_xticks(angles[:-1])
             ax.set_xticklabels(categories, size=10)
@@ -701,23 +689,14 @@ class DataRecorder:
             
             # Baseline的CDF
             if df_baseline is not None and not df_baseline.empty:
-                baseline_colors = {
-                    'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                    'Greedy': '#f39c12', 'Static': '#7c3aed'
-                }
-                baseline_styles = {
-                    'Random': '--', 'Local-Only': '-.',
-                    'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
-                }
-                
-                for policy_name in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                for policy_name in BASELINE_PLOT_POLICIES:
                     policy_data = df_baseline[df_baseline['policy'] == policy_name]
                     if not policy_data.empty and 'avg_completion_time' in policy_data.columns:
                         times = policy_data['avg_completion_time'].dropna().sort_values()
                         cdf_bl = np.arange(1, len(times) + 1) / len(times)
                         ax.plot(times, cdf_bl, linewidth=2, 
-                               color=baseline_colors.get(policy_name),
-                               linestyle=baseline_styles.get(policy_name),
+                               color=BASELINE_PLOT_COLORS.get(policy_name),
+                               linestyle=BASELINE_PLOT_STYLES.get(policy_name),
                                label=policy_name, marker='s', markersize=3, alpha=0.8)
             
             ax.set_xlabel('Task Completion Time (s)', fontsize=12, fontweight='bold')
@@ -968,20 +947,13 @@ class DataRecorder:
                 ax.plot(episodes, df['reward_mean'].rolling(window, min_periods=1).mean(),
                        linewidth=2.5, color='darkblue', label='MAPPO (Mean/Step)')
             if df_baseline is not None and 'reward_mean' in df_baseline.columns:
-                for policy in ['Random', 'Local-Only', 'Greedy', 'Static']:
+                for policy in BASELINE_PLOT_POLICIES:
                     policy_data = df_baseline[df_baseline['policy'] == policy].sort_values('episode')
                     if not policy_data.empty:
-                        colors = {
-                            'Random': '#e74c3c', 'Local-Only': '#95a5a6',
-                            'Greedy': '#f39c12', 'Static': '#7c3aed'
-                        }
-                        styles = {
-                            'Random': '--', 'Local-Only': '-.',
-                            'Greedy': ':', 'Static': (0, (3, 1, 1, 1))
-                        }
                         # 使用drawstyle='steps-post'绘制阶梯曲线，确保baseline完整显示
                         ax.plot(policy_data['episode'], policy_data['reward_mean'],
-                               color=colors.get(policy, 'gray'), linestyle=styles.get(policy, '--'),
+                               color=BASELINE_PLOT_COLORS.get(policy, 'gray'),
+                               linestyle=BASELINE_PLOT_STYLES.get(policy, '--'),
                                linewidth=2, label=f'{policy}', alpha=0.8, drawstyle='steps-post')
             ax.set_xlabel('Episode')
             ax.set_ylabel('Reward (per step)')

@@ -544,6 +544,12 @@ def _parse_args():
         default=False,
         help="Use --run-dir exactly as provided (no timestamp suffix).",
     )
+    parser.add_argument(
+        "--allow-log-append",
+        action="store_true",
+        default=False,
+        help="Allow reusing an exact run-dir even when training CSV logs already exist.",
+    )
     parser.add_argument("--step-metrics", action="store_true", default=False)
     parser.add_argument("--no-step-metrics", action="store_true", default=False)
     parser.add_argument("--step-logs", action="store_true", default=False)
@@ -1634,6 +1640,25 @@ def main():
     plots_dir = os.path.join(run_dir, "plots")
     models_dir = os.path.join(run_dir, "models")
     audit_results_dir = os.path.join(run_dir, "audit_results")
+    if args.exact_run_dir and not args.allow_log_append:
+        existing_log_paths = []
+        for path in [
+            os.path.join(run_dir, "episode_log.csv"),
+            os.path.join(run_dir, "step_log.csv"),
+            os.path.join(logs_dir, "training_stats.csv"),
+            os.path.join(logs_dir, "metrics.csv"),
+            os.path.join(metrics_dir, "metrics.csv"),
+            os.path.join(metrics_dir, "train_metrics.csv"),
+        ]:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                existing_log_paths.append(path)
+        if existing_log_paths:
+            preview = ", ".join(existing_log_paths[:3])
+            raise RuntimeError(
+                "Refusing to reuse exact run-dir with existing non-empty training logs. "
+                "Use a fresh run-dir or pass --allow-log-append if you intentionally want to append. "
+                f"Found: {preview}"
+            )
     _ensure_dir(run_dir)
     _ensure_dir(logs_dir)
     _ensure_dir(plots_dir)

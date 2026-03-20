@@ -69,25 +69,39 @@ def _rolling(s: pd.Series, window: int) -> pd.Series:
     return s.rolling(window=w, min_periods=1).mean()
 
 
-def _load_rl(run_dir: str) -> pd.DataFrame:
+def _load_rl(run_dir: str, rl_csv: Optional[str] = None) -> pd.DataFrame:
+    candidates = []
+    if rl_csv:
+        candidates.append(os.path.abspath(rl_csv))
     metrics_dir = os.path.join(run_dir, "metrics")
-    candidates = [
-        os.path.join(metrics_dir, "train_metrics_full.csv"),
-        os.path.join(metrics_dir, "train_metrics.csv"),
-    ]
+    candidates.extend(
+        [
+            os.path.join(metrics_dir, "train_metrics_full.csv"),
+            os.path.join(metrics_dir, "train_metrics.csv"),
+            os.path.join(run_dir, "logs", "metrics.csv"),
+            os.path.join(run_dir, "logs", "training_stats.csv"),
+        ]
+    )
     path = next((p for p in candidates if os.path.exists(p)), None)
     if not path:
-        raise FileNotFoundError("未找到 RL 指标文件: metrics/train_metrics_full.csv 或 train_metrics.csv")
+        raise FileNotFoundError("未找到 RL 指标文件")
     df = pd.read_csv(path)
     if "episode" not in df.columns:
         raise ValueError(f"RL 指标缺少 episode 列: {path}")
+    for dst, src in [
+        ("task_success_rate", "task_sr"),
+        ("subtask_success_rate", "subtask_sr"),
+        ("veh_success_rate", "vehicle_sr"),
+    ]:
+        if dst not in df.columns and src in df.columns:
+            df[dst] = df[src]
     df = df.sort_values("episode").reset_index(drop=True)
     df.attrs["_path"] = path
     return df
 
 
-def _load_baselines(run_dir: str) -> pd.DataFrame:
-    path = os.path.join(run_dir, "logs", "baseline_stats.csv")
+def _load_baselines(run_dir: str, baseline_csv: Optional[str] = None) -> pd.DataFrame:
+    path = os.path.abspath(baseline_csv) if baseline_csv else os.path.join(run_dir, "logs", "baseline_stats.csv")
     if not os.path.exists(path):
         raise FileNotFoundError("未找到 baseline: logs/baseline_stats.csv")
     df = pd.read_csv(path)
@@ -801,16 +815,19 @@ def main() -> None:
     ap.add_argument("--run-dir", type=str, required=True)
     ap.add_argument("--out-name", type=str, default="final_rigorous_cn")
     ap.add_argument("--window", type=int, default=50)
+    ap.add_argument("--output-dir", type=str, default=None)
+    ap.add_argument("--rl-csv", type=str, default=None)
+    ap.add_argument("--baseline-csv", type=str, default=None)
     args = ap.parse_args()
 
     _set_cn_style()
 
     run_dir = os.path.abspath(args.run_dir)
-    out_dir = os.path.join(run_dir, args.out_name)
+    out_dir = os.path.abspath(args.output_dir) if args.output_dir else os.path.join(run_dir, args.out_name)
     os.makedirs(out_dir, exist_ok=True)
 
-    df_rl = _load_rl(run_dir)
-    df_b_raw = _load_baselines(run_dir)
+    df_rl = _load_rl(run_dir, args.rl_csv)
+    df_b_raw = _load_baselines(run_dir, args.baseline_csv)
     max_ep = int(df_rl["episode"].max())
     df_b_plot = _expand_baselines(df_b_raw, max_ep)
 

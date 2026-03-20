@@ -1,0 +1,5 @@
+policy,episodes,act_mean,act_std,makespan_mean,energy_mean,energy_std,task_success_rate_mean,deadline_meet_ratio_mean
+Local-Only,50,,,,,,0.853,
+Greedy,50,,,,,,0.867,
+EFT,50,,,,,,0.579,
+CP-EFT,50,,,,,,0.596,

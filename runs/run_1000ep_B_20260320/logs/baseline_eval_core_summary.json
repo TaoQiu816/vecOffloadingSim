@@ -1,0 +1,46 @@
+[
+  {
+    "policy": "Local-Only",
+    "episodes": 50,
+    "act_mean": null,
+    "act_std": null,
+    "makespan_mean": null,
+    "energy_mean": null,
+    "energy_std": null,
+    "task_success_rate_mean": 0.853,
+    "deadline_meet_ratio_mean": null
+  },
+  {
+    "policy": "Greedy",
+    "episodes": 50,
+    "act_mean": null,
+    "act_std": null,
+    "makespan_mean": null,
+    "energy_mean": null,
+    "energy_std": null,
+    "task_success_rate_mean": 0.867,
+    "deadline_meet_ratio_mean": null
+  },
+  {
+    "policy": "EFT",
+    "episodes": 50,
+    "act_mean": null,
+    "act_std": null,
+    "makespan_mean": null,
+    "energy_mean": null,
+    "energy_std": null,
+    "task_success_rate_mean": 0.579,
+    "deadline_meet_ratio_mean": null
+  },
+  {
+    "policy": "CP-EFT",
+    "episodes": 50,
+    "act_mean": null,
+    "act_std": null,
+    "makespan_mean": null,
+    "energy_mean": null,
+    "energy_std": null,
+    "task_success_rate_mean": 0.596,
+    "deadline_meet_ratio_mean": null
+  }
+]
