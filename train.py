@@ -157,6 +157,43 @@ BASELINE_STATS_FIELDS = [
     "I_total_mean", "I_total_p50", "I_total_p95", "I_caused_mean", "I_caused_p95",
     "chain_tx_total", "chain_p95_mean", "chain_pfail_mean", "chain_risk_cost_total",
     "avg_queue_len", "avg_rsu_queue",
+    "completed_tasks_count",
+    "t_tx_mean", "dT_eff_mean", "dT_eff_p95",
+    "deadline_seconds_mean", "deadline_gamma_mean", "critical_path_cycles_mean",
+    "terminated_reason", "idle_terminate_count",
+    "task_success_count", "task_completion_count", "audit_deadline_misses",
+    "physical_steps", "decision_steps", "active_decision_ratio",
+    "deadlock_vehicle_count", "episode_vehicle_count", "episode_task_count",
+    "tx_tasks_created_count", "same_node_no_tx_count",
+    "idle_fraction", "service_rate_when_active",
+    "fallback_rate", "not_in_candidate_fallback_cnt", "illegal_by_connectivity_cnt",
+    "candidate_reachable_cnt_mean", "candidate_reachable_cnt_p95",
+    "candidate_dropped_cnt_mean", "candidate_dropped_cnt_p95",
+    "rsu_gate_total", "rsu_gate_blocked",
+    "avail_L", "avail_R", "avail_V", "neighbor_count_mean",
+    "best_v2v_rate_mean", "best_v2v_valid_rate",
+    "best_mode_compare_rate", "best_mode_local_rate", "best_mode_rsu_rate", "best_mode_v2v_rate",
+    "v2v_beats_rsu_rate", "mean_cost_gap_v2v_minus_rsu", "mean_cost_rsu", "mean_cost_v2v",
+    "oracle_match_rate", "mode_match_rate", "oracle_match_rate_on_task",
+    "target_match_within_mode_rate", "target_regret_within_mode_mean",
+    "oracle_valid_count", "oracle_local_chosen_local_rate", "oracle_local_chosen_rsu_rate", "oracle_local_chosen_v2v_rate",
+    "oracle_rsu_chosen_local_rate", "oracle_rsu_chosen_rsu_rate", "oracle_rsu_chosen_v2v_rate",
+    "oracle_v2v_chosen_local_rate", "oracle_v2v_chosen_rsu_rate", "oracle_v2v_chosen_v2v_rate",
+    "action_regret_mean", "action_regret_p50", "action_regret_p95", "action_regret_mean_on_task",
+    "v2v_gain_mean", "v2v_gain_pos_rate", "v2v_gain_pos_mean",
+    "rho_selected_mean", "rho_selected_p10", "rho_selected_p50", "rho_selected_p95",
+    "rho_selected_lt_0p6_rate", "rho_selected_lt_0p7_rate",
+    "uncertainty_selected_mean", "uncertainty_selected_p90", "risk_penalty_mean",
+    "trust_attempts", "trust_failures", "trust_failure_rate", "trust_retry_count", "malicious_count",
+    "edge_rate_recompute_cnt_mean", "edge_rate_delta_mean", "edge_rate_delta_p95",
+    "v2v_tx_jobs", "v2v_link_break_count",
+    "delta_phi_mean", "delta_phi_p50", "delta_phi_p95", "delta_phi_min", "delta_phi_max",
+    "shape_clip_hit_rate", "r_total_clip_hit_rate", "reward_clip_hit_rate", "reward_clip_hit_count",
+    "dT_mean", "cft_prev_rem_mean", "cft_curr_rem_mean", "dt_used_mean", "implied_dt_mean",
+    "dCFT_abs_mean", "dCFT_abs_p95", "dCFT_rem_mean", "dCFT_rem_p95", "dCFT_prog_mean", "dCFT_prog_p95",
+    "r_prog_mean", "mean_r_prog", "mean_r_term",
+    "reward_step_p95", "r_prog_on_task_mean", "r_prog_on_task_abs_mean", "r_term_on_task_abs_mean",
+    "abs_ratio_on_task_r_prog", "abs_ratio_on_task_r_term", "abs_ratio_basis",
 ]
 
 
@@ -170,6 +207,25 @@ def get_training_stats_fields() -> List[str]:
 
 def get_baseline_stats_fields() -> List[str]:
     return list(BASELINE_STATS_FIELDS)
+
+
+def _get_scalar_episode_metrics(env: Any, last_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Extract scalar per-episode metrics from env bookkeeping for baseline export."""
+    episode_metrics: Dict[str, Any] = {}
+    env_metrics = getattr(env, "_last_episode_metrics", None)
+    if isinstance(env_metrics, dict):
+        episode_metrics.update(env_metrics)
+    if last_info:
+        info_metrics = last_info.get("episode_metrics", {})
+        if isinstance(info_metrics, dict):
+            for key, value in info_metrics.items():
+                episode_metrics.setdefault(key, value)
+
+    scalar_metrics: Dict[str, Any] = {}
+    for key, value in episode_metrics.items():
+        if isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+            scalar_metrics[key] = value.item() if hasattr(value, "item") else value
+    return scalar_metrics
 
 
 def _build_agent_metric_map(agent_ids, values) -> Dict[int, float]:
@@ -775,6 +831,9 @@ def apply_env_overrides():
     use_fixed_power = _env_bool("USE_FIXED_POWER")
     if use_fixed_power is not None:
         TC.USE_FIXED_POWER = use_fixed_power
+    ablation_mode = os.environ.get("ABLATION_MODE")
+    if ablation_mode:
+        TC.ABLATION_MODE = str(ablation_mode).strip().lower()
     use_cmdp = _env_bool("CMDP_ENABLE")
     if use_cmdp is not None:
         TC.CMDP_ENABLE = use_cmdp
@@ -1384,7 +1443,7 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     subtask_success_rate = (completed_subtasks / total_subtasks) if total_subtasks > 0 else 0.0
     v2v_subtask_success_rate = (v2v_subtasks_completed / v2v_subtasks_attempted) if v2v_subtasks_attempted > 0 else 0.0
     
-    episode_metrics = last_info.get("episode_metrics", {}) if last_info else {}
+    episode_metrics = _get_scalar_episode_metrics(env, last_info)
     collab_gain_mean = episode_metrics.get("v2v_gain_mean")
     collab_gain_pos_rate = episode_metrics.get("v2v_gain_pos_rate")
     collab_gain_pos_mean = episode_metrics.get("v2v_gain_pos_mean")
@@ -1400,7 +1459,7 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
     avg_veh_queue = stats['queue_len_sum'] / dec_den if total_decisions > 0 else 0.0
     avg_rsu_queue = stats['rsu_queue_sum'] / total_steps if total_steps > 0 else 0.0
 
-    epm = last_info.get("episode_metrics", {}) if last_info else {}
+    epm = episode_metrics
     if epm:
         frac_local = float(epm.get("decision_frac_local", frac_local))
         frac_rsu = float(epm.get("decision_frac_rsu", frac_rsu))
@@ -1439,7 +1498,7 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         except Exception:
             deadline_meet_ratio = None
     
-    return {
+    metrics = {
         'total_reward': ep_reward,
         'avg_step_reward': avg_step_reward,
         'veh_success_rate': veh_success_rate,
@@ -1489,6 +1548,12 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         'v2v_gain_pos_rate': collab_gain_pos_rate if collab_gain_pos_rate is not None else 0.0,
         'v2v_gain_pos_mean': collab_gain_pos_mean if collab_gain_pos_mean is not None else 0.0,
     }
+    for key in BASELINE_STATS_FIELDS:
+        if key in metrics or key in {"episode", "policy"}:
+            continue
+        if key in epm:
+            metrics[key] = epm.get(key)
+    return metrics
 
 
 def main():
@@ -3938,6 +4003,11 @@ def main():
                     "avg_queue_len": baseline_metrics['avg_queue_len'],
                     "avg_rsu_queue": baseline_metrics.get('avg_rsu_queue', 0.0),
                 }
+                for field in baseline_stats_fields:
+                    if field in baseline_stats_row:
+                        continue
+                    if field in baseline_metrics:
+                        baseline_stats_row[field] = baseline_metrics.get(field)
                 with open(baseline_stats_csv, "a", newline="", encoding="utf-8") as f:
                     writer = csv.DictWriter(f, fieldnames=baseline_stats_fields, extrasaction="ignore")
                     if not baseline_header_written:

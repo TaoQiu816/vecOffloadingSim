@@ -1,0 +1,9 @@
+{
+  "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321",
+  "created_at": "2026-03-22 15:58:51",
+  "git_commit": "cdec6e62f02912b0e0c6673c11e9805524a02179",
+  "config_hash": "720b7c5d81cd3fd61e24d89fc126ded64ac319f4cfca343f31132b2a59f01539",
+  "seed": 42,
+  "max_steps": 300,
+  "num_episodes": 50
+}

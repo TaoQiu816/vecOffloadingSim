@@ -1,7 +1,7 @@
 {
   "run_dir": "/Users/qiutao/\u7814/\u6bd5\u8bbe/\u6bd5\u8bbe/vecOffloadingSim/runs/run_1000ep_A_20260320",
-  "created_at": "2026-03-20 20:21:45",
-  "git_commit": "9cdf31fcb10f39493bceec57b2dc525607eb9e78",
+  "created_at": "2026-03-22 15:58:51",
+  "git_commit": "cdec6e62f02912b0e0c6673c11e9805524a02179",
   "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
   "seed": 42,
   "max_steps": 300,

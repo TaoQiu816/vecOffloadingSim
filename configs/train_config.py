@@ -60,6 +60,7 @@ class TrainConfig:
     # -------------------------------------------------------------------------
     # 算法消融开关 (Algorithm Ablation Switches)
     # -------------------------------------------------------------------------
+    ABLATION_MODE = "full"         # {"full", "no_dag", "no_resource", "no_dag_resource"}
     USE_EDGE_BIAS = True            # Edge-Enhanced Attention中的边特征偏置
     USE_SPATIAL_BIAS = True         # Edge-Enhanced Attention中的空间距离偏置
     USE_PHYSICS_BIAS = True         # Cross-Attention中的物理偏置(距离+负载)

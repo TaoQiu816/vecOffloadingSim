@@ -55,6 +55,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from configs.config import SystemConfig as Cfg
 from configs.constants import MASK_VALUE
+from configs.train_config import TrainConfig as TC
 
 
 class CrossAttentionWithPhysicsBias(nn.Module):
@@ -260,7 +261,13 @@ class ActorHead(nn.Module):
         """
         batch_size = h_fused.shape[0]
         n_res = h_res.shape[1]
-        
+        ablation_mode = str(getattr(TC, "ABLATION_MODE", "full")).strip().lower()
+        disable_resource = ablation_mode in {"no_resource", "no_dag_resource"}
+
+        if disable_resource:
+            h_res = torch.zeros_like(h_res)
+            resource_raw = torch.zeros_like(resource_raw)
+
         # 1. Target Head：成对拼接 + 批量计算
         # Broadcast h_fused: [B, d] -> [B, N_res, d]
         h_fused_expanded = h_fused.unsqueeze(1).expand(-1, n_res, -1)
@@ -275,6 +282,8 @@ class ActorHead(nn.Module):
         else:
             type_idx = torch.clamp(candidate_types.long() - 1, min=0, max=2)
             type_oh = F.one_hot(type_idx, num_classes=3).to(dtype=resource_raw.dtype, device=resource_raw.device)
+        if disable_resource:
+            type_oh = torch.zeros_like(type_oh)
         pair_raw = torch.cat([node_selected_expanded, resource_raw, type_oh], dim=-1)
         h_pair = self.pairwise_proj(pair_raw)
 

@@ -354,6 +354,11 @@ def main():
                         "avg_queue_len": metrics["avg_queue_len"],
                         "avg_rsu_queue": metrics.get("avg_rsu_queue", 0.0),
                     }
+                    for field in baseline_stats_fields:
+                        if field in row:
+                            continue
+                        if field in metrics:
+                            row[field] = metrics.get(field)
                     writer.writerow(row)
                     rows_written += 1
                     f.flush()
@@ -401,19 +406,38 @@ def main():
         import numpy as np
         act_vals = _vals("act_seconds")
         makespan_vals = _vals("makespan_seconds")
+        cft_vals = _vals("mean_cft_completed")
+        duration_vals = _vals("task_duration_mean")
+        duration_p95_vals = _vals("task_duration_p95")
         energy_vals = _vals("energy_mean")
+        energy_p95_vals = _vals("energy_p95")
         tsr_vals = _vals("task_success_rate")
         dmr_vals = _vals("deadline_miss_rate")
+        queue_vals = _vals("avg_rsu_queue")
+        power_vals = _vals("avg_power")
+        local_vals = _vals("decision_frac_local")
+        rsu_vals = _vals("decision_frac_rsu")
+        v2v_vals = _vals("decision_frac_v2v")
         core_summary.append({
             "policy": policy_name,
             "episodes": len(records),
             "act_mean": float(np.mean(act_vals)) if act_vals else None,
             "act_std": float(np.std(act_vals)) if act_vals else None,
             "makespan_mean": float(np.mean(makespan_vals)) if makespan_vals else None,
+            "mean_cft_completed_mean": float(np.mean(cft_vals)) if cft_vals else None,
+            "task_duration_mean": float(np.mean(duration_vals)) if duration_vals else None,
+            "task_duration_p95_mean": float(np.mean(duration_p95_vals)) if duration_p95_vals else None,
             "energy_mean": float(np.mean(energy_vals)) if energy_vals else None,
             "energy_std": float(np.std(energy_vals)) if energy_vals else None,
+            "energy_p95_mean": float(np.mean(energy_p95_vals)) if energy_p95_vals else None,
             "task_success_rate_mean": float(np.mean(tsr_vals)) if tsr_vals else None,
+            "deadline_miss_rate_mean": float(np.mean(dmr_vals)) if dmr_vals else None,
             "deadline_meet_ratio_mean": (float(np.mean([max(0.0, min(1.0, 1.0 - x)) for x in dmr_vals])) if dmr_vals else None),
+            "avg_rsu_queue_mean": float(np.mean(queue_vals)) if queue_vals else None,
+            "avg_power_mean": float(np.mean(power_vals)) if power_vals else None,
+            "decision_frac_local_mean": float(np.mean(local_vals)) if local_vals else None,
+            "decision_frac_rsu_mean": float(np.mean(rsu_vals)) if rsu_vals else None,
+            "decision_frac_v2v_mean": float(np.mean(v2v_vals)) if v2v_vals else None,
         })
     core_json = os.path.join(logs_dir, "baseline_eval_core_summary.json")
     with open(core_json, "w", encoding="utf-8") as f:
@@ -424,8 +448,12 @@ def main():
         fieldnames = [
             "policy", "episodes",
             "act_mean", "act_std", "makespan_mean",
-            "energy_mean", "energy_std",
-            "task_success_rate_mean", "deadline_meet_ratio_mean",
+            "mean_cft_completed_mean",
+            "task_duration_mean", "task_duration_p95_mean",
+            "energy_mean", "energy_std", "energy_p95_mean",
+            "task_success_rate_mean", "deadline_miss_rate_mean", "deadline_meet_ratio_mean",
+            "avg_rsu_queue_mean", "avg_power_mean",
+            "decision_frac_local_mean", "decision_frac_rsu_mean", "decision_frac_v2v_mean",
         ]
         with open(core_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)

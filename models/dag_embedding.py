@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 from configs.config import SystemConfig as Cfg
 from configs.constants import MASK_VALUE
+from configs.train_config import TrainConfig as TC
 
 
 class LocationEncoder(nn.Module):
@@ -181,6 +182,22 @@ class DAGNodeEmbedding(nn.Module):
         Returns:
             [Batch, MAX_NODES, d_model], 节点嵌入
         """
+        ablation_mode = str(getattr(TC, "ABLATION_MODE", "full")).strip().lower()
+        disable_dag = ablation_mode in {"no_dag", "no_dag_resource"}
+        disable_resource = ablation_mode in {"no_resource", "no_dag_resource"}
+
+        if disable_dag:
+            node_x = node_x.clone()
+            # Strip topology-derived scalars but keep basic local task attributes.
+            for col in (2, 3, 4, 6):
+                if col < node_x.shape[-1]:
+                    node_x[..., col] = 0.0
+            status = torch.zeros_like(status)
+            L_fwd = torch.zeros_like(L_fwd)
+            L_bwd = torch.zeros_like(L_bwd)
+        if disable_resource:
+            location = torch.zeros_like(location)
+
         # 1. 连续特征投影
         continuous_emb = self.continuous_proj(node_x)  # [B, N, d_model]
         
@@ -189,7 +206,7 @@ class DAGNodeEmbedding(nn.Module):
         
         # 3. 位置嵌入
         location_emb = self.location_encoder(location)  # [B, N, d_model]
-        
+
         # 4. 拓扑位置嵌入
         topo_emb = self.topo_position_encoder(L_fwd, L_bwd)  # [B, N, d_model]
         

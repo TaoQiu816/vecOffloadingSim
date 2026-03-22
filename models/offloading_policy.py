@@ -168,6 +168,29 @@ class OffloadingPolicyNetwork(nn.Module):
         nn.init.zeros_(self.power_cond_mlp[-1].bias)
     
     @staticmethod
+    def _ablation_flags() -> Tuple[bool, bool, str]:
+        mode = str(getattr(TC, "ABLATION_MODE", "full")).strip().lower()
+        disable_dag = mode in {"no_dag", "no_dag_resource"}
+        disable_resource = mode in {"no_resource", "no_dag_resource"}
+        return disable_dag, disable_resource, mode
+
+    def _sanitize_policy_side_channels(
+        self,
+        resource_raw: torch.Tensor,
+        candidate_types: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        disable_dag, disable_resource, _ = self._ablation_flags()
+        if not disable_resource:
+            return resource_raw, candidate_types, action_mask
+        # Keep action_mask only as legality constraint; strip all resource semantics.
+        return (
+            torch.zeros_like(resource_raw),
+            torch.zeros_like(candidate_types),
+            action_mask,
+        )
+
+    @staticmethod
     def _apply_logit_bias(target_logits: torch.Tensor,
                           candidate_types: torch.Tensor,
                           action_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -459,13 +482,28 @@ class OffloadingPolicyNetwork(nn.Module):
         """
         if node_valid_mask is None:
             node_valid_mask = task_mask
+        disable_dag, disable_resource, _ = self._ablation_flags()
+
+        node_raw_for_head = node_x
+        if disable_dag:
+            node_raw_for_head = node_x.clone()
+            for col in (2, 3, 4, 6):
+                if col < node_raw_for_head.shape[-1]:
+                    node_raw_for_head[..., col] = 0.0
+            adj = torch.zeros_like(adj)
+            data_matrix = torch.zeros_like(data_matrix)
+            delta = torch.zeros_like(delta)
 
         # 1. DAG节点嵌入
         node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
 
         # 2. 计算边偏置和空间偏置（支持消融开关）
-        edge_bias = self.edge_encoder(data_matrix) if getattr(TC, "USE_EDGE_BIAS", True) else None
-        spatial_bias = self.spatial_encoder(delta) if getattr(TC, "USE_SPATIAL_BIAS", True) else None
+        edge_bias = None
+        spatial_bias = None
+        if not disable_dag and getattr(TC, "USE_EDGE_BIAS", True):
+            edge_bias = self.edge_encoder(data_matrix)
+        if not disable_dag and getattr(TC, "USE_SPATIAL_BIAS", True):
+            spatial_bias = self.spatial_encoder(delta)
 
         # 2.5 [暂时停用] Rank偏置（priority/rank 相关路径）
         rank_bias = None
@@ -512,6 +550,13 @@ class OffloadingPolicyNetwork(nn.Module):
             rsu_ctx = self.serving_rsu_proj(serving_rsu_onehot).unsqueeze(1)
             resource_encoded = resource_encoded + rsu_ctx  # broadcast到 [B, M, d_model]
 
+        resource_raw_for_head = resource_raw
+        if disable_resource:
+            resource_encoded = torch.zeros_like(resource_encoded)
+            resource_raw_for_head = torch.zeros_like(resource_raw)
+            if global_state is not None:
+                global_state = torch.zeros_like(global_state)
+
         # 6. 生成资源padding mask（padding或不可选动作）
         resource_padding_mask = (resource_ids == 0)
         if action_mask is not None:
@@ -528,17 +573,21 @@ class OffloadingPolicyNetwork(nn.Module):
                     device=node_x.device,
                 )
         commwait_extra = global_state
-        
+        subtask_mask_for_model = subtask_mask if subtask_mask is not None else node_valid_mask
+        if disable_dag:
+            # Keep readiness only in the external legality mask, not in critic conditioning.
+            subtask_mask_for_model = node_valid_mask
+
         # 7. Actor-Critic输出
         subtask_logits, target_logits, alpha, beta, value, cost_power_value, cost_trust_value = self.actor_critic(
             dag_features=dag_features,
-            node_raw=node_x,
+            node_raw=node_raw_for_head,
             resource_encoded=resource_encoded,
-            resource_raw=resource_raw,
+            resource_raw=resource_raw_for_head,
             subtask_index=subtask_index,
             action_mask=action_mask,
             candidate_types=candidate_types,
-            subtask_mask=subtask_mask if subtask_mask is not None else node_valid_mask,
+            subtask_mask=subtask_mask_for_model,
             task_mask=node_valid_mask,
             resource_padding_mask=resource_padding_mask,
             commwait_extra=commwait_extra,
@@ -567,6 +616,11 @@ class OffloadingPolicyNetwork(nn.Module):
         """
         # 1. 准备输入
         inputs = self.prepare_inputs(obs_list, device)
+        policy_resource_raw, policy_candidate_types, policy_action_mask = self._sanitize_policy_side_channels(
+            inputs["resource_raw"],
+            inputs["candidate_types"],
+            inputs["action_mask"],
+        )
         
         # 2. 前向传播
         subtask_logits, target_logits, alpha, beta, values_env, cost_power_values, cost_trust_values = self.forward(
@@ -632,12 +686,12 @@ class OffloadingPolicyNetwork(nn.Module):
         # [通用化] 根据candidate_types动态赋logit_bias
         target_logits = self._apply_logit_bias(
             target_logits,
-            inputs['candidate_types'],
-            action_mask=inputs['action_mask'],
+            policy_candidate_types,
+            action_mask=policy_action_mask,
         )
         
         # 应用action_mask（在Categorical/softmax前执行），非法动作logit强制压到极小值
-        action_mask_tensor = inputs['action_mask'] > 0
+        action_mask_tensor = policy_action_mask > 0
         if action_mask_tensor.ndim == 2:
             no_valid = ~action_mask_tensor.any(dim=-1)
             if torch.any(no_valid):
@@ -657,15 +711,19 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_target = target_dist.log_prob(target_actions)
 
         # target类型：1=Local, 2=RSU, 3=V2V
-        sel_type = self._gather_selected(inputs['candidate_types'], target_actions).long()
-        remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
+        _, disable_resource, _ = self._ablation_flags()
+        if disable_resource:
+            remote_mask = (target_actions != 0).to(dtype=log_prob_target.dtype)
+        else:
+            sel_type = self._gather_selected(policy_candidate_types, target_actions).long()
+            remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
 
         # 4. Power采样（条件Beta分布，显式依赖target）
         power_dist = self._build_target_conditioned_power_dist(
             alpha=alpha,
             beta=beta,
-            resource_raw=inputs['resource_raw'],
-            candidate_types=inputs['candidate_types'],
+            resource_raw=policy_resource_raw,
+            candidate_types=policy_candidate_types,
             target_actions=target_actions,
         )
         
@@ -713,6 +771,11 @@ class OffloadingPolicyNetwork(nn.Module):
         """
         # 1. 准备输入
         inputs = self.prepare_inputs(obs_list, device)
+        policy_resource_raw, policy_candidate_types, policy_action_mask = self._sanitize_policy_side_channels(
+            inputs["resource_raw"],
+            inputs["candidate_types"],
+            inputs["action_mask"],
+        )
         
         # 2. 前向传播
         subtask_logits, _, _, _, values, cost_power_values, cost_trust_values = self.forward(
@@ -774,12 +837,12 @@ class OffloadingPolicyNetwork(nn.Module):
         # [通用化] 根据candidate_types动态赋logit_bias（与采样时一致）
         target_logits = self._apply_logit_bias(
             target_logits,
-            inputs['candidate_types'],
-            action_mask=inputs['action_mask'],
+            policy_candidate_types,
+            action_mask=policy_action_mask,
         )
 
         # 应用action_mask（在Categorical/softmax前执行），非法动作logit强制压到极小值
-        action_mask_tensor = inputs['action_mask'] > 0
+        action_mask_tensor = policy_action_mask > 0
         if action_mask_tensor.ndim == 2:
             no_valid = ~action_mask_tensor.any(dim=-1)
             if torch.any(no_valid):
@@ -796,12 +859,16 @@ class OffloadingPolicyNetwork(nn.Module):
         power_dist = self._build_target_conditioned_power_dist(
             alpha=alpha,
             beta=beta,
-            resource_raw=inputs['resource_raw'],
-            candidate_types=inputs['candidate_types'],
+            resource_raw=policy_resource_raw,
+            candidate_types=policy_candidate_types,
             target_actions=target_actions,
         )
-        sel_type = self._gather_selected(inputs['candidate_types'], target_actions).long()
-        remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
+        _, disable_resource, _ = self._ablation_flags()
+        if disable_resource:
+            remote_mask = (target_actions != 0).to(dtype=log_prob_target.dtype)
+        else:
+            sel_type = self._gather_selected(policy_candidate_types, target_actions).long()
+            remote_mask = (sel_type != 1).to(dtype=log_prob_target.dtype)
         if bool(getattr(TC, "USE_FIXED_POWER", False)):
             log_prob_power = torch.zeros_like(log_prob_target)
             entropy_power = torch.zeros_like(entropy_target)
@@ -819,8 +886,8 @@ class OffloadingPolicyNetwork(nn.Module):
 
         aux = {
             'masked_target_logits': masked_logits,
-            'candidate_types': inputs['candidate_types'],
-            'action_mask': inputs['action_mask'],
+            'candidate_types': policy_candidate_types,
+            'action_mask': policy_action_mask,
             'cost_power_values': cost_power_values,
             'cost_trust_values': cost_trust_values,
         }
