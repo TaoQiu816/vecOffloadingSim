@@ -1,0 +1,326 @@
+{
+  "generated_at": "2026-03-22 23:53:35",
+  "plots_dir": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots",
+  "plot_count": 35,
+  "tag_counts": {
+    "rl_diagnostics": 6,
+    "baseline": 6,
+    "policy": 3,
+    "multi_agent": 3,
+    "simulation": 5,
+    "reward": 4,
+    "success": 4
+  },
+  "jobs": [
+    {
+      "job": "DataRecorder.plot_training_stats",
+      "ok": true,
+      "seconds": 6.483267784118652,
+      "tail": []
+    },
+    {
+      "job": "plot_results.py",
+      "ok": true,
+      "seconds": 16.96682071685791,
+      "tail": [
+        "✓ Saved: fig_latency_with_baselines.png",
+        "✓ Saved: fig_summary_dashboard.png",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots"
+      ]
+    },
+    {
+      "job": "generate_all_plots.py",
+      "ok": true,
+      "seconds": 8.52807092666626,
+      "tail": [
+        "⚠ No baseline data found, skipping baseline comparison plot",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots",
+        "  Total plots: 8"
+      ]
+    },
+    {
+      "job": "plot_mappo_vs_baselines.py",
+      "ok": true,
+      "skipped": true,
+      "seconds": 0.0,
+      "tail": [
+        "baseline_stats.csv missing/empty or script not found"
+      ]
+    },
+    {
+      "job": "DataRecorder.auto_plot",
+      "ok": true,
+      "seconds": 11.21734881401062,
+      "tail": []
+    }
+  ],
+  "figures": [
+    {
+      "file": "bias_annealing.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/bias_annealing.png",
+      "size_bytes": 115609,
+      "tags": []
+    },
+    {
+      "file": "cpu_efficiency.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/cpu_efficiency.png",
+      "size_bytes": 320593,
+      "tags": []
+    },
+    {
+      "file": "episode_duration.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/episode_duration.png",
+      "size_bytes": 506237,
+      "tags": []
+    },
+    {
+      "file": "fig_constraint_health.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_constraint_health.png",
+      "size_bytes": 661241,
+      "tags": []
+    },
+    {
+      "file": "fig_convergence_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_convergence_analysis.png",
+      "size_bytes": 362079,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_convergence_baseline.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_convergence_baseline.png",
+      "size_bytes": 1169448,
+      "tags": [
+        "rl_diagnostics",
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_convergence_recheck.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_convergence_recheck.png",
+      "size_bytes": 1552287,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_decision_distribution.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_decision_distribution.png",
+      "size_bytes": 176281,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_latency_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_latency_with_baselines.png",
+      "size_bytes": 644385,
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_multi_agent_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_multi_agent_metrics.png",
+      "size_bytes": 445980,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "fig_physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_physical_metrics.png",
+      "size_bytes": 716645,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "fig_policy_evolution.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_policy_evolution.png",
+      "size_bytes": 236376,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_reward_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_reward_analysis.png",
+      "size_bytes": 457846,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "fig_success_rate_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_success_rate_analysis.png",
+      "size_bytes": 197318,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "fig_summary_dashboard.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_summary_dashboard.png",
+      "size_bytes": 953546,
+      "tags": []
+    },
+    {
+      "file": "fig_system_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_system_metrics.png",
+      "size_bytes": 348337,
+      "tags": []
+    },
+    {
+      "file": "fig_training_diagnostics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_training_diagnostics.png",
+      "size_bytes": 1059709,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/fig_training_overview.png",
+      "size_bytes": 838297,
+      "tags": []
+    },
+    {
+      "file": "loss_curve.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/loss_curve.png",
+      "size_bytes": 288882,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "ma_collaboration_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/ma_collaboration_with_baselines.png",
+      "size_bytes": 346607,
+      "tags": [
+        "baseline",
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_fairness.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/ma_fairness.png",
+      "size_bytes": 312649,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_reward_gap.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/ma_reward_gap.png",
+      "size_bytes": 325249,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "offloading_ratio.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/offloading_ratio.png",
+      "size_bytes": 488930,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "performance_radar.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/performance_radar.png",
+      "size_bytes": 455220,
+      "tags": []
+    },
+    {
+      "file": "physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/physical_metrics.png",
+      "size_bytes": 981671,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_len.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/queue_len.png",
+      "size_bytes": 501051,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_load_balance.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/queue_load_balance.png",
+      "size_bytes": 179859,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "resource_utilization.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/resource_utilization.png",
+      "size_bytes": 1002781,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "reward_curve_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/reward_curve_with_baselines.png",
+      "size_bytes": 349539,
+      "tags": [
+        "reward",
+        "baseline"
+      ]
+    },
+    {
+      "file": "reward_decomposition.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/reward_decomposition.png",
+      "size_bytes": 3892673,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "subtask_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/subtask_success_rate_with_baselines.png",
+      "size_bytes": 338780,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    },
+    {
+      "file": "success_rate_multilevel.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/success_rate_multilevel.png",
+      "size_bytes": 504022,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/training_overview.png",
+      "size_bytes": 1032268,
+      "tags": []
+    },
+    {
+      "file": "training_stability.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/training_stability.png",
+      "size_bytes": 418053,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "veh_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/plots/veh_success_rate_with_baselines.png",
+      "size_bytes": 294893,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    }
+  ]
+}

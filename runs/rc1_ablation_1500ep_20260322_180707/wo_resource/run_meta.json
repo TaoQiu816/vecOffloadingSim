@@ -1,0 +1,17 @@
+{
+  "run_id": "wo_resource",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource",
+  "status": "completed",
+  "created_at": "2026-03-22 18:07:10",
+  "git_commit": "75add5aa49f8eeeb12a88027793decbb044b266e",
+  "config_hash": "c8e89c0f2008a45574e6e837fd0c738bfc1101d73d66f1a22574a8f6204ce6f8",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/logs/config_snapshot.json",
+  "completed_at": "2026-03-22 23:52:52",
+  "episodes_completed": 1500,
+  "best_reward": 0.23618680319509247,
+  "best_success_rate_50ep": 0.18299999999999997,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource/logs/training_stats.csv"
+}

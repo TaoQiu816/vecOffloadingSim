@@ -1,0 +1,17 @@
+{
+  "run_id": "wo_dag_resource",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource",
+  "status": "completed",
+  "created_at": "2026-03-22 18:07:10",
+  "git_commit": "75add5aa49f8eeeb12a88027793decbb044b266e",
+  "config_hash": "c17e06b0e12c69850b1f42472d4c78662ff07a0174acd37989832d23dd0bb25a",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource/logs/config_snapshot.json",
+  "completed_at": "2026-03-22 23:52:41",
+  "episodes_completed": 1500,
+  "best_reward": 0.19526570404611163,
+  "best_success_rate_50ep": 0.163,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource/logs/training_stats.csv"
+}
