@@ -1,0 +1,5 @@
+[Finalize] root=/root/vecOffloadingSim
+[Finalize] branch=main remote=origin
+[Finalize] waiting for runs: /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/full /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_resource /root/vecOffloadingSim/runs/rc1_ablation_1500ep_20260322_180707/wo_dag_resource
+[Finalize] all runs finished successfully
+fatal: pathspec 'diagnostics/ablation_plan/MODULE_MAPPING.md' did not match any files
