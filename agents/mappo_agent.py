@@ -514,6 +514,7 @@ class MAPPOAgent:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "lambda_power": float(self.lambda_power),
             "lambda_trust": float(self.lambda_trust),
+            "algo_mode": str(getattr(TC, "ALGO_MODE", "mappo")).strip().lower(),
         }
         if self.scheduler is not None:
             payload["scheduler_state_dict"] = self.scheduler.state_dict()

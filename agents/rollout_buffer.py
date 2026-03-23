@@ -341,19 +341,11 @@ class RolloutBuffer:
             self.cost_trust_returns_buffer[t] = self.cost_trust_advantages_buffer[t][:min_N] + self.cost_trust_values_buffer[t][:min_N]
             self.cost_trust_advantages_buffer[t] = self.cost_trust_advantages_buffer[t][:min_N]
     
-    def get_batches(self, batch_size: int, active_only: bool = False) -> Generator[Dict, None, None]:
+    def flatten_samples(self, normalize_advantages: bool = True) -> Dict[str, object]:
         """
-        生成mini-batch用于训练
-        
-        Args:
-            batch_size: batch大小
-            
-        Yields:
-            batch字典，包含obs_list, actions, old_log_probs, advantages, returns
+        展平buffer中的所有样本，供不同训练算法复用。
         """
         T = len(self.obs_list_buffer)
-        
-        # 展平所有数据
         flat_obs_list = []
         flat_actions = []
         flat_log_probs = []
@@ -367,7 +359,8 @@ class RolloutBuffer:
         flat_cost_trust_advantages = []
         flat_cost_trust_returns = []
         flat_cost_trust_values = []
-        
+        flat_agent_ids = []
+
         for t in range(T):
             N_t = len(self.obs_list_buffer[t])
             for n in range(N_t):
@@ -384,53 +377,96 @@ class RolloutBuffer:
                 flat_cost_trust_advantages.append(self.cost_trust_advantages_buffer[t][n])
                 flat_cost_trust_returns.append(self.cost_trust_returns_buffer[t][n])
                 flat_cost_trust_values.append(self.cost_trust_values_buffer[t][n])
+                flat_agent_ids.append(
+                    self.agent_ids_buffer[t][n]
+                    if t < len(self.agent_ids_buffer) and n < len(self.agent_ids_buffer[t])
+                    else n
+                )
+
+        out = {
+            "obs_list": flat_obs_list,
+            "actions": flat_actions,
+            "old_log_probs": np.array(flat_log_probs, dtype=np.float32),
+            "advantages": np.array(flat_advantages, dtype=np.float32),
+            "returns": np.array(flat_returns, dtype=np.float32),
+            "active_masks": np.array(flat_active_masks, dtype=np.float32),
+            "old_values": np.array(flat_values, dtype=np.float32),
+            "cost_power_advantages": np.array(flat_cost_power_advantages, dtype=np.float32),
+            "cost_power_returns": np.array(flat_cost_power_returns, dtype=np.float32),
+            "old_cost_power_values": np.array(flat_cost_power_values, dtype=np.float32),
+            "cost_trust_advantages": np.array(flat_cost_trust_advantages, dtype=np.float32),
+            "cost_trust_returns": np.array(flat_cost_trust_returns, dtype=np.float32),
+            "old_cost_trust_values": np.array(flat_cost_trust_values, dtype=np.float32),
+            "agent_ids": np.array(flat_agent_ids, dtype=np.int64),
+        }
+
+        if not normalize_advantages or out["advantages"].size == 0:
+            return out
+
+        active_idx = out["active_masks"] > 0.0
+        if np.any(active_idx):
+            adv_mean = out["advantages"][active_idx].mean()
+            adv_std = out["advantages"][active_idx].std()
+        else:
+            adv_mean = out["advantages"].mean()
+            adv_std = out["advantages"].std()
+        if adv_std > 1e-8:
+            out["advantages"] = (out["advantages"] - adv_mean) / (adv_std + 1e-8)
+        if np.any(active_idx):
+            cp_mean = out["cost_power_advantages"][active_idx].mean()
+            cp_std = out["cost_power_advantages"][active_idx].std()
+            ct_mean = out["cost_trust_advantages"][active_idx].mean()
+            ct_std = out["cost_trust_advantages"][active_idx].std()
+            if cp_std > 1e-8:
+                out["cost_power_advantages"] = (out["cost_power_advantages"] - cp_mean) / (cp_std + 1e-8)
+            if ct_std > 1e-8:
+                out["cost_trust_advantages"] = (out["cost_trust_advantages"] - ct_mean) / (ct_std + 1e-8)
+        return out
+
+    def get_agent_ids(self) -> np.ndarray:
+        flat = self.flatten_samples(normalize_advantages=False)
+        return np.unique(flat["agent_ids"]) if flat["agent_ids"].size > 0 else np.array([], dtype=np.int64)
+
+    def get_batches(self, batch_size: int, active_only: bool = False, agent_id: int = None) -> Generator[Dict, None, None]:
+        """
+        生成mini-batch用于训练
         
+        Args:
+            batch_size: batch大小
+            
+        Yields:
+            batch字典，包含obs_list, actions, old_log_probs, advantages, returns
+        """
+        flat = self.flatten_samples(normalize_advantages=True)
+        flat_obs_list = flat["obs_list"]
+        flat_actions = flat["actions"]
+        flat_log_probs = flat["old_log_probs"]
+        flat_advantages = flat["advantages"]
+        flat_returns = flat["returns"]
+        flat_active_masks = flat["active_masks"]
+        flat_values = flat["old_values"]
+        flat_cost_power_advantages = flat["cost_power_advantages"]
+        flat_cost_power_returns = flat["cost_power_returns"]
+        flat_cost_power_values = flat["old_cost_power_values"]
+        flat_cost_trust_advantages = flat["cost_trust_advantages"]
+        flat_cost_trust_returns = flat["cost_trust_returns"]
+        flat_cost_trust_values = flat["old_cost_trust_values"]
+        flat_agent_ids = flat["agent_ids"]
+
         total_samples = len(flat_obs_list)
         
         if total_samples == 0:
             return
         
-        # 转换为numpy数组
-        flat_log_probs = np.array(flat_log_probs, dtype=np.float32)
-        flat_advantages = np.array(flat_advantages, dtype=np.float32)
-        flat_returns = np.array(flat_returns, dtype=np.float32)
-        flat_active_masks = np.array(flat_active_masks, dtype=np.float32)
-        flat_values = np.array(flat_values, dtype=np.float32)
-        flat_cost_power_advantages = np.array(flat_cost_power_advantages, dtype=np.float32)
-        flat_cost_power_returns = np.array(flat_cost_power_returns, dtype=np.float32)
-        flat_cost_power_values = np.array(flat_cost_power_values, dtype=np.float32)
-        flat_cost_trust_advantages = np.array(flat_cost_trust_advantages, dtype=np.float32)
-        flat_cost_trust_returns = np.array(flat_cost_trust_returns, dtype=np.float32)
-        flat_cost_trust_values = np.array(flat_cost_trust_values, dtype=np.float32)
-        
-        # 归一化advantages（优先使用active样本）
-        active_idx = flat_active_masks > 0.0
-        if np.any(active_idx):
-            adv_mean = flat_advantages[active_idx].mean()
-            adv_std = flat_advantages[active_idx].std()
-        else:
-            adv_mean = flat_advantages.mean()
-            adv_std = flat_advantages.std()
-        if adv_std > 1e-8:
-            flat_advantages = (flat_advantages - adv_mean) / (adv_std + 1e-8)
-        if np.any(active_idx):
-            cp_mean = flat_cost_power_advantages[active_idx].mean()
-            cp_std = flat_cost_power_advantages[active_idx].std()
-            ct_mean = flat_cost_trust_advantages[active_idx].mean()
-            ct_std = flat_cost_trust_advantages[active_idx].std()
-            if cp_std > 1e-8:
-                flat_cost_power_advantages = (flat_cost_power_advantages - cp_mean) / (cp_std + 1e-8)
-            if ct_std > 1e-8:
-                flat_cost_trust_advantages = (flat_cost_trust_advantages - ct_mean) / (ct_std + 1e-8)
-        
         # 训练采样索引：可选仅采 active 样本，避免 idle/no-task 样本污染更新
+        candidate_idx = np.arange(total_samples)
+        if agent_id is not None:
+            candidate_idx = candidate_idx[flat_agent_ids == int(agent_id)]
         if active_only:
-            candidate_idx = np.where(flat_active_masks > 0.0)[0]
-            if candidate_idx.size == 0:
-                return
-            indices = np.random.permutation(candidate_idx)
-        else:
-            indices = np.random.permutation(total_samples)
+            candidate_idx = candidate_idx[flat_active_masks[candidate_idx] > 0.0]
+        if candidate_idx.size == 0:
+            return
+        indices = np.random.permutation(candidate_idx)
         
         # 生成batches
         num_batches = max(1, len(indices) // batch_size)
@@ -457,6 +493,7 @@ class RolloutBuffer:
                 'cost_trust_advantages': flat_cost_trust_advantages[batch_indices],
                 'cost_trust_returns': flat_cost_trust_returns[batch_indices],
                 'old_cost_trust_values': flat_cost_trust_values[batch_indices],
+                'agent_ids': flat_agent_ids[batch_indices],
             }
             
             yield batch

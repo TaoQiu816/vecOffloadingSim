@@ -53,7 +53,7 @@ from configs.config import SystemConfig as Cfg
 from configs.train_config import TrainConfig as TC
 from envs.vec_offloading_env import VecOffloadingEnv
 from models.offloading_policy import OffloadingPolicyNetwork
-from agents.mappo_agent import MAPPOAgent
+from agents.agent_factory import build_agent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
 from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy, LBGreedyPolicy, OracleMinPolicy
@@ -849,6 +849,9 @@ def apply_env_overrides():
     oracle_mode_aux_v2v_only = _env_bool("ORACLE_MODE_AUX_V2V_ONLY")
     if oracle_mode_aux_v2v_only is not None:
         TC.ORACLE_MODE_AUX_V2V_ONLY = oracle_mode_aux_v2v_only
+    algo_mode = _env_str("ALGO_MODE")
+    if algo_mode:
+        TC.ALGO_MODE = str(algo_mode).strip().lower()
     # Ablation: Transformer layers
     num_layers = _env_int("NUM_LAYERS")
     if num_layers is not None:
@@ -1091,12 +1094,14 @@ def _print_startup_summary(
         p_max_w = 10 ** ((float(p_max_dbm) - 30.0) / 10.0)
 
     print("\n" + "=" * 118, flush=True)
-    print("[Train] MAPPO VEC training started", flush=True)
+    algo_mode = str(getattr(TC, "ALGO_MODE", "mappo")).strip().lower()
+    print(f"[Train] {algo_mode.upper()} VEC training started", flush=True)
     print("=" * 118, flush=True)
     print(
         f"[Run] id={run_id} seed={Cfg.SEED} device={device} reward={Cfg.REWARD_SCHEME} "
         f"candidate={getattr(Cfg, 'CANDIDATE_MODE', 'N/A')} "
-        f"(all_feasible={bool(getattr(Cfg, 'ALL_FEASIBLE', False))})",
+        f"(all_feasible={bool(getattr(Cfg, 'ALL_FEASIBLE', False))}) "
+        f"algo={algo_mode}",
         flush=True,
     )
     print(
@@ -1959,7 +1964,7 @@ def main():
         num_heads=TC.NUM_HEADS,
         num_layers=TC.NUM_LAYERS
     )
-    agent = MAPPOAgent(network, device=device)
+    agent = build_agent(network, device=device, algo_mode=getattr(TC, "ALGO_MODE", "mappo"))
 
     # 初始化经验缓冲区
     buffer = RolloutBuffer(gamma=TC.GAMMA, gae_lambda=TC.GAE_LAMBDA)

@@ -1,0 +1,12 @@
+policy,task_success_rate_B,deadline_miss_rate,mean_cft,subtask_success_rate,finished_vehicle_count,failed_vehicle_count,decision_frac_local,decision_frac_rsu,decision_frac_v2v,reward_sum,score_tuple,run_name,checkpoint_kind
+Local-Only,0.875,0.0,1.4804,0.9837,17.5,2.5,1.0,0.0,0.0,4.101,"(0.875, -0.0, -1.4804)",,
+Greedy-Local,0.875,0.0,1.4804,0.9837,17.5,2.5,1.0,0.0,0.0,4.101,"(0.875, -0.0, -1.4804)",,
+Legal-Random,0.24,0.0,1.4037,0.6206,4.8,15.2,0.7623,0.0243,0.2134,-215.0694,"(0.24, -0.0, -1.4037)",,
+Full-MAPPO::best_model,0.935,0.0,1.6963,0.994,18.7,1.3,0.3326,0.2234,0.444,4.4616,"(0.935, -0.0, -1.6963)",full,best_model
+Full-MAPPO::last_model,0.95,0.0,1.5657,0.9965,19.0,1.0,0.3557,0.2593,0.385,4.3635,"(0.95, -0.0, -1.5657)",full,last_model
+w/o DAG-Feature::best_model,0.97,0.0,1.5264,0.9974,19.4,0.6,0.5348,0.4209,0.0443,4.364,"(0.97, -0.0, -1.5264)",wo_dag,best_model
+w/o DAG-Feature::last_model,0.97,0.0,1.5148,0.9962,19.4,0.6,0.4724,0.5199,0.0077,4.4534,"(0.97, -0.0, -1.5148)",wo_dag,last_model
+w/o Resource-Feature::best_model,0.875,0.0,1.5043,0.9842,17.5,2.5,0.9896,0.0033,0.0071,3.9672,"(0.875, -0.0, -1.5043)",wo_resource,best_model
+w/o Resource-Feature::last_model,0.87,0.0,1.5007,0.9847,17.4,2.6,0.9922,0.0037,0.0041,3.9295,"(0.87, -0.0, -1.5007)",wo_resource,last_model
+w/o DAG & Resource::best_model,0.875,0.0,1.503,0.9839,17.5,2.5,0.9924,0.0032,0.0044,3.9368,"(0.875, -0.0, -1.503)",wo_dag_resource,best_model
+w/o DAG & Resource::last_model,0.875,0.0,1.4982,0.9833,17.5,2.5,0.9919,0.0044,0.0037,3.9234,"(0.875, -0.0, -1.4982)",wo_dag_resource,last_model

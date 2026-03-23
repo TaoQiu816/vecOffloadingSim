@@ -166,6 +166,11 @@ class OffloadingPolicyNetwork(nn.Module):
         # 零初始化最后一层，保证启用时不破坏已有训练稳定性
         nn.init.zeros_(self.power_cond_mlp[-1].weight)
         nn.init.zeros_(self.power_cond_mlp[-1].bias)
+
+    @staticmethod
+    def _use_decentralized_critic() -> bool:
+        mode = str(getattr(TC, "ALGO_MODE", "mappo")).strip().lower()
+        return mode == "ippo"
     
     @staticmethod
     def _ablation_flags() -> Tuple[bool, bool, str]:
@@ -562,8 +567,9 @@ class OffloadingPolicyNetwork(nn.Module):
         if action_mask is not None:
             resource_padding_mask = resource_padding_mask | (~action_mask)
 
-        # 论文固定版：critic始终读取集中摘要global_state
-        # 测试/独立前向场景下若未提供，回退为零向量以保持输入维度一致。
+        # MAPPO 使用 centralized critic；IPPO 在相同编码器/动作下关闭 centralized summary。
+        if self._use_decentralized_critic():
+            global_state = None
         if global_state is None:
             gdim = int(getattr(TC, "CTDE_GLOBAL_DIM", 0))
             if gdim > 0:
