@@ -1,0 +1,17 @@
+{
+  "run_id": "full",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full",
+  "status": "completed",
+  "created_at": "2026-03-23 18:27:15",
+  "git_commit": "cfafa0eafbe59b8cd5efddf3c8184cd878bb196a",
+  "config_hash": "15f484705b9c992e6c689c768db4b87b7ec16ffcb17ffcfa93e3bd04ca53b103",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/logs/config_snapshot.json",
+  "completed_at": "2026-03-23 22:17:02",
+  "episodes_completed": 1500,
+  "best_reward": 0.27209780128204925,
+  "best_success_rate_50ep": 0.9690000000000001,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/logs/training_stats.csv"
+}
