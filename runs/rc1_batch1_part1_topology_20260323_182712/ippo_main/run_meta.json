@@ -1,0 +1,17 @@
+{
+  "run_id": "ippo_main",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main",
+  "status": "completed",
+  "created_at": "2026-03-23 18:27:15",
+  "git_commit": "cfafa0eafbe59b8cd5efddf3c8184cd878bb196a",
+  "config_hash": "cb40601cf3bcc990e0f37620bbbbea1e5af5dbcb162801bc76bbcc5a8c792c11",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main/logs/config_snapshot.json",
+  "completed_at": "2026-03-23 22:25:42",
+  "episodes_completed": 1500,
+  "best_reward": 0.27952026221810794,
+  "best_success_rate_50ep": 0.977,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/ippo_main/logs/training_stats.csv"
+}
