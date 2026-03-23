@@ -1,0 +1,9 @@
+{
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/greedy",
+  "created_at": "2026-03-23 18:33:36",
+  "git_commit": "ba7b422c964fb534db6c0ec733e5f2e27767df47",
+  "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
+  "seed": 42,
+  "max_steps": 300,
+  "num_episodes": 50
+}
