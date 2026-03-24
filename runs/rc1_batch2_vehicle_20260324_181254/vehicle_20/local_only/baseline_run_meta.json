@@ -1,0 +1,9 @@
+{
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/local_only",
+  "created_at": "2026-03-24 19:33:28",
+  "git_commit": "b8d24175c6908a631aadd54a29d28be5e62d3140",
+  "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
+  "seed": 42,
+  "max_steps": 300,
+  "num_episodes": 50
+}
