@@ -1,0 +1,17 @@
+{
+  "run_id": "mappo_full",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full",
+  "status": "completed",
+  "created_at": "2026-03-24 18:17:37",
+  "git_commit": "9fd733bb7927fa701de26451abcdb7e4763c3a90",
+  "config_hash": "cb40601cf3bcc990e0f37620bbbbea1e5af5dbcb162801bc76bbcc5a8c792c11",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full/logs/config_snapshot.json",
+  "completed_at": "2026-03-24 22:15:27",
+  "episodes_completed": 1500,
+  "best_reward": 0.28694657758583114,
+  "best_success_rate_50ep": 0.9670000000000001,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_20/mappo_full/logs/training_stats.csv"
+}
