@@ -1,0 +1,8 @@
+run_key,label,topology,policy,episodes,path
+ippo_main,IPPO Main (base scene),Base,IPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/ippo_main
+parallel_full,Parallel-Full-MAPPO,Parallel,Full-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full
+parallel_wo_dag,Parallel-w/o DAG-Feature,Parallel,w/o DAG-Feature,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/wo_dag
+balanced_full,Balanced-Full-MAPPO,Balanced,Full-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_balanced/full
+balanced_wo_dag,Balanced-w/o DAG-Feature,Balanced,w/o DAG-Feature,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_balanced/wo_dag
+deep_full,Deep-Full-MAPPO,Deep,Full-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full
+deep_wo_dag,Deep-w/o DAG-Feature,Deep,w/o DAG-Feature,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/wo_dag
