@@ -62,12 +62,14 @@ stage_if_exists "${RUN_REL}/baseline_run_meta.json"
 stage_if_exists "${RUN_REL}/models/best_model.pth"
 stage_if_exists "${RUN_REL}/models/last_model.pth"
 
-IFS=',' read -r -a KEEP_CKPTS <<< "${KEEP_CHECKPOINTS_CSV}"
-for ckpt_name in "${KEEP_CKPTS[@]}"; do
-  ckpt_name="$(echo "${ckpt_name}" | xargs)"
-  [[ -n "${ckpt_name}" ]] || continue
-  stage_if_exists "${RUN_REL}/models/checkpoints/${ckpt_name}.pth"
-done
+if [[ "${KEEP_CHECKPOINTS_CSV}" != "none" && "${KEEP_CHECKPOINTS_CSV}" != "NONE" ]]; then
+  IFS=',' read -r -a KEEP_CKPTS <<< "${KEEP_CHECKPOINTS_CSV}"
+  for ckpt_name in "${KEEP_CKPTS[@]}"; do
+    ckpt_name="$(echo "${ckpt_name}" | xargs)"
+    [[ -n "${ckpt_name}" ]] || continue
+    stage_if_exists "${RUN_REL}/models/checkpoints/${ckpt_name}.pth"
+  done
+fi
 
 stage_if_exists "${RUN_REL}/logs/config_snapshot.json"
 stage_if_exists "${RUN_REL}/logs/training_stats.csv"
