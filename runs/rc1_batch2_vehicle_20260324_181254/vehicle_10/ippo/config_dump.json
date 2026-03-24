@@ -1,0 +1,58 @@
+{
+  "reward_scheme": "UNIFIED",
+  "reward_params": {
+    "REWARD_ALPHA": 1.5,
+    "REWARD_BETA": 0.1,
+    "REWARD_GAMMA": 0.99,
+    "T_REF": 0.7,
+    "PHI_CLIP": 5.0,
+    "SHAPE_CLIP": 10.0,
+    "R_CLIP": 40.0,
+    "LAT_ALPHA": 2.0
+  },
+  "timeout_params": {
+    "TIMEOUT_PENALTY_WEIGHT": 1.0,
+    "TIMEOUT_STEEPNESS": 3.0,
+    "TIMEOUT_L1": 1.5,
+    "TIMEOUT_L2": 1.5,
+    "TIMEOUT_O0": 0.2,
+    "TIMEOUT_K": 3.0
+  },
+  "energy_power_params": {
+    "ENERGY_LAMBDA_PBRS": 0.0,
+    "ENERGY_LAMBDA": 0.03,
+    "POWER_LAMBDA": 0.015,
+    "E_REF": 1.0,
+    "E_CLIP": 10.0,
+    "DELTA_CFT_ENERGY_WEIGHT": 0.2
+  },
+  "energy_lambda_raw_fields": {
+    "ENERGY_LAMBDA_PBRS": 0.0,
+    "ENERGY_LAMBDA": 0.03,
+    "POWER_LAMBDA": 0.015,
+    "E_REF": 1.0,
+    "E_CLIP": 10.0,
+    "DELTA_CFT_ENERGY_WEIGHT": 0.2
+  },
+  "energy_lambda_effective": {
+    "name": "DELTA_CFT_ENERGY_WEIGHT",
+    "value": 0.2
+  },
+  "ppo_params": {
+    "TARGET_KL": 0.05,
+    "MAX_GRAD_NORM": 1.0,
+    "CLIP_PARAM": 0.25,
+    "LR_ACTOR": 0.0002,
+    "LR_CRITIC": 0.0002
+  },
+  "run": {
+    "SEED": "42",
+    "RUN_ID": "ippo",
+    "RUN_DIR": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_10/ippo",
+    "REWARD_JSONL_PATH": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_10/ippo/logs/env_reward.jsonl",
+    "DEVICE_NAME": "cuda",
+    "GIT_COMMIT": "5d45b410d440ef100c4dc23c43c0c034fdf4214a"
+  },
+  "git_commit": "5d45b410d440ef100c4dc23c43c0c034fdf4214a",
+  "config_hash": "99d8dc9d679ea3c546c223d3e0ad00d08401f13e346618f9377965df3bd36a9d"
+}
