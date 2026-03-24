@@ -1,0 +1,2 @@
+policy,episodes,act_mean,act_std,makespan_mean,mean_cft_completed_mean,task_duration_mean,task_duration_p95_mean,energy_mean,energy_std,energy_p95_mean,task_success_rate_mean,deadline_miss_rate_mean,deadline_meet_ratio_mean,avg_rsu_queue_mean,avg_power_mean,decision_frac_local_mean,decision_frac_rsu_mean,decision_frac_v2v_mean
+Local-Only,50,1.5635149551158398,0.7066460578757625,2.2500000000000013,1.5635149551158398,1.5635149551158398,2.001905922895389,0.0,0.0,0.0,0.836,0.16399999999999998,0.836,0.19773979600505562,0.0,1.0,0.0,0.0
