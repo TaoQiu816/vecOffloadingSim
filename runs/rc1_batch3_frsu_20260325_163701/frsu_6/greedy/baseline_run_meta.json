@@ -1,0 +1,9 @@
+{
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_6/greedy",
+  "created_at": "2026-03-25 20:52:20",
+  "git_commit": "40c998c3caae463aef965c996a0ae2a670ce2386",
+  "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
+  "seed": 42,
+  "max_steps": 300,
+  "num_episodes": 50
+}
