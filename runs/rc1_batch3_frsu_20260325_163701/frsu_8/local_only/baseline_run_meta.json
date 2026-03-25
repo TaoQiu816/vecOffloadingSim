@@ -1,0 +1,9 @@
+{
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/local_only",
+  "created_at": "2026-03-25 21:27:05",
+  "git_commit": "191639d695b86ee0b1a59381783f7d299c2d3d88",
+  "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
+  "seed": 42,
+  "max_steps": 300,
+  "num_episodes": 50
+}
