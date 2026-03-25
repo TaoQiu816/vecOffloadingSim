@@ -1,0 +1,17 @@
+{
+  "run_id": "ippo",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo",
+  "status": "completed",
+  "created_at": "2026-03-25 21:08:22",
+  "git_commit": "392c0c2014736ce5cbb786fcc7b896e37c5a96ac",
+  "config_hash": "cf7e86ced4dbdd3143583af7ee03255bc906999aa8e57183a91c0591fb65dd19",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo/logs/config_snapshot.json",
+  "completed_at": "2026-03-26 00:42:54",
+  "episodes_completed": 1500,
+  "best_reward": 0.29585400898022574,
+  "best_success_rate_50ep": 0.9780000000000001,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_20260325_163701/frsu_8/ippo/logs/training_stats.csv"
+}
