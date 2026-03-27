@@ -132,6 +132,23 @@ class OffloadingPolicyNetwork(nn.Module):
         self.resource_encoder = ResourceFeatureEncoder(
             d_model=d_model
         )
+
+        # Flat-feature MAPPO: keep the same PPO/actor-critic pipeline, but replace
+        # TDE / CARE with simple hand-crafted feature projections.
+        flat_node_dim = continuous_dim + 4 + 4 + 2  # node_x + status_oh + location_oh + normalized topo levels
+        flat_res_dim = int(Cfg.RESOURCE_RAW_DIM) + 4 + 3 + 1  # raw + role_oh + candidate_type_oh + rate_prev
+        self.flat_node_proj = nn.Sequential(
+            nn.Linear(flat_node_dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+        )
+        self.flat_resource_proj = nn.Sequential(
+            nn.Linear(flat_res_dim, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+        )
         
         # 4.5 rate_prev 轻量投影（上步链路速率 → 资源编码空间）
         self.rate_prev_proj = nn.Linear(1, d_model)
@@ -173,11 +190,12 @@ class OffloadingPolicyNetwork(nn.Module):
         return mode == "ippo"
     
     @staticmethod
-    def _ablation_flags() -> Tuple[bool, bool, str]:
+    def _ablation_flags() -> Tuple[bool, bool, bool, str]:
         mode = str(getattr(TC, "ABLATION_MODE", "full")).strip().lower()
         disable_dag = mode in {"no_dag", "no_dag_resource"}
         disable_resource = mode in {"no_resource", "no_dag_resource"}
-        return disable_dag, disable_resource, mode
+        flat_mode = mode in {"flat", "flat_mappo", "f_mappo"}
+        return disable_dag, disable_resource, flat_mode, mode
 
     def _sanitize_policy_side_channels(
         self,
@@ -185,7 +203,7 @@ class OffloadingPolicyNetwork(nn.Module):
         candidate_types: torch.Tensor,
         action_mask: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        disable_dag, disable_resource, _ = self._ablation_flags()
+        disable_dag, disable_resource, flat_mode, _ = self._ablation_flags()
         if not disable_resource:
             return resource_raw, candidate_types, action_mask
         # Keep action_mask only as legality constraint; strip all resource semantics.
@@ -194,6 +212,47 @@ class OffloadingPolicyNetwork(nn.Module):
             torch.zeros_like(candidate_types),
             action_mask,
         )
+
+    @staticmethod
+    def _build_flat_node_inputs(
+        node_x: torch.Tensor,
+        status: torch.Tensor,
+        location: torch.Tensor,
+        L_fwd: torch.Tensor,
+        L_bwd: torch.Tensor,
+    ) -> torch.Tensor:
+        status_oh = F.one_hot(torch.clamp(status.long(), min=0, max=3), num_classes=4).to(dtype=node_x.dtype)
+        location_oh = F.one_hot(torch.clamp(location.long(), min=0, max=3), num_classes=4).to(dtype=node_x.dtype)
+        denom = float(max(getattr(Cfg, "MAX_NODES", 1) - 1, 1))
+        l_fwd_norm = torch.clamp(L_fwd.to(dtype=node_x.dtype) / denom, 0.0, 1.0).unsqueeze(-1)
+        l_bwd_norm = torch.clamp(L_bwd.to(dtype=node_x.dtype) / denom, 0.0, 1.0).unsqueeze(-1)
+        return torch.cat([node_x, status_oh, location_oh, l_fwd_norm, l_bwd_norm], dim=-1)
+
+    @staticmethod
+    def _build_flat_resource_inputs(
+        resource_raw: torch.Tensor,
+        resource_ids: torch.Tensor,
+        candidate_types: Optional[torch.Tensor],
+        rate_prev: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        role_oh = F.one_hot(torch.clamp(resource_ids.long(), min=0, max=3), num_classes=4).to(dtype=resource_raw.dtype)
+        if candidate_types is None:
+            type_oh = torch.zeros(
+                (*resource_raw.shape[:2], 3),
+                dtype=resource_raw.dtype,
+                device=resource_raw.device,
+            )
+        else:
+            type_idx = torch.clamp(candidate_types.long() - 1, min=0, max=2)
+            type_oh = F.one_hot(type_idx, num_classes=3).to(dtype=resource_raw.dtype)
+        if rate_prev is None:
+            rate_prev = torch.zeros(
+                resource_raw.shape[:2],
+                dtype=resource_raw.dtype,
+                device=resource_raw.device,
+            )
+        rate_prev = rate_prev.unsqueeze(-1)
+        return torch.cat([resource_raw, role_oh, type_oh, rate_prev], dim=-1)
 
     @staticmethod
     def _apply_logit_bias(target_logits: torch.Tensor,
@@ -487,7 +546,7 @@ class OffloadingPolicyNetwork(nn.Module):
         """
         if node_valid_mask is None:
             node_valid_mask = task_mask
-        disable_dag, disable_resource, _ = self._ablation_flags()
+        disable_dag, disable_resource, flat_mode, _ = self._ablation_flags()
 
         node_raw_for_head = node_x
         if disable_dag:
@@ -499,61 +558,62 @@ class OffloadingPolicyNetwork(nn.Module):
             data_matrix = torch.zeros_like(data_matrix)
             delta = torch.zeros_like(delta)
 
-        # 1. DAG节点嵌入
-        node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
-
-        # 2. 计算边偏置和空间偏置（支持消融开关）
-        edge_bias = None
-        spatial_bias = None
-        if not disable_dag and getattr(TC, "USE_EDGE_BIAS", True):
-            edge_bias = self.edge_encoder(data_matrix)
-        if not disable_dag and getattr(TC, "USE_SPATIAL_BIAS", True):
-            spatial_bias = self.spatial_encoder(delta)
-
-        # 2.5 [暂时停用] Rank偏置（priority/rank 相关路径）
-        rank_bias = None
-        # if self.rank_bias_encoder is not None and priority is not None:
-        #     rank_bias = self.rank_bias_encoder(
-        #         priority=priority,
-        #         adj=adj,
-        #         tau=TC.RANK_BIAS_TAU,
-        #         kappa=TC.RANK_BIAS_KAPPA,
-        #         cover_mode=TC.RANK_BIAS_COVER,
-        #         task_mask=node_valid_mask
-        #     )
-
-        # 3. Transformer编码
-        # 构造padding mask（从task_mask）
-        if node_valid_mask is not None:
-            key_padding_mask = ~node_valid_mask  # True表示需要mask
+        if flat_mode:
+            flat_node_inputs = self._build_flat_node_inputs(node_x, status, location, L_fwd, L_bwd)
+            dag_features = self.flat_node_proj(flat_node_inputs)
         else:
-            key_padding_mask = None
+            # 1. DAG节点嵌入
+            node_emb = self.dag_embedding(node_x, status, location, L_fwd, L_bwd)
 
-        dag_features = self.transformer(
-            node_emb,
-            edge_bias=edge_bias,
-            spatial_bias=spatial_bias,
-            rank_bias=rank_bias,  # [方案A] 传递rank_bias
-            key_padding_mask=key_padding_mask
-        )
+            # 2. 计算边偏置和空间偏置（支持消融开关）
+            edge_bias = None
+            spatial_bias = None
+            if not disable_dag and getattr(TC, "USE_EDGE_BIAS", True):
+                edge_bias = self.edge_encoder(data_matrix)
+            if not disable_dag and getattr(TC, "USE_SPATIAL_BIAS", True):
+                spatial_bias = self.spatial_encoder(delta)
+
+            # 2.5 [暂时停用] Rank偏置（priority/rank 相关路径）
+            rank_bias = None
+
+            # 3. Transformer编码
+            if node_valid_mask is not None:
+                key_padding_mask = ~node_valid_mask
+            else:
+                key_padding_mask = None
+
+            dag_features = self.transformer(
+                node_emb,
+                edge_bias=edge_bias,
+                spatial_bias=spatial_bias,
+                rank_bias=rank_bias,
+                key_padding_mask=key_padding_mask
+            )
         
         # 4. 资源特征编码（物理特征 + ID嵌入）
         assert resource_raw.shape[-1] == Cfg.RESOURCE_RAW_DIM, (
             f"resource_raw dim mismatch: got {resource_raw.shape[-1]}, expected {Cfg.RESOURCE_RAW_DIM}"
         )
-        resource_encoded = self.resource_encoder(resource_raw, resource_ids)
+        if flat_mode:
+            flat_resource_inputs = self._build_flat_resource_inputs(
+                resource_raw=resource_raw,
+                resource_ids=resource_ids,
+                candidate_types=candidate_types,
+                rate_prev=rate_prev,
+            )
+            resource_encoded = self.flat_resource_proj(flat_resource_inputs)
+        else:
+            resource_encoded = self.resource_encoder(resource_raw, resource_ids)
 
-        # 4.5 将上步链路速率投影并加到资源编码上（时序信号补齐）
-        if rate_prev is not None:
-            # rate_prev: [B, M] → [B, M, 1] → proj → [B, M, d_model]
-            rate_prev_emb = self.rate_prev_proj(rate_prev.unsqueeze(-1))
-            resource_encoded = resource_encoded + rate_prev_emb
+            # 4.5 将上步链路速率投影并加到资源编码上（时序信号补齐）
+            if rate_prev is not None:
+                rate_prev_emb = self.rate_prev_proj(rate_prev.unsqueeze(-1))
+                resource_encoded = resource_encoded + rate_prev_emb
 
-        # 4.6 将当前服务RSU信息投影并广播加到所有资源候选上（多RSU感知）
-        if serving_rsu_onehot is not None:
-            # serving_rsu_onehot: [B, NUM_RSU] → proj → [B, d_model] → unsqueeze → [B, 1, d_model]
-            rsu_ctx = self.serving_rsu_proj(serving_rsu_onehot).unsqueeze(1)
-            resource_encoded = resource_encoded + rsu_ctx  # broadcast到 [B, M, d_model]
+            # 4.6 将当前服务RSU信息投影并广播加到所有资源候选上（多RSU感知）
+            if serving_rsu_onehot is not None:
+                rsu_ctx = self.serving_rsu_proj(serving_rsu_onehot).unsqueeze(1)
+                resource_encoded = resource_encoded + rsu_ctx
 
         resource_raw_for_head = resource_raw
         if disable_resource:
@@ -717,7 +777,7 @@ class OffloadingPolicyNetwork(nn.Module):
         log_prob_target = target_dist.log_prob(target_actions)
 
         # target类型：1=Local, 2=RSU, 3=V2V
-        _, disable_resource, _ = self._ablation_flags()
+        _, disable_resource, flat_mode, _ = self._ablation_flags()
         if disable_resource:
             remote_mask = (target_actions != 0).to(dtype=log_prob_target.dtype)
         else:
@@ -869,7 +929,7 @@ class OffloadingPolicyNetwork(nn.Module):
             candidate_types=policy_candidate_types,
             target_actions=target_actions,
         )
-        _, disable_resource, _ = self._ablation_flags()
+        _, disable_resource, flat_mode, _ = self._ablation_flags()
         if disable_resource:
             remote_mask = (target_actions != 0).to(dtype=log_prob_target.dtype)
         else:

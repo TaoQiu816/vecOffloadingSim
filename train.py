@@ -56,7 +56,16 @@ from models.offloading_policy import OffloadingPolicyNetwork
 from agents.agent_factory import build_agent
 from agents.rollout_buffer import RolloutBuffer
 from utils.data_recorder import DataRecorder
-from baselines import RandomPolicy, LocalOnlyPolicy, GreedyPolicy, StaticPolicy, EFTPPolicy, LBGreedyPolicy, OracleMinPolicy
+from baselines import (
+    RandomPolicy,
+    LocalOnlyPolicy,
+    NearestRSUPolicy,
+    GreedyPolicy,
+    StaticPolicy,
+    EFTPPolicy,
+    LBGreedyPolicy,
+    OracleMinPolicy,
+)
 from baselines.cp_first_eft_policy import CPFirstEFTPolicy
 from utils.train_helpers import (
     ensure_dir as _ensure_dir,
@@ -71,7 +80,7 @@ from utils.train_helpers import (
 )
 
 
-BASELINE_POLICIES = ["Local-Only", "Greedy", "EFT", "CP-EFT"]
+BASELINE_POLICIES = ["Local-Only", "NRO", "Greedy", "EFT", "CP-EFT"]
 
 TRAINING_STATS_FIELDS = [
     "episode", "steps", "physical_steps", "decision_steps", "active_decision_ratio", "wall_time", "sim_time",
@@ -1264,7 +1273,24 @@ def evaluate_baselines(env, num_episodes=10):
         local_rewards.append(ep_reward)
     baseline_results['Local-Only'] = np.mean(local_rewards)
     
-    # 3. 贪婪策略
+    # 3. 最近RSU策略
+    nro_policy = NearestRSUPolicy(env)
+    nro_rewards = []
+    for _ in range(num_episodes):
+        obs_list, _ = env.reset()
+        nro_policy.reset()
+        ep_reward = 0
+        for step in range(TC.MAX_STEPS):
+            actions = nro_policy.select_action(obs_list)
+            _inject_obs_stamp(obs_list, actions)
+            obs_list, rewards, done, truncated, _ = env.step(actions)
+            ep_reward += sum(rewards) / len(rewards)
+            if done or truncated:
+                break
+        nro_rewards.append(ep_reward)
+    baseline_results['NRO'] = np.mean(nro_rewards)
+
+    # 4. 贪婪策略
     greedy_policy = GreedyPolicy(env)
     greedy_rewards = []
     for _ in range(num_episodes):
@@ -1281,7 +1307,7 @@ def evaluate_baselines(env, num_episodes=10):
         greedy_rewards.append(ep_reward)
     baseline_results['Greedy'] = np.mean(greedy_rewards)
 
-    # 4. EFT策略
+    # 5. EFT策略
     eft_policy = EFTPPolicy(env)
     eft_rewards = []
     for _ in range(num_episodes):
@@ -1298,7 +1324,7 @@ def evaluate_baselines(env, num_episodes=10):
         eft_rewards.append(ep_reward)
     baseline_results['EFT'] = np.mean(eft_rewards)
 
-    # 5. 静态策略
+    # 6. 静态策略
     static_policy = StaticPolicy(env)
     static_rewards = []
     for _ in range(num_episodes):
@@ -1329,6 +1355,8 @@ def evaluate_single_baseline_episode(env, policy_name, episode_seed=None):
         policy = RandomPolicy(seed=episode_seed)
     elif policy_name == 'Local-Only':
         policy = LocalOnlyPolicy()
+    elif policy_name == 'NRO':
+        policy = NearestRSUPolicy(env)
     elif policy_name == 'Greedy':
         policy = GreedyPolicy(env)
     elif policy_name == 'Oracle-Min':

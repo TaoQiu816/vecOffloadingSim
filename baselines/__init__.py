@@ -10,10 +10,11 @@
 
 from .random_policy import RandomPolicy
 from .local_only_policy import LocalOnlyPolicy
+from .nearest_rsu_policy import NearestRSUPolicy
 from .greedy_policy import GreedyPolicy
 from .static_policy import StaticPolicy
 from .eft_policy import EFTPolicy, EFTPPolicy  # EFTPPolicy 为旧名兼容
 from .lb_greedy_policy import LBGreedyPolicy
 from .oracle_min_policy import OracleMinPolicy
 
-__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPolicy', 'EFTPPolicy', 'LBGreedyPolicy', 'OracleMinPolicy']
+__all__ = ['RandomPolicy', 'LocalOnlyPolicy', 'NearestRSUPolicy', 'GreedyPolicy', 'StaticPolicy', 'EFTPolicy', 'EFTPPolicy', 'LBGreedyPolicy', 'OracleMinPolicy']

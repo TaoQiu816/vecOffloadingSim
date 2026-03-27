@@ -26,8 +26,8 @@ OUT_DIR = os.path.join(SUITE_ROOT, "authoritative_eval")
 
 RUN_SPECS = [
     ("full", "full", "Full-MAPPO"),
-    ("wo_dag", "no_dag", "w/o DAG-Feature"),
-    ("wo_resource", "no_resource", "w/o Resource-Feature"),
+    ("wo_dag", "no_dag", "w/o TDE"),
+    ("wo_resource", "no_resource", "w/o CARE"),
     ("wo_dag_resource", "no_dag_resource", "w/o DAG & Resource"),
 ]
 

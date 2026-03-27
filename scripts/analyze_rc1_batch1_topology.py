@@ -19,11 +19,21 @@ TOPOLOGY_RUNS = [
 ]
 
 POLICY_ORDER = [
-    ("full", "Full-MAPPO", "#1f4e79"),
-    ("wo_dag", "w/o DAG-Feature", "#c0392b"),
+    ("full", "TERA-MAPPO", "#1f4e79"),
+    ("wo_dag", "w/o TDE", "#c0392b"),
     ("local_only", "Local-Only", "#2e7d32"),
     ("greedy", "Greedy", "#f39c12"),
 ]
+
+STRICT_CURVE_STYLE = {
+    "Base-IPPO": {"color": "#7a1fa2", "linestyle": "-", "linewidth": 2.8},
+    "Parallel-TERA-MAPPO": {"color": "#003f5c", "linestyle": "-", "linewidth": 2.2},
+    "Parallel-w/o TDE": {"color": "#ef5675", "linestyle": "-", "linewidth": 2.2},
+    "Balanced-TERA-MAPPO": {"color": "#2f4b7c", "linestyle": "--", "linewidth": 2.2},
+    "Balanced-w/o TDE": {"color": "#ffa600", "linestyle": "--", "linewidth": 2.2},
+    "Deep-TERA-MAPPO": {"color": "#00876c", "linestyle": ":", "linewidth": 2.4},
+    "Deep-w/o TDE": {"color": "#bc5090", "linestyle": ":", "linewidth": 2.4},
+}
 
 
 def _ensure_out_dir() -> None:
@@ -99,7 +109,7 @@ def build_ippo_main_summary() -> pd.DataFrame:
     ippo.update(
         {
             "run_name": "ippo_main",
-            "label": "IPPO Main (base scene)",
+            "label": "IPPO-H (base scene)",
         }
     )
     rows.append(ippo)
@@ -137,7 +147,7 @@ def build_strict_train_inventory() -> pd.DataFrame:
     rows.append(
         {
             "run_key": "ippo_main",
-            "label": "IPPO Main (base scene)",
+            "label": "IPPO-H (base scene)",
             "topology": "Base",
             "policy": "IPPO",
             "episodes": int(len(ippo_df)),
@@ -248,7 +258,7 @@ def plot_batch_overview(topology_df: pd.DataFrame, ippo_df: pd.DataFrame) -> Non
         ax.set_title(title)
         ax.tick_params(axis="x", rotation=15)
         ax.grid(axis="y", alpha=0.25)
-    fig.suptitle("Base Scene: IPPO Main (tail100 summary)", fontsize=15)
+    fig.suptitle("Base Scene: IPPO-H (tail100 summary)", fontsize=15)
     fig.savefig(OUT_DIR / "batch1_ippo_main_summary_bars.png", dpi=180)
     plt.close(fig)
 
@@ -289,6 +299,125 @@ def plot_extended_metric_bars(topology_df: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def plot_topology_heatmaps(topology_df: pd.DataFrame) -> None:
+    metric_specs = [
+        ("task_sr", "Task Success Rate", "viridis"),
+        ("deadline_miss_rate", "Deadline Miss Rate", "magma_r"),
+        ("mean_cft_completed", "Mean CFT Completed", "plasma_r"),
+        ("avg_rsu_queue", "Avg RSU Queue", "cividis_r"),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
+    policy_labels = [label for _, label, _ in POLICY_ORDER]
+    topo_labels = [label for _, label in TOPOLOGY_RUNS]
+    for ax, (metric, title, cmap) in zip(axes.flat, metric_specs):
+        pivot = topology_df.pivot(index="topology", columns="policy", values=metric).loc[topo_labels, policy_labels]
+        im = ax.imshow(pivot.values, aspect="auto", cmap=cmap)
+        ax.set_title(title)
+        ax.set_xticks(range(len(policy_labels)))
+        ax.set_xticklabels(policy_labels, rotation=20, ha="right")
+        ax.set_yticks(range(len(topo_labels)))
+        ax.set_yticklabels(topo_labels)
+        for i in range(len(topo_labels)):
+            for j in range(len(policy_labels)):
+                ax.text(j, i, f"{pivot.values[i, j]:.3f}", ha="center", va="center", fontsize=8, color="white" if metric != "task_sr" else "black")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle("Batch1 Topology: Metric Heatmaps", fontsize=16)
+    fig.savefig(OUT_DIR / "batch1_topology_heatmaps.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_relative_gain_bars(topology_df: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5.5), constrained_layout=True)
+    refs = ["Local-Only", "Greedy"]
+    for ax, ref in zip(axes[:2], refs):
+        rows = []
+        for topo_key, topo_label in TOPOLOGY_RUNS:
+            sub = topology_df[topology_df["topology_key"] == topo_key]
+            ref_row = sub[sub["policy"] == ref].iloc[0]
+            for policy in ["TERA-MAPPO", "w/o TDE"]:
+                row = sub[sub["policy"] == policy].iloc[0]
+                rows.append(
+                    {
+                        "topology": topo_label,
+                        "policy": policy,
+                        "task_sr_gain": row["task_sr"] - ref_row["task_sr"],
+                        "deadline_gain": ref_row["deadline_miss_rate"] - row["deadline_miss_rate"],
+                    }
+                )
+        df = pd.DataFrame(rows)
+        labels = df["topology"] + "\n" + df["policy"].str.replace("-Feature", "", regex=False)
+        ax.bar(labels, df["task_sr_gain"], color=["#003f5c" if p == "TERA-MAPPO" else "#ef5675" for p in df["policy"]], alpha=0.9)
+        ax.set_title(f"Task SR Gain vs {ref}")
+        ax.tick_params(axis="x", rotation=35)
+        ax.grid(axis="y", alpha=0.25)
+    ax = axes[2]
+    rows = []
+    for topo_key, topo_label in TOPOLOGY_RUNS:
+        sub = topology_df[topology_df["topology_key"] == topo_key]
+        full = sub[sub["policy"] == "TERA-MAPPO"].iloc[0]
+        wodag = sub[sub["policy"] == "w/o TDE"].iloc[0]
+        rows.append({"topology": topo_label, "metric": "task_sr", "delta": full["task_sr"] - wodag["task_sr"]})
+        rows.append({"topology": topo_label, "metric": "deadline_gain", "delta": wodag["deadline_miss_rate"] - full["deadline_miss_rate"]})
+        rows.append({"topology": topo_label, "metric": "cft_gain", "delta": wodag["mean_cft_completed"] - full["mean_cft_completed"]})
+    df = pd.DataFrame(rows)
+    xlabels = df["topology"] + "\n" + df["metric"]
+    ax.bar(xlabels, df["delta"], color=["#1f4e79" if m == "task_sr" else "#c0392b" if m == "deadline_gain" else "#16a085" for m in df["metric"]], alpha=0.9)
+    ax.set_title("TERA-MAPPO Advantage over w/o TDE")
+    ax.tick_params(axis="x", rotation=35)
+    ax.grid(axis="y", alpha=0.25)
+    fig.suptitle("Batch1 Topology: Relative Gains", fontsize=16)
+    fig.savefig(OUT_DIR / "batch1_topology_relative_gains.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_tail_metric_panels(topology_df: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(2, 4, figsize=(19, 9.5), constrained_layout=True)
+    metric_specs = [
+        ("task_sr", "Task Success Rate"),
+        ("subtask_sr", "Subtask Success Rate"),
+        ("deadline_miss_rate", "Deadline Miss Rate"),
+        ("mean_cft_completed", "Mean CFT Completed"),
+        ("avg_rsu_queue", "Avg RSU Queue"),
+        ("avg_power", "Avg Power"),
+        ("decision_frac_local", "Local Ratio"),
+        ("decision_frac_rsu", "RSU Ratio"),
+    ]
+    color_map = {label: color for _, label, color in POLICY_ORDER}
+    for ax, (metric, title) in zip(axes.flat, metric_specs):
+        plot_df = topology_df.copy()
+        plot_df["x_label"] = plot_df["topology"] + "\n" + plot_df["policy"]
+        ax.bar(plot_df["x_label"], plot_df[metric].fillna(0.0), color=[color_map[p] for p in plot_df["policy"]], alpha=0.9)
+        ax.set_title(title)
+        ax.tick_params(axis="x", rotation=35)
+        ax.grid(axis="y", alpha=0.25)
+    fig.suptitle("Batch1 Topology: Tail100 / Baseline Mean Panels", fontsize=16)
+    fig.savefig(OUT_DIR / "batch1_topology_tail_metric_panels.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_policy_mix_stacks(topology_df: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), constrained_layout=True)
+    segment_colors = ["#1b9e77", "#d95f02", "#7570b3"]
+    for ax, (topo_key, topo_label) in zip(axes.flat, TOPOLOGY_RUNS):
+        sub = topology_df[topology_df["topology_key"] == topo_key].copy()
+        x = np.arange(len(sub))
+        local = sub["decision_frac_local"].values
+        rsu = sub["decision_frac_rsu"].values
+        v2v = sub["decision_frac_v2v"].values
+        ax.bar(x, local, color=segment_colors[0], label="Local")
+        ax.bar(x, rsu, bottom=local, color=segment_colors[1], label="RSU")
+        ax.bar(x, v2v, bottom=local + rsu, color=segment_colors[2], label="V2V")
+        ax.set_xticks(x)
+        ax.set_xticklabels(sub["policy"], rotation=20, ha="right")
+        ax.set_title(f"{topo_label}: Decision Mix")
+        ax.set_ylim(0, 1.05)
+        ax.grid(axis="y", alpha=0.25)
+    axes[0].legend(frameon=False)
+    fig.suptitle("Batch1 Topology: Stacked Decision Mix", fontsize=16)
+    fig.savefig(OUT_DIR / "batch1_topology_policy_mix_stacks.png", dpi=180)
+    plt.close(fig)
+
+
 def plot_policy_mix_bars(topology_df: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), constrained_layout=True)
     mix_metrics = [
@@ -310,8 +439,7 @@ def plot_policy_mix_bars(topology_df: pd.DataFrame) -> None:
     plt.close(fig)
 
 
-def plot_topology_training_diagnostics() -> None:
-    fig, axes = plt.subplots(3, 3, figsize=(18, 13), constrained_layout=True)
+def plot_topology_training_diagnostics_per_scenario() -> None:
     metric_specs = [
         ("reward_mean", "Reward Mean"),
         ("task_sr", "Task Success Rate"),
@@ -323,37 +451,31 @@ def plot_topology_training_diagnostics() -> None:
         ("entropy", "Entropy"),
         ("clip_frac", "Clip Fraction"),
     ]
-    line_styles = {
-        "parallel": ("Parallel", "-"),
-        "balanced": ("Balanced", "--"),
-        "deep": ("Deep", ":"),
-    }
-    policy_colors = {
-        "full": "#1f4e79",
-        "wo_dag": "#c0392b",
-    }
-    for ax, (metric, title) in zip(axes.flat, metric_specs):
-        for topo_key, (topo_label, ls) in line_styles.items():
+    for topo_key, topo_label in TOPOLOGY_RUNS:
+        fig, axes = plt.subplots(3, 3, figsize=(18, 13), constrained_layout=True)
+        for ax, (metric, title) in zip(axes.flat, metric_specs):
             for policy_key, policy_label, _ in POLICY_ORDER[:2]:
+                label = f"{topo_label}-{policy_label}"
+                style = STRICT_CURVE_STYLE[label]
                 df = _load_train_curve(topo_key, policy_key)
                 smooth = df[metric].rolling(50, min_periods=1).mean()
                 ax.plot(
                     df["episode"],
                     smooth,
-                    color=policy_colors[policy_key],
-                    linestyle=ls,
-                    linewidth=2.0,
-                    label=f"{topo_label}-{policy_label}",
+                    color=style["color"],
+                    linestyle=style["linestyle"],
+                    linewidth=style["linewidth"],
+                    label=policy_label,
                 )
-        ax.set_title(title)
-        ax.set_xlabel("Episode")
-        ax.grid(alpha=0.25)
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    uniq = dict(zip(labels, handles))
-    axes[0, 0].legend(uniq.values(), uniq.keys(), frameon=False, fontsize=8, ncol=2)
-    fig.suptitle("Batch1 Topology: Training Dynamics (Full vs w/o DAG)", fontsize=16)
-    fig.savefig(OUT_DIR / "batch1_topology_training_diagnostics.png", dpi=180)
-    plt.close(fig)
+            ax.set_title(title)
+            ax.set_xlabel("Episode")
+            ax.grid(alpha=0.25)
+        handles, labels = axes[0, 0].get_legend_handles_labels()
+        uniq = dict(zip(labels, handles))
+        axes[0, 0].legend(uniq.values(), uniq.keys(), frameon=False, fontsize=9)
+        fig.suptitle(f"{topo_label}: Training Diagnostics (1500ep)", fontsize=16)
+        fig.savefig(OUT_DIR / f"batch1_{topo_key}_training_diagnostics_1500ep.png", dpi=180)
+        plt.close(fig)
 
 
 def plot_ippo_main_curves() -> None:
@@ -369,58 +491,71 @@ def plot_ippo_main_curves() -> None:
     ]
     for ax, (metric, title) in zip(axes.flat, metric_specs):
         smooth = ippo_df[metric].rolling(50, min_periods=1).mean()
-        ax.plot(ippo_df["episode"], smooth, color="#8e44ad", linewidth=2.2, label="IPPO Main")
+        ax.plot(ippo_df["episode"], smooth, color=STRICT_CURVE_STYLE["Base-IPPO"]["color"], linewidth=STRICT_CURVE_STYLE["Base-IPPO"]["linewidth"], label="IPPO-H")
         ax.set_title(title)
         ax.set_xlabel("Episode")
         ax.grid(alpha=0.25)
     axes[0, 0].legend(frameon=False)
-    fig.suptitle("Base Scene: IPPO Main Training Curves (1500ep)", fontsize=16)
+    fig.suptitle("Base Scene: IPPO-H Training Curves (1500ep)", fontsize=16)
     fig.savefig(OUT_DIR / "batch1_ippo_main_training_curves_1500ep.png", dpi=180)
     plt.close(fig)
 
 
-def plot_strict_train_convergence_1500ep(train_inventory: pd.DataFrame) -> None:
+def plot_strict_train_convergence_1500ep_per_scenario(train_inventory: pd.DataFrame) -> None:
     if not (train_inventory["episodes"] == 1500).all():
         bad = train_inventory[train_inventory["episodes"] != 1500]
         raise ValueError(f"Found non-1500ep runs in strict convergence set:\n{bad}")
 
-    fig, axes = plt.subplots(2, 2, figsize=(17, 10), constrained_layout=True)
     metric_specs = [
         ("reward_mean", "Reward Mean"),
         ("task_sr", "Task Success Rate"),
         ("deadline_miss_rate", "Deadline Miss Rate"),
         ("avg_rsu_queue", "Avg RSU Queue"),
     ]
+    ippo_df = _load_main_curve(SUITE_ROOT / "ippo_main")
+    fig, axes = plt.subplots(2, 2, figsize=(17, 10), constrained_layout=True)
     for ax, (metric, title) in zip(axes.flat, metric_specs):
-        ippo_df = _load_main_curve(SUITE_ROOT / "ippo_main")
+        ippo_style = STRICT_CURVE_STYLE["Base-IPPO"]
         ax.plot(
             ippo_df["episode"],
             ippo_df[metric].rolling(50, min_periods=1).mean(),
-            color="#8e44ad",
-            linewidth=2.5,
-            label="Base-IPPO",
+            color=ippo_style["color"],
+            linewidth=ippo_style["linewidth"],
+            linestyle=ippo_style["linestyle"],
+            label="IPPO-H",
         )
-        for topo_key, topo_label in TOPOLOGY_RUNS:
-            for policy_key, policy_label, color in POLICY_ORDER[:2]:
-                df = _load_train_curve(topo_key, policy_key)
-                ls = "-" if policy_key == "full" else "--"
-                ax.plot(
-                    df["episode"],
-                    df[metric].rolling(50, min_periods=1).mean(),
-                    color=color,
-                    linewidth=1.9,
-                    linestyle=ls,
-                    label=f"{topo_label}-{policy_label}",
-                )
         ax.set_title(title)
         ax.set_xlabel("Episode")
         ax.grid(alpha=0.25)
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    uniq = dict(zip(labels, handles))
-    axes[0, 0].legend(uniq.values(), uniq.keys(), frameon=False, fontsize=8, ncol=2)
-    fig.suptitle("Batch1 Strict 1500ep Convergence Curves (all trainable runs)", fontsize=16)
-    fig.savefig(OUT_DIR / "batch1_strict_train_convergence_1500ep.png", dpi=180)
+    axes[0, 0].legend(frameon=False)
+    fig.suptitle("Base Scene: Strict 1500ep Convergence Curves", fontsize=16)
+    fig.savefig(OUT_DIR / "batch1_base_ippo_convergence_1500ep.png", dpi=180)
     plt.close(fig)
+
+    for topo_key, topo_label in TOPOLOGY_RUNS:
+        fig, axes = plt.subplots(2, 2, figsize=(17, 10), constrained_layout=True)
+        for ax, (metric, title) in zip(axes.flat, metric_specs):
+            for policy_key, policy_label, _ in POLICY_ORDER[:2]:
+                full_label = f"{topo_label}-{policy_label}"
+                style = STRICT_CURVE_STYLE[full_label]
+                df = _load_train_curve(topo_key, policy_key)
+                ax.plot(
+                    df["episode"],
+                    df[metric].rolling(50, min_periods=1).mean(),
+                    color=style["color"],
+                    linewidth=style["linewidth"],
+                    linestyle=style["linestyle"],
+                    label=policy_label,
+                )
+            ax.set_title(title)
+            ax.set_xlabel("Episode")
+            ax.grid(alpha=0.25)
+        handles, labels = axes[0, 0].get_legend_handles_labels()
+        uniq = dict(zip(labels, handles))
+        axes[0, 0].legend(uniq.values(), uniq.keys(), frameon=False, fontsize=9)
+        fig.suptitle(f"{topo_label}: Strict 1500ep Convergence Curves", fontsize=16)
+        fig.savefig(OUT_DIR / f"batch1_{topo_key}_convergence_1500ep.png", dpi=180)
+        plt.close(fig)
 
 
 def plot_topology_score_scatter(topology_df: pd.DataFrame) -> None:
@@ -483,12 +618,21 @@ def write_report(topology_df: pd.DataFrame, ippo_df: pd.DataFrame, space_df: pd.
     for name in [
         "batch1_topology_overview.png",
         "batch1_topology_extended_bars.png",
+        "batch1_topology_heatmaps.png",
+        "batch1_topology_relative_gains.png",
+        "batch1_topology_tail_metric_panels.png",
         "batch1_topology_policy_mix_bars.png",
-        "batch1_topology_training_diagnostics.png",
+        "batch1_topology_policy_mix_stacks.png",
+        "batch1_parallel_training_diagnostics_1500ep.png",
+        "batch1_balanced_training_diagnostics_1500ep.png",
+        "batch1_deep_training_diagnostics_1500ep.png",
         "batch1_topology_score_scatter.png",
         "batch1_ippo_main_summary_bars.png",
         "batch1_ippo_main_training_curves_1500ep.png",
-        "batch1_strict_train_convergence_1500ep.png",
+        "batch1_base_ippo_convergence_1500ep.png",
+        "batch1_parallel_convergence_1500ep.png",
+        "batch1_balanced_convergence_1500ep.png",
+        "batch1_deep_convergence_1500ep.png",
     ]:
         lines.append(f"- `{name}`")
 
@@ -497,22 +641,22 @@ def write_report(topology_df: pd.DataFrame, ippo_df: pd.DataFrame, space_df: pd.
     pivot_queue = topology_df.pivot(index="topology", columns="policy", values="avg_rsu_queue")
     lines.append("\n\n## Evidence-Based Findings\n")
     for topo_label in [label for _, label in TOPOLOGY_RUNS]:
-        full_sr = float(pivot_sr.loc[topo_label, "Full-MAPPO"])
-        wodag_sr = float(pivot_sr.loc[topo_label, "w/o DAG-Feature"])
-        full_cft = float(pivot_cft.loc[topo_label, "Full-MAPPO"])
-        wodag_cft = float(pivot_cft.loc[topo_label, "w/o DAG-Feature"])
-        full_q = float(pivot_queue.loc[topo_label, "Full-MAPPO"])
-        wodag_q = float(pivot_queue.loc[topo_label, "w/o DAG-Feature"])
+        full_sr = float(pivot_sr.loc[topo_label, "TERA-MAPPO"])
+        wodag_sr = float(pivot_sr.loc[topo_label, "w/o TDE"])
+        full_cft = float(pivot_cft.loc[topo_label, "TERA-MAPPO"])
+        wodag_cft = float(pivot_cft.loc[topo_label, "w/o TDE"])
+        full_q = float(pivot_queue.loc[topo_label, "TERA-MAPPO"])
+        wodag_q = float(pivot_queue.loc[topo_label, "w/o TDE"])
         lines.append(
-            f"- `{topo_label}`: `w/o DAG` vs `Full` -> "
+            f"- `{topo_label}`: `w/o TDE` vs `TERA-MAPPO` -> "
             f"`task_sr {wodag_sr:.4f} vs {full_sr:.4f}`, "
             f"`mean_cft {wodag_cft:.4f} vs {full_cft:.4f}`, "
             f"`avg_rsu_queue {wodag_q:.4f} vs {full_q:.4f}`."
         )
 
     lines.append(
-        "- Strict convergence figures in this batch now use only internal `1500ep` runs. "
-        "External `run_1000ep_A_20260320` is no longer used in convergence plotting."
+        "- All convergence / training-diagnostic curves are now split by scenario. "
+        "Different scenes are no longer plotted on the same axes."
     )
 
     (OUT_DIR / "BATCH1_ANALYSIS_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
@@ -532,10 +676,14 @@ def main() -> None:
 
     plot_batch_overview(topology_df, ippo_df)
     plot_extended_metric_bars(topology_df)
+    plot_topology_heatmaps(topology_df)
+    plot_relative_gain_bars(topology_df)
+    plot_tail_metric_panels(topology_df)
     plot_policy_mix_bars(topology_df)
-    plot_topology_training_diagnostics()
+    plot_policy_mix_stacks(topology_df)
+    plot_topology_training_diagnostics_per_scenario()
     plot_ippo_main_curves()
-    plot_strict_train_convergence_1500ep(train_inventory)
+    plot_strict_train_convergence_1500ep_per_scenario(train_inventory)
     plot_topology_score_scatter(topology_df)
     write_report(topology_df, ippo_df, space_df, train_inventory)
     print(f"Wrote analysis to {OUT_DIR}")

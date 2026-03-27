@@ -12,9 +12,9 @@ SUITE_ROOT = ROOT / "runs" / "rc1_ablation_1500ep_20260322_180707"
 OUT_DIR = SUITE_ROOT / "ablation_compare"
 
 RUNS = [
-    ("full", "Full-MAPPO", "#1f4e79"),
-    ("wo_dag", "w/o DAG-Feature", "#c0392b"),
-    ("wo_resource", "w/o Resource-Feature", "#16a085"),
+    ("full", "TERA-MAPPO", "#1f4e79"),
+    ("wo_dag", "w/o TDE", "#c0392b"),
+    ("wo_resource", "w/o CARE", "#16a085"),
     ("wo_dag_resource", "w/o DAG & Resource", "#8e44ad"),
 ]
 

@@ -1,0 +1,55 @@
+{
+  "pack_root": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/paper_final_results_20260327/lr_critic_sweep",
+  "runs": [
+    {
+      "label": "lr_c=2e-4",
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_20260320",
+      "run_name": "run_1000ep_A_20260320",
+      "episode_max": 1000,
+      "unique_episode_count": 1000
+    },
+    {
+      "label": "lr_c=3e-4",
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_lrcritic_3e4_20260321",
+      "run_name": "run_1000ep_A_lrcritic_3e4_20260321",
+      "episode_max": 1000,
+      "unique_episode_count": 1000
+    },
+    {
+      "label": "lr_c=5e-4",
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321",
+      "run_name": "run_1000ep_A_lrcritic_5e4_20260321",
+      "episode_max": 1000,
+      "unique_episode_count": 1000
+    }
+  ],
+  "smoothing": {
+    "smooth_window": 36,
+    "band_window": 28,
+    "tail_window": 100
+  },
+  "files": [
+    "tables/lr_critic_main_training_table.csv",
+    "tables/lr_critic_diagnostics_table.csv",
+    "tables/lr_critic_decision_mix_table.csv",
+    "tables/lr_critic_tail_summary_table.csv",
+    "figures/fig_reward_mean_final.png",
+    "figures/fig_reward_total_final.png",
+    "figures/fig_task_sr_final.png",
+    "figures/fig_deadline_miss_rate_final.png",
+    "figures/fig_mean_cft_completed_final.png",
+    "figures/fig_avg_rsu_queue_final.png",
+    "figures/fig_approx_kl_final.png",
+    "figures/fig_entropy_final.png",
+    "figures/fig_clip_frac_final.png",
+    "figures/fig_ratio_local_final.png",
+    "figures/fig_ratio_rsu_final.png",
+    "figures/fig_ratio_v2v_final.png",
+    "figures/fig_tail_reward_mean_final.png",
+    "figures/fig_tail_reward_total_final.png",
+    "figures/fig_tail_task_sr_final.png",
+    "figures/fig_tail_deadline_miss_rate_final.png",
+    "figures/fig_tail_avg_rsu_queue_final.png",
+    "reports/LR_CRITIC_FINAL_PACK_REPORT.md"
+  ]
+}
