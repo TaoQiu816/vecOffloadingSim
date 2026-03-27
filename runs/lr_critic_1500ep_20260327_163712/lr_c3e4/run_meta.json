@@ -1,0 +1,17 @@
+{
+  "run_id": "lr_c3e4",
+  "run_dir": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4",
+  "status": "completed",
+  "created_at": "2026-03-27 16:37:15",
+  "git_commit": "2183d98b928619ce05e880c0372361da7ab4a3a6",
+  "config_hash": "38aedc71f167f9acf6ef105668ff84cd6732e4223185905627c891367694222c",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/logs/config_snapshot.json",
+  "completed_at": "2026-03-27 20:27:35",
+  "episodes_completed": 1500,
+  "best_reward": 0.2827634940551616,
+  "best_success_rate_50ep": 0.975,
+  "best_model_path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/logs/training_stats.csv"
+}

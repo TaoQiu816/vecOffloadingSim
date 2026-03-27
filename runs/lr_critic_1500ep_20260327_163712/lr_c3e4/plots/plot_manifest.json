@@ -1,0 +1,326 @@
+{
+  "generated_at": "2026-03-27 20:28:16",
+  "plots_dir": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots",
+  "plot_count": 35,
+  "tag_counts": {
+    "rl_diagnostics": 6,
+    "baseline": 6,
+    "policy": 3,
+    "multi_agent": 3,
+    "simulation": 5,
+    "reward": 4,
+    "success": 4
+  },
+  "jobs": [
+    {
+      "job": "DataRecorder.plot_training_stats",
+      "ok": true,
+      "seconds": 6.19074010848999,
+      "tail": []
+    },
+    {
+      "job": "plot_results.py",
+      "ok": true,
+      "seconds": 17.01282787322998,
+      "tail": [
+        "✓ Saved: fig_latency_with_baselines.png",
+        "✓ Saved: fig_summary_dashboard.png",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots"
+      ]
+    },
+    {
+      "job": "generate_all_plots.py",
+      "ok": true,
+      "seconds": 7.30751633644104,
+      "tail": [
+        "⚠ No baseline data found, skipping baseline comparison plot",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots",
+        "  Total plots: 8"
+      ]
+    },
+    {
+      "job": "plot_mappo_vs_baselines.py",
+      "ok": true,
+      "skipped": true,
+      "seconds": 0.0,
+      "tail": [
+        "baseline_stats.csv missing/empty or script not found"
+      ]
+    },
+    {
+      "job": "DataRecorder.auto_plot",
+      "ok": true,
+      "seconds": 10.763535022735596,
+      "tail": []
+    }
+  ],
+  "figures": [
+    {
+      "file": "bias_annealing.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/bias_annealing.png",
+      "size_bytes": 115530,
+      "tags": []
+    },
+    {
+      "file": "cpu_efficiency.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/cpu_efficiency.png",
+      "size_bytes": 333731,
+      "tags": []
+    },
+    {
+      "file": "episode_duration.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/episode_duration.png",
+      "size_bytes": 494578,
+      "tags": []
+    },
+    {
+      "file": "fig_constraint_health.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_constraint_health.png",
+      "size_bytes": 671210,
+      "tags": []
+    },
+    {
+      "file": "fig_convergence_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_convergence_analysis.png",
+      "size_bytes": 341291,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_convergence_baseline.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_convergence_baseline.png",
+      "size_bytes": 1154712,
+      "tags": [
+        "rl_diagnostics",
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_convergence_recheck.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_convergence_recheck.png",
+      "size_bytes": 1751230,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_decision_distribution.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_decision_distribution.png",
+      "size_bytes": 231511,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_latency_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_latency_with_baselines.png",
+      "size_bytes": 574827,
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_multi_agent_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_multi_agent_metrics.png",
+      "size_bytes": 390779,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "fig_physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_physical_metrics.png",
+      "size_bytes": 788659,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "fig_policy_evolution.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_policy_evolution.png",
+      "size_bytes": 286752,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_reward_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_reward_analysis.png",
+      "size_bytes": 422105,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "fig_success_rate_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_success_rate_analysis.png",
+      "size_bytes": 201083,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "fig_summary_dashboard.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_summary_dashboard.png",
+      "size_bytes": 1005473,
+      "tags": []
+    },
+    {
+      "file": "fig_system_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_system_metrics.png",
+      "size_bytes": 377372,
+      "tags": []
+    },
+    {
+      "file": "fig_training_diagnostics.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_training_diagnostics.png",
+      "size_bytes": 1039221,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/fig_training_overview.png",
+      "size_bytes": 825643,
+      "tags": []
+    },
+    {
+      "file": "loss_curve.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/loss_curve.png",
+      "size_bytes": 268897,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "ma_collaboration_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/ma_collaboration_with_baselines.png",
+      "size_bytes": 256164,
+      "tags": [
+        "baseline",
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_fairness.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/ma_fairness.png",
+      "size_bytes": 272264,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_reward_gap.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/ma_reward_gap.png",
+      "size_bytes": 297192,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "offloading_ratio.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/offloading_ratio.png",
+      "size_bytes": 597960,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "performance_radar.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/performance_radar.png",
+      "size_bytes": 488650,
+      "tags": []
+    },
+    {
+      "file": "physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/physical_metrics.png",
+      "size_bytes": 1025089,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_len.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/queue_len.png",
+      "size_bytes": 373813,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_load_balance.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/queue_load_balance.png",
+      "size_bytes": 209560,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "resource_utilization.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/resource_utilization.png",
+      "size_bytes": 906211,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "reward_curve_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/reward_curve_with_baselines.png",
+      "size_bytes": 318777,
+      "tags": [
+        "reward",
+        "baseline"
+      ]
+    },
+    {
+      "file": "reward_decomposition.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/reward_decomposition.png",
+      "size_bytes": 2644150,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "subtask_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/subtask_success_rate_with_baselines.png",
+      "size_bytes": 241666,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    },
+    {
+      "file": "success_rate_multilevel.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/success_rate_multilevel.png",
+      "size_bytes": 521339,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/training_overview.png",
+      "size_bytes": 1098387,
+      "tags": []
+    },
+    {
+      "file": "training_stability.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/training_stability.png",
+      "size_bytes": 388802,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "veh_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4/plots/veh_success_rate_with_baselines.png",
+      "size_bytes": 286479,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    }
+  ]
+}
