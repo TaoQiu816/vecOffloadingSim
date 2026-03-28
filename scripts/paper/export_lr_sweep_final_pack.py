@@ -11,7 +11,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,9 +23,9 @@ MANIFEST_DIR = PACK_ROOT / "manifests"
 ROOT_README = OUT_ROOT / "README.md"
 
 RUN_SPECS = [
-    ("lr_c=2e-4", ROOT / "runs" / "run_1000ep_A_20260320"),
-    ("lr_c=3e-4", ROOT / "runs" / "run_1000ep_A_lrcritic_3e4_20260321"),
-    ("lr_c=5e-4", ROOT / "runs" / "run_1000ep_A_lrcritic_5e4_20260321"),
+    ("lr_c=2e-4", ROOT / "runs" / "lr_critic_1500ep_20260327_163712" / "lr_c2e4"),
+    ("lr_c=3e-4", ROOT / "runs" / "lr_critic_1500ep_20260327_163712" / "lr_c3e4"),
+    ("lr_c=5e-4", ROOT / "runs" / "lr_critic_1500ep_20260327_163712" / "lr_c5e4"),
 ]
 
 PALETTE = {
@@ -36,32 +35,33 @@ PALETTE = {
 }
 
 METRICS_MAIN = [
-    ("reward_mean", "Average Reward", "Reward"),
-    ("reward_total", "Total Reward", "Reward Sum"),
-    ("task_sr", "Task Success Rate", "Success Rate"),
-    ("deadline_miss_rate", "Deadline Miss Rate", "Miss Rate"),
-    ("mean_cft_completed", "Mean CFT of Completed Tasks", "Mean CFT"),
-    ("avg_rsu_queue", "Average RSU Queue Length", "Queue Length"),
+    ("reward_mean", "平均奖励", "平均奖励"),
+    ("reward_total", "总奖励", "总奖励"),
+    ("task_sr", "任务成功率", "任务成功率"),
+    ("deadline_miss_rate", "截止期违约率", "截止期违约率"),
+    ("mean_cft_completed", "已完成任务平均 CFT", "平均 CFT"),
+    ("avg_rsu_queue", "RSU 平均队列长度", "队列长度"),
 ]
 
 METRICS_DIAG = [
-    ("approx_kl", "Approximate KL", "Approx KL"),
-    ("entropy", "Policy Entropy", "Entropy"),
-    ("clip_frac", "Clip Fraction", "Clip Fraction"),
+    ("approx_kl", "近似 KL 散度", "近似 KL"),
+    ("entropy", "策略熵", "策略熵"),
+    ("clip_frac", "裁剪比例", "裁剪比例"),
 ]
 
 METRICS_DECISION = [
-    ("ratio_local", "Local Execution Ratio", "Ratio"),
-    ("ratio_rsu", "RSU Offloading Ratio", "Ratio"),
-    ("ratio_v2v", "V2V Offloading Ratio", "Ratio"),
+    ("ratio_local", "本地执行比例", "比例"),
+    ("ratio_rsu", "RSU 卸载比例", "比例"),
+    ("ratio_v2v", "V2V 卸载比例", "比例"),
 ]
 
-INSET_CONFIG = {
-    "reward_mean": {"xlim": (780, 1000), "loc": "lower left"},
-    "reward_total": {"xlim": (780, 1000), "loc": "lower left"},
-    "task_sr": {"xlim": (800, 1000), "loc": "lower right"},
-    "deadline_miss_rate": {"xlim": (800, 1000), "loc": "upper right"},
-}
+LEGEND_SIZE = (0.22, 0.18)
+LEGEND_CANDIDATES = [
+    (0.03, 0.86),
+    (0.75, 0.79),
+    (0.03, 0.03),
+    (0.75, 0.03),
+]
 
 
 def _ensure_dirs() -> None:
@@ -73,6 +73,8 @@ def _clear_export_dirs() -> None:
     for directory in (FIG_DIR, TAB_DIR, REPORT_DIR, MANIFEST_DIR):
         for path in directory.iterdir():
             if path.is_file():
+                if "hypothetical" in path.name:
+                    continue
                 path.unlink()
 
 
@@ -155,6 +157,49 @@ def _clip_interval(metric: str, low: pd.Series, high: pd.Series) -> tuple[pd.Ser
     if metric in bounded:
         return low.clip(0.0, 1.0), high.clip(0.0, 1.0)
     return low, high
+
+
+def _boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    ax0, ay0, aw, ah = a
+    bx0, by0, bw, bh = b
+    return not (ax0 + aw <= bx0 or bx0 + bw <= ax0 or ay0 + ah <= by0 or by0 + bh <= ay0)
+
+
+def _curve_box_score(
+    ax: plt.Axes,
+    curves: List[tuple[np.ndarray, np.ndarray]],
+    box: tuple[float, float, float, float],
+) -> float:
+    x0, y0, w, h = box
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
+    if xmax <= xmin or ymax <= ymin:
+        return 0.0
+    score = 0.0
+    for xvals, yvals in curves:
+        mask = np.isfinite(xvals) & np.isfinite(yvals)
+        if not np.any(mask):
+            continue
+        xn = (xvals[mask] - xmin) / (xmax - xmin)
+        yn = (yvals[mask] - ymin) / (ymax - ymin)
+        inside = (xn >= x0) & (xn <= x0 + w) & (yn >= y0) & (yn <= y0 + h)
+        score += float(np.count_nonzero(inside))
+    return score
+
+
+def _choose_layout(
+    ax: plt.Axes,
+    curves: List[tuple[np.ndarray, np.ndarray]],
+) -> tuple[float, float]:
+    legend_boxes = [(x, y, LEGEND_SIZE[0], LEGEND_SIZE[1]) for x, y in LEGEND_CANDIDATES]
+    best_score = float("inf")
+    best_legend = legend_boxes[0]
+    for legend_box in legend_boxes:
+        legend_score = _curve_box_score(ax, curves, legend_box)
+        if legend_score < best_score:
+            best_score = legend_score
+            best_legend = legend_box
+    return best_legend[0], best_legend[1]
 
 
 def _build_frames() -> List[Dict[str, object]]:
@@ -263,60 +308,6 @@ def _series_bundle(frame: Dict[str, object], metric: str, smooth_window: int, ba
     return {"raw": raw, "smooth": smooth, "low": low, "high": high}
 
 
-def _should_add_inset(run_frames: List[Dict[str, object]], metric: str, smooth_window: int) -> bool:
-    if metric not in INSET_CONFIG:
-        return False
-    cfg = INSET_CONFIG[metric]
-    tail_spans = []
-    tail_means = []
-    for frame in run_frames:
-        df = frame["df"]
-        focus = df[(df["episode"] >= cfg["xlim"][0]) & (df["episode"] <= cfg["xlim"][1])].copy()
-        if focus.empty:
-            continue
-        smooth_focus = _rolling(pd.to_numeric(df[metric], errors="coerce"), smooth_window).loc[focus.index]
-        tail_spans.append(float(np.nanmax(smooth_focus) - np.nanmin(smooth_focus)))
-        tail_means.append(float(np.nanmean(smooth_focus)))
-    if len(tail_means) < 2:
-        return False
-    separation = max(tail_means) - min(tail_means)
-    scale = max(max(tail_spans), 1e-8)
-    return separation < 0.60 * scale
-
-
-def _add_inset(
-    ax: plt.Axes,
-    run_frames: List[Dict[str, object]],
-    metric: str,
-    smooth_window: int,
-) -> None:
-    cfg = INSET_CONFIG[metric]
-    inset = inset_axes(ax, width="36%", height="36%", loc=cfg["loc"], borderpad=1.1)
-    y_min = float("inf")
-    y_max = float("-inf")
-    for frame in run_frames:
-        df = frame["df"]
-        focus = df[(df["episode"] >= cfg["xlim"][0]) & (df["episode"] <= cfg["xlim"][1])].copy()
-        if focus.empty:
-            continue
-        smooth_focus = _rolling(pd.to_numeric(df[metric], errors="coerce"), smooth_window).loc[focus.index]
-        inset.plot(focus["episode"], smooth_focus, color=frame["color"], linewidth=1.8)
-        y_min = min(y_min, float(np.nanmin(smooth_focus)))
-        y_max = max(y_max, float(np.nanmax(smooth_focus)))
-    if not (np.isfinite(y_min) and np.isfinite(y_max)):
-        inset.remove()
-        return
-    pad = (y_max - y_min) * 0.16 if y_max > y_min else max(abs(y_max) * 0.05, 0.01)
-    inset.set_xlim(*cfg["xlim"])
-    inset.set_ylim(y_min - pad, y_max + pad)
-    inset.grid(True, alpha=0.12, linewidth=0.5)
-    inset.tick_params(labelsize=8, length=2.5)
-    inset.set_facecolor("#ffffff")
-    for side in inset.spines.values():
-        side.set_alpha(0.55)
-    mark_inset(ax, inset, loc1=2, loc2=4, fc="none", ec="#8c8c8c", alpha=0.75, lw=0.7)
-
-
 def _save(fig: plt.Figure, stem: str) -> List[Path]:
     png = FIG_DIR / f"{stem}.png"
     fig.savefig(png, dpi=320, bbox_inches="tight")
@@ -334,17 +325,28 @@ def _plot_single_curve(
     y_limits: tuple[float, float] | None = None,
 ) -> List[Path]:
     fig, ax = plt.subplots(figsize=(7.6, 5.2))
+    curves: List[tuple[np.ndarray, np.ndarray]] = []
     for frame in run_frames:
         df = frame["df"]
         bundle = _series_bundle(frame, metric, smooth_window, band_window)
         ax.fill_between(df["episode"], bundle["low"], bundle["high"], color=frame["color"], alpha=0.11, linewidth=0)
         ax.plot(df["episode"], bundle["smooth"], color=frame["color"], linewidth=2.4, label=frame["label"])
-    _style_axis(ax, title, ylabel, "Episode")
+        curves.append((df["episode"].to_numpy(dtype=float), bundle["smooth"].to_numpy(dtype=float)))
+    _style_axis(ax, title, ylabel, "训练轮次")
     if y_limits is not None:
         ax.set_ylim(*y_limits)
-    ax.legend(loc="best", frameon=True, fancybox=False, framealpha=0.95, edgecolor="#cccccc")
-    if _should_add_inset(run_frames, metric, smooth_window):
-        _add_inset(ax, run_frames, metric, smooth_window)
+    legend_xy = _choose_layout(ax, curves)
+    ax.legend(
+        loc="lower left",
+        bbox_to_anchor=legend_xy,
+        bbox_transform=ax.transAxes,
+        ncol=1,
+        frameon=True,
+        fancybox=False,
+        framealpha=0.95,
+        edgecolor="#cccccc",
+        borderaxespad=0.0,
+    )
     fig.subplots_adjust(left=0.12, right=0.97, bottom=0.13, top=0.90)
     return _save(fig, stem)
 
@@ -435,8 +437,8 @@ def _write_report(run_frames: List[Dict[str, object]], smooth_window: int, band_
         f"- Smooth window: {smooth_window}",
         f"- Band window: {band_window}",
         f"- Tail window: {tail_window}",
-        "- Source experiments: run_1000ep_A_20260320, run_1000ep_A_lrcritic_3e4_20260321, run_1000ep_A_lrcritic_5e4_20260321",
-        "- Actual source training horizon: 1000 episodes for all three learning-rate runs",
+        "- Source experiments: lr_critic_1500ep_20260327_163712/lr_c2e4, lr_c3e4, lr_c5e4",
+        "- Actual source training horizon: 1500 episodes for all three learning-rate runs",
         "",
         "## Source Run Inventory",
     ]

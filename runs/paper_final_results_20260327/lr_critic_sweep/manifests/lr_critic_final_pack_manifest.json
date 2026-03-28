@@ -3,24 +3,24 @@
   "runs": [
     {
       "label": "lr_c=2e-4",
-      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_20260320",
-      "run_name": "run_1000ep_A_20260320",
-      "episode_max": 1000,
-      "unique_episode_count": 1000
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c2e4",
+      "run_name": "lr_c2e4",
+      "episode_max": 1500,
+      "unique_episode_count": 1500
     },
     {
       "label": "lr_c=3e-4",
-      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_lrcritic_3e4_20260321",
-      "run_name": "run_1000ep_A_lrcritic_3e4_20260321",
-      "episode_max": 1000,
-      "unique_episode_count": 1000
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c3e4",
+      "run_name": "lr_c3e4",
+      "episode_max": 1500,
+      "unique_episode_count": 1500
     },
     {
       "label": "lr_c=5e-4",
-      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/run_1000ep_A_lrcritic_5e4_20260321",
-      "run_name": "run_1000ep_A_lrcritic_5e4_20260321",
-      "episode_max": 1000,
-      "unique_episode_count": 1000
+      "run_dir": "/Users/qiutao/研/毕设/毕设/vecOffloadingSim/runs/lr_critic_1500ep_20260327_163712/lr_c5e4",
+      "run_name": "lr_c5e4",
+      "episode_max": 1500,
+      "unique_episode_count": 1500
     }
   ],
   "smoothing": {
