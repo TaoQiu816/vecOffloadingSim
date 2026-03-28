@@ -1,0 +1,17 @@
+{
+  "run_id": "fmappo_flat",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat",
+  "status": "completed",
+  "created_at": "2026-03-29 03:29:07",
+  "git_commit": "82c367c4a6943096bd64a7aa1aab96a5663a52ef",
+  "config_hash": "2d51ff8624b0f074ba20dcd382d27286c125c5506852885554d193a1f5192bd6",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat/logs/config_snapshot.json",
+  "completed_at": "2026-03-29 07:07:10",
+  "episodes_completed": 1500,
+  "best_reward": 0.3040211940969898,
+  "best_success_rate_50ep": 0.9870000000000002,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch3_frsu_fmappo_20260328_224844/frsu_6/fmappo_flat/logs/training_stats.csv"
+}
