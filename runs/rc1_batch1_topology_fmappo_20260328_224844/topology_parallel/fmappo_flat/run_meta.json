@@ -1,0 +1,17 @@
+{
+  "run_id": "fmappo_flat",
+  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat",
+  "status": "completed",
+  "created_at": "2026-03-28 22:48:47",
+  "git_commit": "a8959733a949195108b1f44ebf77737fa86b941e",
+  "config_hash": "2a4570904ed1e6525587ac8a9ee8f4be94113e34ece5224283c99e6f6670eeff",
+  "config_snapshot_path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/logs/config_snapshot.json",
+  "completed_at": "2026-03-29 02:20:26",
+  "episodes_completed": 1500,
+  "best_reward": 0.29474630297239013,
+  "best_success_rate_50ep": 0.9840000000000001,
+  "best_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/models/best_model.pth",
+  "last_model_path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/models/last_model.pth",
+  "metrics_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/logs/metrics.csv",
+  "training_stats_csv_path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/logs/training_stats.csv"
+}
