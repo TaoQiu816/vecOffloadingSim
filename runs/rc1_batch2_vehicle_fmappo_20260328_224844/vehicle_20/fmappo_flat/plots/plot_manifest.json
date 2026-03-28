@@ -1,0 +1,326 @@
+{
+  "generated_at": "2026-03-29 05:55:06",
+  "plots_dir": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots",
+  "plot_count": 35,
+  "tag_counts": {
+    "rl_diagnostics": 6,
+    "baseline": 6,
+    "policy": 3,
+    "multi_agent": 3,
+    "simulation": 5,
+    "reward": 4,
+    "success": 4
+  },
+  "jobs": [
+    {
+      "job": "DataRecorder.plot_training_stats",
+      "ok": true,
+      "seconds": 5.985407114028931,
+      "tail": []
+    },
+    {
+      "job": "plot_results.py",
+      "ok": true,
+      "seconds": 16.600558280944824,
+      "tail": [
+        "✓ Saved: fig_latency_with_baselines.png",
+        "✓ Saved: fig_summary_dashboard.png",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots"
+      ]
+    },
+    {
+      "job": "generate_all_plots.py",
+      "ok": true,
+      "seconds": 7.168682098388672,
+      "tail": [
+        "⚠ No baseline data found, skipping baseline comparison plot",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots",
+        "  Total plots: 8"
+      ]
+    },
+    {
+      "job": "plot_mappo_vs_baselines.py",
+      "ok": true,
+      "skipped": true,
+      "seconds": 0.0,
+      "tail": [
+        "baseline_stats.csv missing/empty or script not found"
+      ]
+    },
+    {
+      "job": "DataRecorder.auto_plot",
+      "ok": true,
+      "seconds": 11.036708116531372,
+      "tail": []
+    }
+  ],
+  "figures": [
+    {
+      "file": "bias_annealing.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/bias_annealing.png",
+      "size_bytes": 115564,
+      "tags": []
+    },
+    {
+      "file": "cpu_efficiency.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/cpu_efficiency.png",
+      "size_bytes": 314580,
+      "tags": []
+    },
+    {
+      "file": "episode_duration.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/episode_duration.png",
+      "size_bytes": 493857,
+      "tags": []
+    },
+    {
+      "file": "fig_constraint_health.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_constraint_health.png",
+      "size_bytes": 593381,
+      "tags": []
+    },
+    {
+      "file": "fig_convergence_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_convergence_analysis.png",
+      "size_bytes": 351390,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_convergence_baseline.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_convergence_baseline.png",
+      "size_bytes": 1121219,
+      "tags": [
+        "rl_diagnostics",
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_convergence_recheck.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_convergence_recheck.png",
+      "size_bytes": 1760926,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_decision_distribution.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_decision_distribution.png",
+      "size_bytes": 246925,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_latency_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_latency_with_baselines.png",
+      "size_bytes": 549518,
+      "tags": [
+        "baseline"
+      ]
+    },
+    {
+      "file": "fig_multi_agent_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_multi_agent_metrics.png",
+      "size_bytes": 357410,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "fig_physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_physical_metrics.png",
+      "size_bytes": 822583,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "fig_policy_evolution.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_policy_evolution.png",
+      "size_bytes": 315559,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "fig_reward_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_reward_analysis.png",
+      "size_bytes": 419759,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "fig_success_rate_analysis.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_success_rate_analysis.png",
+      "size_bytes": 197861,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "fig_summary_dashboard.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_summary_dashboard.png",
+      "size_bytes": 992369,
+      "tags": []
+    },
+    {
+      "file": "fig_system_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_system_metrics.png",
+      "size_bytes": 342020,
+      "tags": []
+    },
+    {
+      "file": "fig_training_diagnostics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_training_diagnostics.png",
+      "size_bytes": 909009,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "fig_training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/fig_training_overview.png",
+      "size_bytes": 836681,
+      "tags": []
+    },
+    {
+      "file": "loss_curve.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/loss_curve.png",
+      "size_bytes": 230555,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "ma_collaboration_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/ma_collaboration_with_baselines.png",
+      "size_bytes": 225711,
+      "tags": [
+        "baseline",
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_fairness.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/ma_fairness.png",
+      "size_bytes": 256981,
+      "tags": [
+        "multi_agent"
+      ]
+    },
+    {
+      "file": "ma_reward_gap.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/ma_reward_gap.png",
+      "size_bytes": 283177,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "offloading_ratio.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/offloading_ratio.png",
+      "size_bytes": 657941,
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "file": "performance_radar.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/performance_radar.png",
+      "size_bytes": 490864,
+      "tags": []
+    },
+    {
+      "file": "physical_metrics.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/physical_metrics.png",
+      "size_bytes": 1076857,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_len.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/queue_len.png",
+      "size_bytes": 341243,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "queue_load_balance.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/queue_load_balance.png",
+      "size_bytes": 211274,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "resource_utilization.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/resource_utilization.png",
+      "size_bytes": 888944,
+      "tags": [
+        "simulation"
+      ]
+    },
+    {
+      "file": "reward_curve_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/reward_curve_with_baselines.png",
+      "size_bytes": 328846,
+      "tags": [
+        "reward",
+        "baseline"
+      ]
+    },
+    {
+      "file": "reward_decomposition.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/reward_decomposition.png",
+      "size_bytes": 2888133,
+      "tags": [
+        "reward"
+      ]
+    },
+    {
+      "file": "subtask_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/subtask_success_rate_with_baselines.png",
+      "size_bytes": 234233,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    },
+    {
+      "file": "success_rate_multilevel.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/success_rate_multilevel.png",
+      "size_bytes": 467611,
+      "tags": [
+        "success"
+      ]
+    },
+    {
+      "file": "training_overview.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/training_overview.png",
+      "size_bytes": 1092632,
+      "tags": []
+    },
+    {
+      "file": "training_stability.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/training_stability.png",
+      "size_bytes": 355741,
+      "tags": [
+        "rl_diagnostics"
+      ]
+    },
+    {
+      "file": "veh_success_rate_with_baselines.png",
+      "path": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_20/fmappo_flat/plots/veh_success_rate_with_baselines.png",
+      "size_bytes": 280164,
+      "tags": [
+        "success",
+        "baseline"
+      ]
+    }
+  ]
+}
