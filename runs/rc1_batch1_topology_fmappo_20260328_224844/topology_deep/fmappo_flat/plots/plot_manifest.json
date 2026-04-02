@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-03-29 02:49:42",
-  "plots_dir": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots",
+  "generated_at": "2026-03-24 02:54:53",
+  "plots_dir": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots",
   "plot_count": 35,
   "tag_counts": {
     "rl_diagnostics": 6,
@@ -15,26 +15,26 @@
     {
       "job": "DataRecorder.plot_training_stats",
       "ok": true,
-      "seconds": 5.945106267929077,
+      "seconds": 6.477665662765503,
       "tail": []
     },
     {
       "job": "plot_results.py",
       "ok": true,
-      "seconds": 16.805293798446655,
+      "seconds": 16.932637453079224,
       "tail": [
         "✓ Saved: fig_latency_with_baselines.png",
         "✓ Saved: fig_summary_dashboard.png",
-        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots"
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots"
       ]
     },
     {
       "job": "generate_all_plots.py",
       "ok": true,
-      "seconds": 7.432971715927124,
+      "seconds": 7.439424991607666,
       "tail": [
         "⚠ No baseline data found, skipping baseline comparison plot",
-        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots",
+        "✓ All plots saved to: /root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots",
         "  Total plots: 8"
       ]
     },
@@ -50,47 +50,47 @@
     {
       "job": "DataRecorder.auto_plot",
       "ok": true,
-      "seconds": 11.127676963806152,
+      "seconds": 11.55070161819458,
       "tail": []
     }
   ],
   "figures": [
     {
       "file": "bias_annealing.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/bias_annealing.png",
-      "size_bytes": 119109,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/bias_annealing.png",
+      "size_bytes": 119160,
       "tags": []
     },
     {
       "file": "cpu_efficiency.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/cpu_efficiency.png",
-      "size_bytes": 337304,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/cpu_efficiency.png",
+      "size_bytes": 337741,
       "tags": []
     },
     {
       "file": "episode_duration.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/episode_duration.png",
-      "size_bytes": 467834,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/episode_duration.png",
+      "size_bytes": 494556,
       "tags": []
     },
     {
       "file": "fig_constraint_health.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_constraint_health.png",
-      "size_bytes": 603865,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_constraint_health.png",
+      "size_bytes": 612646,
       "tags": []
     },
     {
       "file": "fig_convergence_analysis.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_convergence_analysis.png",
-      "size_bytes": 333726,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_convergence_analysis.png",
+      "size_bytes": 345222,
       "tags": [
         "rl_diagnostics"
       ]
     },
     {
       "file": "fig_convergence_baseline.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_convergence_baseline.png",
-      "size_bytes": 1040423,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_convergence_baseline.png",
+      "size_bytes": 1069306,
       "tags": [
         "rl_diagnostics",
         "baseline"
@@ -98,106 +98,106 @@
     },
     {
       "file": "fig_convergence_recheck.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_convergence_recheck.png",
-      "size_bytes": 1671688,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_convergence_recheck.png",
+      "size_bytes": 1746014,
       "tags": [
         "rl_diagnostics"
       ]
     },
     {
       "file": "fig_decision_distribution.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_decision_distribution.png",
-      "size_bytes": 246470,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_decision_distribution.png",
+      "size_bytes": 260899,
       "tags": [
         "policy"
       ]
     },
     {
       "file": "fig_latency_with_baselines.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_latency_with_baselines.png",
-      "size_bytes": 545262,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_latency_with_baselines.png",
+      "size_bytes": 560011,
       "tags": [
         "baseline"
       ]
     },
     {
       "file": "fig_multi_agent_metrics.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_multi_agent_metrics.png",
-      "size_bytes": 435341,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_multi_agent_metrics.png",
+      "size_bytes": 441195,
       "tags": [
         "multi_agent"
       ]
     },
     {
       "file": "fig_physical_metrics.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_physical_metrics.png",
-      "size_bytes": 790079,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_physical_metrics.png",
+      "size_bytes": 825272,
       "tags": [
         "simulation"
       ]
     },
     {
       "file": "fig_policy_evolution.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_policy_evolution.png",
-      "size_bytes": 323042,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_policy_evolution.png",
+      "size_bytes": 357815,
       "tags": [
         "policy"
       ]
     },
     {
       "file": "fig_reward_analysis.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_reward_analysis.png",
-      "size_bytes": 369663,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_reward_analysis.png",
+      "size_bytes": 371147,
       "tags": [
         "reward"
       ]
     },
     {
       "file": "fig_success_rate_analysis.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_success_rate_analysis.png",
-      "size_bytes": 191820,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_success_rate_analysis.png",
+      "size_bytes": 194950,
       "tags": [
         "success"
       ]
     },
     {
       "file": "fig_summary_dashboard.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_summary_dashboard.png",
-      "size_bytes": 975383,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_summary_dashboard.png",
+      "size_bytes": 1006511,
       "tags": []
     },
     {
       "file": "fig_system_metrics.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_system_metrics.png",
-      "size_bytes": 341671,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_system_metrics.png",
+      "size_bytes": 347617,
       "tags": []
     },
     {
       "file": "fig_training_diagnostics.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_training_diagnostics.png",
-      "size_bytes": 902848,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_training_diagnostics.png",
+      "size_bytes": 976816,
       "tags": [
         "rl_diagnostics"
       ]
     },
     {
       "file": "fig_training_overview.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/fig_training_overview.png",
-      "size_bytes": 816824,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/fig_training_overview.png",
+      "size_bytes": 863743,
       "tags": []
     },
     {
       "file": "loss_curve.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/loss_curve.png",
-      "size_bytes": 198718,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/loss_curve.png",
+      "size_bytes": 248098,
       "tags": [
         "rl_diagnostics"
       ]
     },
     {
       "file": "ma_collaboration_with_baselines.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/ma_collaboration_with_baselines.png",
-      "size_bytes": 339988,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/ma_collaboration_with_baselines.png",
+      "size_bytes": 341695,
       "tags": [
         "baseline",
         "multi_agent"
@@ -205,70 +205,70 @@
     },
     {
       "file": "ma_fairness.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/ma_fairness.png",
-      "size_bytes": 292014,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/ma_fairness.png",
+      "size_bytes": 304695,
       "tags": [
         "multi_agent"
       ]
     },
     {
       "file": "ma_reward_gap.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/ma_reward_gap.png",
-      "size_bytes": 302659,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/ma_reward_gap.png",
+      "size_bytes": 296571,
       "tags": [
         "reward"
       ]
     },
     {
       "file": "offloading_ratio.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/offloading_ratio.png",
-      "size_bytes": 647334,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/offloading_ratio.png",
+      "size_bytes": 718982,
       "tags": [
         "policy"
       ]
     },
     {
       "file": "performance_radar.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/performance_radar.png",
-      "size_bytes": 487943,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/performance_radar.png",
+      "size_bytes": 482555,
       "tags": []
     },
     {
       "file": "physical_metrics.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/physical_metrics.png",
-      "size_bytes": 1074185,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/physical_metrics.png",
+      "size_bytes": 1125219,
       "tags": [
         "simulation"
       ]
     },
     {
       "file": "queue_len.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/queue_len.png",
-      "size_bytes": 395454,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/queue_len.png",
+      "size_bytes": 394947,
       "tags": [
         "simulation"
       ]
     },
     {
       "file": "queue_load_balance.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/queue_load_balance.png",
-      "size_bytes": 170888,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/queue_load_balance.png",
+      "size_bytes": 176441,
       "tags": [
         "simulation"
       ]
     },
     {
       "file": "resource_utilization.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/resource_utilization.png",
-      "size_bytes": 962123,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/resource_utilization.png",
+      "size_bytes": 988380,
       "tags": [
         "simulation"
       ]
     },
     {
       "file": "reward_curve_with_baselines.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/reward_curve_with_baselines.png",
-      "size_bytes": 300974,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/reward_curve_with_baselines.png",
+      "size_bytes": 303061,
       "tags": [
         "reward",
         "baseline"
@@ -276,16 +276,16 @@
     },
     {
       "file": "reward_decomposition.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/reward_decomposition.png",
-      "size_bytes": 2220884,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/reward_decomposition.png",
+      "size_bytes": 2379937,
       "tags": [
         "reward"
       ]
     },
     {
       "file": "subtask_success_rate_with_baselines.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/subtask_success_rate_with_baselines.png",
-      "size_bytes": 232903,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/subtask_success_rate_with_baselines.png",
+      "size_bytes": 254158,
       "tags": [
         "success",
         "baseline"
@@ -293,30 +293,30 @@
     },
     {
       "file": "success_rate_multilevel.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/success_rate_multilevel.png",
-      "size_bytes": 479066,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/success_rate_multilevel.png",
+      "size_bytes": 458354,
       "tags": [
         "success"
       ]
     },
     {
       "file": "training_overview.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/training_overview.png",
-      "size_bytes": 1028677,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/training_overview.png",
+      "size_bytes": 1128324,
       "tags": []
     },
     {
       "file": "training_stability.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/training_stability.png",
-      "size_bytes": 291302,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/training_stability.png",
+      "size_bytes": 298171,
       "tags": [
         "rl_diagnostics"
       ]
     },
     {
       "file": "veh_success_rate_with_baselines.png",
-      "path": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_deep/fmappo_flat/plots/veh_success_rate_with_baselines.png",
-      "size_bytes": 254522,
+      "path": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full/plots/veh_success_rate_with_baselines.png",
+      "size_bytes": 260559,
       "tags": [
         "success",
         "baseline"

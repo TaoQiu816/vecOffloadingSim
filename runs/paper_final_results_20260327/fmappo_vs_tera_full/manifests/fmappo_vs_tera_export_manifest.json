@@ -1,0 +1,23 @@
+{
+  "pair_manifest": "runs/paper_final_results_20260327/fmappo_vs_tera_full/manifests/fmappo_vs_tera_pair_manifest.csv",
+  "last100_summary": "runs/paper_final_results_20260327/fmappo_vs_tera_full/tables/fmappo_vs_tera_last100_summary.csv",
+  "best50_summary": "runs/paper_final_results_20260327/fmappo_vs_tera_full/tables/fmappo_vs_tera_best50_summary.csv",
+  "phase_summary": "runs/paper_final_results_20260327/fmappo_vs_tera_full/tables/fmappo_vs_tera_phase_summary.csv",
+  "curve_table_long": "runs/paper_final_results_20260327/fmappo_vs_tera_full/tables/fmappo_vs_tera_curve_table_long.csv",
+  "report": "runs/paper_final_results_20260327/fmappo_vs_tera_full/reports/FMAPPO_VS_TERA_FULL_REPORT.md",
+  "figures": [
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_fmappo_vs_tera_last100_bars.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_fmappo_vs_tera_delta_heatmap.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_fmappo_vs_tera_phase_trends.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_default_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_topology_parallel_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_topology_balanced_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_topology_deep_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_vehicle_10_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_vehicle_20_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_vehicle_30_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_frsu_4_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_frsu_6_full_curves.png",
+    "runs/paper_final_results_20260327/fmappo_vs_tera_full/figures/fig_frsu_8_full_curves.png"
+  ]
+}

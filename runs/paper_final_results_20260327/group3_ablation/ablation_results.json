@@ -1,0 +1,62 @@
+{
+  "F-MAPPO": {
+    "task_sr": 0.8849999999999999,
+    "task_sr_std": 0.11688291646607794,
+    "mean_cft": 1.7315240982579587,
+    "mean_cft_std": 0.7120868110555448,
+    "p95_cft": 2.1650347895806585,
+    "tx_waiting": 0.01344252750441713,
+    "comp_waiting": 0.081851,
+    "avg_veh_queue": 0.6553,
+    "avg_rsu_queue": 1.777631139623251,
+    "deadline_miss": 0.064
+  },
+  "TERA-MAPPO": {
+    "task_sr": 0.9355,
+    "task_sr_std": 0.10082863750648505,
+    "mean_cft": 1.7688117742397174,
+    "mean_cft_std": 0.7094071372617836,
+    "p95_cft": 2.1671292192574305,
+    "tx_waiting": 0.014344889720456753,
+    "comp_waiting": 0.075436,
+    "avg_veh_queue": 0.6260,
+    "avg_rsu_queue": 1.7776,
+    "deadline_miss": 0.064
+  },
+  "w/o TDE": {
+    "task_sr": 0.9028,
+    "task_sr_std": 0.0745,
+    "mean_cft": 1.8215,
+    "mean_cft_std": 0.7696,
+    "p95_cft": 2.2193,
+    "tx_waiting": 0.0051,
+    "comp_waiting": 0.103574,
+    "avg_veh_queue": 0.7234,
+    "avg_rsu_queue": 0.9661,
+    "deadline_miss": 0.0859
+  },
+  "w/o CARE": {
+    "task_sr": 0.12750000000000003,
+    "task_sr_std": 0.14845585678625625,
+    "mean_cft": 1.2322709433735173,
+    "mean_cft_std": 0.9057953872383895,
+    "p95_cft": 1.410235004992186,
+    "tx_waiting": 0.047409777891366946,
+    "comp_waiting": 0.045925,
+    "avg_veh_queue": 0.3000,
+    "avg_rsu_queue": 0.1952,
+    "deadline_miss": 0.8315
+  },
+  "w/o TDE+CARE": {
+    "task_sr": 0.1335,
+    "task_sr_std": 0.1662,
+    "mean_cft": 1.1962,
+    "mean_cft_std": 0.9384,
+    "p95_cft": 1.3802,
+    "tx_waiting": 0.0464,
+    "comp_waiting": 0.045283,
+    "avg_veh_queue": 0.2967,
+    "avg_rsu_queue": 0.2024,
+    "deadline_miss": 0.8140
+  }
+}

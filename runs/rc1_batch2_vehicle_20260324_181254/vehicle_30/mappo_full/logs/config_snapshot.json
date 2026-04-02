@@ -527,7 +527,7 @@
     "COMMWAIT_DIRECT_TO_CRITIC": true,
     "CTDE_GLOBAL_DIM": 30,
     "ALGO_MODE": "mappo",
-    "ABLATION_MODE": "full",
+    "ABLATION_MODE": "flat",
     "USE_EDGE_BIAS": true,
     "USE_SPATIAL_BIAS": true,
     "USE_PHYSICS_BIAS": true,
@@ -632,11 +632,11 @@
   },
   "env": {
     "SEED": "42",
-    "RUN_ID": "mappo_full",
-    "RUN_DIR": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_30/mappo_full",
-    "REWARD_JSONL_PATH": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_20260324_181254/vehicle_30/mappo_full/logs/env_reward.jsonl",
+    "RUN_ID": "fmappo_flat",
+    "RUN_DIR": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_30/fmappo_flat",
+    "REWARD_JSONL_PATH": "/root/vecOffloadingSim/runs/rc1_batch2_vehicle_fmappo_20260328_224844/vehicle_30/fmappo_flat/logs/env_reward.jsonl",
     "DEVICE_NAME": "cuda",
-    "GIT_COMMIT": "bde1521a59fa7f06251634ff137ee720b77e9f77"
+    "GIT_COMMIT": "9ce89bab90cd6c91c7cb592ec063b6b0d5b4c4e5"
   },
-  "config_hash": "62d3966ab256f4a38c915d9ba0403b16428a0e2a177c42b1e5172ab512b89993"
+  "config_hash": "670b307043ff31c82906b9c9a52aeff9427c49871174f28ddb06b461bb0c7330"
 }

@@ -47,12 +47,12 @@
   },
   "run": {
     "SEED": "42",
-    "RUN_ID": "fmappo_flat",
-    "RUN_DIR": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat",
-    "REWARD_JSONL_PATH": "/root/vecOffloadingSim/runs/rc1_batch1_topology_fmappo_20260328_224844/topology_parallel/fmappo_flat/logs/env_reward.jsonl",
+    "RUN_ID": "full",
+    "RUN_DIR": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full",
+    "REWARD_JSONL_PATH": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full/logs/env_reward.jsonl",
     "DEVICE_NAME": "cuda",
-    "GIT_COMMIT": "a8959733a949195108b1f44ebf77737fa86b941e"
+    "GIT_COMMIT": "cfafa0eafbe59b8cd5efddf3c8184cd878bb196a"
   },
-  "git_commit": "a8959733a949195108b1f44ebf77737fa86b941e",
-  "config_hash": "2a4570904ed1e6525587ac8a9ee8f4be94113e34ece5224283c99e6f6670eeff"
+  "git_commit": "cfafa0eafbe59b8cd5efddf3c8184cd878bb196a",
+  "config_hash": "15f484705b9c992e6c689c768db4b87b7ec16ffcb17ffcfa93e3bd04ca53b103"
 }

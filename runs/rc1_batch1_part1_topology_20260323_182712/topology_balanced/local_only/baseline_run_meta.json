@@ -1,9 +1,0 @@
-{
-  "run_dir": "/root/vecOffloadingSim/runs/rc1_batch1_part1_topology_20260323_182712/topology_balanced/local_only",
-  "created_at": "2026-03-23 22:27:08",
-  "git_commit": "d9e17f8a3d759676092a8100a5fb8f1f8937ce31",
-  "config_hash": "15ee935ac85da493d5cbd0ff7feb5cb9ee1a3ff71ed59b2b1ae715897ce9d558",
-  "seed": 42,
-  "max_steps": 300,
-  "num_episodes": 50
-}

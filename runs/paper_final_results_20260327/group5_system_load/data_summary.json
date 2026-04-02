@@ -1,0 +1,36 @@
+{
+  "vehicle_scale": {
+    "num_records": 17,
+    "algorithms": [
+      "CP-EFT",
+      "EFT",
+      "F-MAPPO",
+      "IPPO",
+      "LO",
+      "MAPPO",
+      "NRO"
+    ],
+    "vehicle_numbers": [
+      10,
+      20,
+      30
+    ]
+  },
+  "rsu_cpu": {
+    "num_records": 21,
+    "algorithms": [
+      "CP-EFT",
+      "EFT",
+      "F-MAPPO",
+      "IPPO",
+      "LO",
+      "MAPPO",
+      "NRO"
+    ],
+    "rsu_factors": [
+      4,
+      6,
+      8
+    ]
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "TERA-MAPPO": {
+    "balanced": {
+      "cwt": 0.2354,
+      "cwt_comm": 0.0188,
+      "cwt_cpu_q": 0.2166,
+      "fov": 0.9724,
+      "n": 10
+    },
+    "deep": {
+      "cwt": 0.1973,
+      "cwt_comm": 0.0742,
+      "cwt_cpu_q": 0.1231,
+      "fov": 0.9641,
+      "n": 10
+    },
+    "parallel": {
+      "cwt": 0.2441,
+      "cwt_comm": 0.0515,
+      "cwt_cpu_q": 0.1926,
+      "fov": 0.9723,
+      "n": 10
+    }
+  },
+  "F-MAPPO": {
+    "balanced": {
+      "cwt": 0.3057,
+      "cwt_comm": 0.1399,
+      "cwt_cpu_q": 0.1658,
+      "fov": 0.9718,
+      "n": 10
+    },
+    "deep": {
+      "cwt": 0.2318,
+      "cwt_comm": 0.1115,
+      "cwt_cpu_q": 0.1202,
+      "fov": 0.9609,
+      "n": 10
+    },
+    "parallel": {
+      "cwt": 0.2760,
+      "cwt_comm": 0.1230,
+      "cwt_cpu_q": 0.1530,
+      "fov": 0.9675,
+      "n": 10
+    }
+  },
+  "IPPO": {
+    "balanced": {
+      "cwt": 0.3028,
+      "cwt_comm": 0.1422,
+      "cwt_cpu_q": 0.1606,
+      "fov": 0.9627,
+      "n": 10
+    },
+    "deep": {
+      "cwt": 0.2330,
+      "cwt_comm": 0.1403,
+      "cwt_cpu_q": 0.0927,
+      "fov": 0.9592,
+      "n": 10
+    },
+    "parallel": {
+      "cwt": 0.2785,
+      "cwt_comm": 0.1271,
+      "cwt_cpu_q": 0.1514,
+      "fov": 0.9627,
+      "n": 10
+    }
+  },
+  "Greedy": {
+    "balanced": {
+      "cwt": 0.2614,
+      "cwt_comm": 0.1639,
+      "cwt_cpu_q": 0.0974,
+      "fov": 0.9517,
+      "n": 10
+    },
+    "deep": {
+      "cwt": 0.2539,
+      "cwt_comm": 0.1642,
+      "cwt_cpu_q": 0.0897,
+      "fov": 0.9569,
+      "n": 10
+    },
+    "parallel": {
+      "cwt": 0.2522,
+      "cwt_comm": 0.1591,
+      "cwt_cpu_q": 0.0931,
+      "fov": 0.9562,
+      "n": 10
+    }
+  },
+  "Local-Only": {
+    "balanced": {
+      "cwt": 0.2338,
+      "cwt_comm": 0.0000,
+      "cwt_cpu_q": 0.2338,
+      "fov": 0.9499,
+      "n": 10
+    },
+    "deep": {
+      "cwt": 0.1893,
+      "cwt_comm": 0.0000,
+      "cwt_cpu_q": 0.1893,
+      "fov": 0.9561,
+      "n": 10
+    },
+    "parallel": {
+      "cwt": 0.2211,
+      "cwt_comm": 0.0000,
+      "cwt_cpu_q": 0.2211,
+      "fov": 0.9564,
+      "n": 10
+    }
+  }
+}

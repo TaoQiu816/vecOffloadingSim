@@ -1,2 +1,0 @@
-episodes,window,reward_mean,task_sr,subtask_sr,deadline_miss_rate,mean_cft_completed,avg_rsu_queue,avg_power,decision_frac_local,decision_frac_rsu,decision_frac_v2v,approx_kl,entropy,clip_frac,run_name,label
-1500,100,0.010733277369290542,0.9065000000000002,0.9869220901239738,0.0935,1.7752078740091104,1.4043353149928237,0.4759754409064951,0.6944649149494891,0.30376135481961997,0.0017737302308907731,0.01330140369831856,1.355133862018585,0.08248021302744744,ippo_main,IPPO-H (base scene)

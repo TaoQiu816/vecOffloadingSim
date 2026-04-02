@@ -3287,6 +3287,9 @@ class VecOffloadingEnv(gym.Env):
         self._rate_prev_cache_v2i = np.zeros(self.config.NUM_VEHICLES, dtype=np.float32)
         self._rate_prev_cache_v2v = np.zeros(self.config.NUM_VEHICLES, dtype=np.float32)
         self._episode_dT_eff_values = []
+        self._episode_cwt_full_values = []  # 全流程等待：cpu_start - ready_time（含通信+队列）
+        self._episode_cwt_comm_values = []       # 通信等待：comm_end - ready_time
+        self._episode_cwt_cpu_queue_values = []  # 计算排队等待：cpu_start - comm_end（或cpu_start - ready_time for local）
         self._episode_energy_norm_values = []
         self._episode_t_tx_values = []
         self._episode_task_durations = []
@@ -4118,7 +4121,28 @@ class VecOffloadingEnv(gym.Env):
             subtask_id = getattr(job, "subtask_id", None)
             if subtask_id is None or int(subtask_id) < 0 or int(subtask_id) >= int(getattr(dag, "num_subtasks", 0)):
                 continue
-            dag.mark_cpu_start(int(subtask_id), float(job.start_time if job.start_time is not None else self.time))
+            _start = float(job.start_time if job.start_time is not None else self.time)
+            dag.mark_cpu_start(int(subtask_id), _start)
+            # [统计] 记录计算等待时间（入队到开始被处理的延迟），涵盖Local/RSU/V2V所有执行路径
+            _wait = _start - float(job.enqueue_time)
+            if _wait >= 0.0:
+                self._episode_dT_eff_values.append(_wait)
+            # [统计] 记录全流程等待时间（ready_time到cpu_start），包含通信+传输+CPU排队
+            _ready = dag.ready_time[int(subtask_id)]
+            if np.isfinite(_ready) and _start >= _ready:
+                self._episode_cwt_full_values.append(_start - _ready)
+                # 分解通信等待 vs 计算排队等待
+                _comm_end = dag.comm_end_time[int(subtask_id)]
+                if np.isfinite(_comm_end) and _comm_end >= _ready:
+                    # 有通信阶段：通信等待 = comm_end - ready_time，计算排队 = cpu_start - comm_end
+                    _comm_wait = _comm_end - _ready
+                    _cpu_q_wait = max(0.0, _start - _comm_end)
+                else:
+                    # 无通信（本地执行）：通信等待=0，计算排队 = cpu_start - ready_time
+                    _comm_wait = 0.0
+                    _cpu_q_wait = _start - _ready
+                self._episode_cwt_comm_values.append(_comm_wait)
+                self._episode_cwt_cpu_queue_values.append(_cpu_q_wait)
 
         # 统一应用结果
         for veh_id, delta in cpu_result.energy_delta_cost_local.items():
@@ -7651,6 +7675,63 @@ class VecOffloadingEnv(gym.Env):
         else:
             episode_metrics['dT_eff_mean'] = 0.0
             episode_metrics['dT_eff_p95'] = 0.0
+
+        # ── CWT (全流程等待时间)：cpu_start - ready_time，含通信+传输+CPU排队 ──
+        if self._episode_cwt_full_values:
+            episode_metrics['cwt_full_mean'] = float(np.mean(self._episode_cwt_full_values))
+            episode_metrics['cwt_full_p95'] = float(np.percentile(self._episode_cwt_full_values, 95))
+        else:
+            episode_metrics['cwt_full_mean'] = 0.0
+            episode_metrics['cwt_full_p95'] = 0.0
+
+        # ── CWT 分量：通信等待（含传输） vs 计算排队等待 ──
+        if self._episode_cwt_comm_values:
+            episode_metrics['cwt_comm_mean'] = float(np.mean(self._episode_cwt_comm_values))
+        else:
+            episode_metrics['cwt_comm_mean'] = 0.0
+        if self._episode_cwt_cpu_queue_values:
+            episode_metrics['cwt_cpu_queue_mean'] = float(np.mean(self._episode_cwt_cpu_queue_values))
+        else:
+            episode_metrics['cwt_cpu_queue_mean'] = 0.0
+
+        # ── LBR(c)：计算节点负载均衡率（Jain公平指数，车辆本地+RSU） ──────────
+        _compute_loads = (
+            list(self.CPU_cycles_local.values()) +
+            list(self.CPU_cycles_rsu_record.values())
+        )
+        if _compute_loads and sum(_compute_loads) > 1e-12:
+            _x = np.asarray(_compute_loads, dtype=np.float64)
+            _jain_c = (_x.sum() ** 2) / (len(_x) * (_x ** 2).sum())
+            episode_metrics['lbr_compute'] = float(np.clip(_jain_c, 0.0, 1.0))
+        else:
+            episode_metrics['lbr_compute'] = float('nan')
+
+        # ── LBR(r)：无线信道负载均衡率（Jain公平指数，各车辆上传能耗） ─────────
+        _radio_loads = list(self.E_tx_input_cost.values())
+        if _radio_loads and sum(_radio_loads) > 1e-12:
+            _x = np.asarray(_radio_loads, dtype=np.float64)
+            _jain_r = (_x.sum() ** 2) / (len(_x) * (_x ** 2).sum())
+            episode_metrics['lbr_radio'] = float(np.clip(_jain_r, 0.0, 1.0))
+        else:
+            episode_metrics['lbr_radio'] = float('nan')
+
+        # ── FoV：车辆公平性指数（Jain公平指数，评估车辆间任务执行时间的波动情况） ──
+        # 统计每辆车已完成任务的端到端执行时间
+        _veh_execution_times = []
+        for v in self.vehicles:
+            if hasattr(v, "task_dag") and v.task_dag and v.task_dag.is_finished and not v.task_dag.is_failed:
+                # 绝对完成时间 - 绝对开始时间
+                t_exec = v.task_dag.get_completion_time_abs() - v.task_dag.start_time
+                if t_exec > 0:
+                    _veh_execution_times.append(t_exec)
+        
+        if _veh_execution_times:
+            _x_fov = np.asarray(_veh_execution_times, dtype=np.float64)
+            _n_fov = len(_x_fov)
+            _jain_fov = (_x_fov.sum() ** 2) / (_n_fov * (_x_fov ** 2).sum())
+            episode_metrics['fov'] = float(np.clip(_jain_fov, 0.0, 1.0))
+        else:
+            episode_metrics['fov'] = 0.0
 
         episode_metrics['comm_wait_guard_total'] = int(sum(getattr(self, "_comm_wait_guard_counts", {}).values()))
         episode_metrics['comm_wait_guard_counts'] = dict(getattr(self, "_comm_wait_guard_counts", {}))

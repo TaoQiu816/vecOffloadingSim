@@ -1,0 +1,16 @@
+method,topology,task_sr,mean_cft
+TERA-MAPPO,Balanced,0.962,1.4865
+TERA-MAPPO,Deep,0.9875,1.6691
+TERA-MAPPO,Parallel,0.9585,1.4645
+F-MAPPO,Balanced,0.9145,1.6181
+F-MAPPO,Deep,0.968,1.7442
+F-MAPPO,Parallel,0.9455,1.6339
+IPPO,Balanced,0.9065,1.7217
+IPPO,Deep,0.9065,1.7575
+IPPO,Parallel,0.9065,1.6971
+Greedy,Balanced,0.851,1.6971
+Greedy,Deep,0.912,1.8395
+Greedy,Parallel,0.863,1.7475
+Local-Only,Balanced,0.853,1.8491
+Local-Only,Deep,0.951,1.9003
+Local-Only,Parallel,0.853,1.8491

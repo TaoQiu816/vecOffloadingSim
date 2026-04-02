@@ -1,8 +1,0 @@
-run_key,label,topology,policy,episodes,path
-ippo_main,IPPO-H (base scene),Base,IPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/ippo_main
-parallel_full,Parallel-TERA-MAPPO,Parallel,TERA-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/full
-parallel_wo_dag,Parallel-w/o TDE,Parallel,w/o TDE,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_parallel/wo_dag
-balanced_full,Balanced-TERA-MAPPO,Balanced,TERA-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_balanced/full
-balanced_wo_dag,Balanced-w/o TDE,Balanced,w/o TDE,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_balanced/wo_dag
-deep_full,Deep-TERA-MAPPO,Deep,TERA-MAPPO,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/full
-deep_wo_dag,Deep-w/o TDE,Deep,w/o TDE,1500,runs/rc1_batch1_part1_topology_20260323_182712/topology_deep/wo_dag
