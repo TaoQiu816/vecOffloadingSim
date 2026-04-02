@@ -2,7 +2,7 @@
 """
 Group 3: 消融研究数据导出和绘图脚本
 从训练日志重新读取数据并生成所有图表（包含F-MAPPO基准）
-样式与 group1 alt_style_overview_thin 保持一致
+样式与 group4/group5 完全对齐：宋体+无加粗+大字号+最小空白+保留完整边框
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.font_manager import FontProperties
+import matplotlib as mpl
 import numpy as np
 import json
 import pandas as pd
@@ -53,7 +53,7 @@ METRICS_CONVERGENCE: List[Tuple[str, str]] = [
     ("task_sr",            "任务成功率"),
     ("mean_cft_completed", "平均完成时延 (s)"),
     ("reward_mean",        "平均奖励"),
-    ("reward_total",       "总奖励"),
+    ("reward_total",       "奖励"),
     ("deadline_miss_rate", "截止期违约率"),
     ("avg_rsu_queue",      "RSU 平均队列长度"),
 ]
@@ -79,42 +79,36 @@ LEGEND_CANDIDATES = [
     (0.65, 0.04),
 ]
 
-FONT_CN = FontProperties(family="Songti SC")
-
-
 # ---------------------------------------------------------------------------
-# 全局样式
+# 全局样式（与 group4/group5 完全对齐：宋体+无加粗+大字号）
 # ---------------------------------------------------------------------------
 
 def _set_style() -> None:
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    matplotlib.rcParams["font.family"] = "serif"
-    matplotlib.rcParams["font.serif"] = [
-        "Times New Roman", "Times", "Nimbus Roman No9 L", "DejaVu Serif"
-    ]
-    matplotlib.rcParams["mathtext.fontset"] = "custom"
-    matplotlib.rcParams["mathtext.rm"] = "Times New Roman"
-    matplotlib.rcParams["mathtext.it"] = "Times New Roman:italic"
-    matplotlib.rcParams["mathtext.bf"] = "Times New Roman:bold"
-    matplotlib.rcParams["font.size"] = 14
-    matplotlib.rcParams["axes.titlesize"] = 16
-    matplotlib.rcParams["axes.labelsize"] = 16
-    matplotlib.rcParams["legend.fontsize"] = 11
-    matplotlib.rcParams["xtick.labelsize"] = 12
-    matplotlib.rcParams["ytick.labelsize"] = 12
-    matplotlib.rcParams["figure.facecolor"] = "white"
-    matplotlib.rcParams["axes.facecolor"] = "#fbfbfb"
-    matplotlib.rcParams["savefig.facecolor"] = "white"
+    mpl.rcParams["font.sans-serif"]    = ["SimSun", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
+    mpl.rcParams["axes.unicode_minus"] = False
+    mpl.rcParams["axes.spines.top"]    = True
+    mpl.rcParams["axes.spines.right"]  = True
+    mpl.rcParams["axes.spines.left"]   = True
+    mpl.rcParams["axes.spines.bottom"] = True
+    mpl.rcParams["lines.linewidth"]    = 1.0
+    mpl.rcParams["font.size"]          = 18   # 全局统一字号
+    mpl.rcParams["font.weight"]        = "normal"  # 全局禁止加粗
+    mpl.rcParams["figure.facecolor"]   = "white"
+    mpl.rcParams["axes.facecolor"]     = "white"
+    mpl.rcParams["savefig.facecolor"]  = "white"
 
 
-def _style_axis(ax: plt.Axes, ylabel: str, xlabel: str = "训练轮次") -> None:
-    ax.set_ylabel(ylabel, fontproperties=FONT_CN, fontsize=16)
-    ax.set_xlabel(xlabel, fontproperties=FONT_CN, fontsize=14)
-    ax.grid(True, alpha=0.18, linewidth=0.7)
+def _style_axis(ax: plt.Axes, ylabel: str, xlabel: str = "训练轮次",
+                fontsize: int = 20) -> None:
+    """坐标轴统一样式（与 group4/group5 完全一致）"""
+    ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
+    ax.tick_params(axis="both", labelsize=fontsize - 2)
+    ax.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_alpha(0.75)
-        spine.set_linewidth(1.05)
+        spine.set_linewidth(1.2)
+        spine.set_color("black")
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +201,7 @@ def extract_tail_metrics(run_dir: Path, n: int = TAIL_EPISODES) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 收敛曲线（每指标独立一图，thin-line 风格）
+# 收敛曲线（统一尺寸 10*8，布局对齐 Group4/5）
 # ---------------------------------------------------------------------------
 
 def plot_convergence_curves(all_data: Dict[str, "pd.DataFrame"]) -> List[Path]:
@@ -216,7 +210,7 @@ def plot_convergence_curves(all_data: Dict[str, "pd.DataFrame"]) -> List[Path]:
     exported: List[Path] = []
 
     for col, ylabel in METRICS_CONVERGENCE:
-        fig, ax = plt.subplots(figsize=(7.35, 5.05))
+        fig, ax = plt.subplots(figsize=(10, 8))
         curves: List[Tuple[np.ndarray, np.ndarray]] = []
 
         for name in SERIES_ORDER:
@@ -241,22 +235,19 @@ def plot_convergence_curves(all_data: Dict[str, "pd.DataFrame"]) -> List[Path]:
         if col in {"task_sr", "deadline_miss_rate"}:
             ax.set_ylim(0.0, 1.0)
 
-        legend_xy = _choose_legend_pos(ax, curves)
         ax.legend(
-            loc="lower left",
-            bbox_to_anchor=legend_xy,
-            bbox_transform=ax.transAxes,
+            loc="best",           # 自动选择遮挡曲线最少的位置，始终在坐标轴内
             ncol=1,
             frameon=True,
             fancybox=False,
             framealpha=0.96,
-            edgecolor="#d0d0d0",
-            borderaxespad=0.0,
-            prop=FONT_CN,
+            edgecolor="black",
+            borderaxespad=0.5,
+            fontsize=16,          # 与 group4/group5 图例字号对齐
         )
-        fig.subplots_adjust(left=0.11, right=0.995, bottom=0.095, top=0.995)
+        fig.tight_layout(pad=0.1)
         out = fig_dir / f"fig_ablation_convergence_{col}.png"
-        fig.savefig(out, dpi=320, bbox_inches="tight", pad_inches=0.03)
+        fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02, facecolor="white")
         plt.close(fig)
         print(f"  已导出: {out.relative_to(OUTPUT_DIR)}")
         exported.append(out)
@@ -265,7 +256,7 @@ def plot_convergence_curves(all_data: Dict[str, "pd.DataFrame"]) -> List[Path]:
 
 
 # ---------------------------------------------------------------------------
-# 性能柱状图 + 成功率折线（双Y轴）
+# 性能柱状图：移除P95 + 删除所有数值标注 + 图例无遮挡
 # ---------------------------------------------------------------------------
 
 def plot_performance_bar(results: Dict[str, dict]) -> Path:
@@ -276,75 +267,55 @@ def plot_performance_bar(results: Dict[str, dict]) -> Path:
     variants = [v for v in SERIES_ORDER if v in results]
     n_vars = len(variants)
     x = np.arange(n_vars)
-    width = 0.35
+    width = 0.6
 
     mean_cfts = [results[v].get("mean_cft", float("nan")) for v in variants]
-    p95_cfts  = [results[v].get("p95_cft",  float("nan")) for v in variants]
     srs       = [results[v].get("task_sr",  float("nan")) for v in variants]
 
-    # ── group2 固定双色配色 ──────────────────────────────────────────────────
     BAR_COLOR_MEAN = "#3498db"
-    BAR_COLOR_P95  = "#e67e22"
     LINE_COLOR_SR  = "#e74c3c"
 
-    fig, ax1 = plt.subplots(figsize=(10, 6))
+    fig, ax1 = plt.subplots(figsize=(10, 8))
 
-    # 柱状图：黑色边框 1pt
-    bars1 = ax1.bar(x - width / 2, mean_cfts, width, label="Mean CFT",
+    # 仅保留 Mean CFT，删除 P95
+    bars1 = ax1.bar(x, mean_cfts, width, label="Mean CFT",
                     color=BAR_COLOR_MEAN, edgecolor="black", linewidth=1, zorder=3)
-    bars2 = ax1.bar(x + width / 2, p95_cfts,  width, label="P95 CFT",
-                    color=BAR_COLOR_P95,  edgecolor="black", linewidth=1, zorder=3)
 
-    # 左轴样式
-    ax1.set_xlabel("消融变体", fontproperties=FONT_CN, fontsize=14)
-    ax1.set_ylabel("完成时延 (s)", fontproperties=FONT_CN, fontsize=14)
+    # 左轴样式（与 group4/group5 _style_ax 完全对齐）
+    ax1.set_xlabel("消融变体", fontsize=20)
+    ax1.set_ylabel("完成时延 (s)", fontsize=20)
     ax1.set_xticks(x)
-    ax1.set_xticklabels(variants, fontsize=12)
-    ax1.tick_params(axis="y", labelsize=12)
-    max_bar = max(max(mean_cfts), max(p95_cfts))
+    ax1.set_xticklabels(variants, fontsize=18)
+    ax1.tick_params(axis="y", labelsize=18)
+    valid_cfts = [v for v in mean_cfts if v == v]  # 过滤 NaN
+    max_bar = max(valid_cfts) if valid_cfts else 2.0
     ax1.set_ylim(0, max_bar * 1.30)
-    ax1.grid(True, axis="y", linestyle="--", alpha=0.3, zorder=0)
-    ax1.set_axisbelow(True)
+    ax1.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax1.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(0.8)
-
-    # 柱顶数值标注
-    for bar in bars1:
-        h = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width() / 2., h + max_bar * 0.01,
-                 f"{h:.2f}", ha="center", va="bottom", fontsize=9, color="#2c3e50")
-    for bar in bars2:
-        h = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width() / 2., h + max_bar * 0.01,
-                 f"{h:.2f}", ha="center", va="bottom", fontsize=9, color="#2c3e50")
+        spine.set_linewidth(1.2)
+        spine.set_color("black")
 
     # 右轴 SR 折线
     ax2 = ax1.twinx()
     line_obj, = ax2.plot(x, srs, "o-", color=LINE_COLOR_SR, linewidth=2.5,
-                         markersize=8, label="SR", zorder=10)
-    ax2.set_ylabel("任务成功率", fontproperties=FONT_CN, fontsize=14)
-    # SR 轴范围：覆盖全部变体（含极低值如 w/o CARE≈0.13），固定 0~1.05
+                         markersize=8, label="任务成功率", zorder=10)
+    ax2.set_ylabel("任务成功率", fontsize=20)
     ax2.set_ylim(0.0, 1.10)
-    ax2.tick_params(axis="y", labelsize=12)
+    ax2.tick_params(axis="y", labelsize=18)
+    for spine in ax2.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.2)
+        spine.set_color("black")
 
-    # 折线点数值标注（白色背景 bbox）
-    for xi, yi in zip(x, srs):
-        offset = 0.04
-        ax2.text(xi, yi + offset,
-                 f"{yi:.3f}", ha="center", va="bottom", fontsize=9,
-                 bbox=dict(boxstyle="round,pad=0.25",
-                           facecolor="white", edgecolor="#aaaaaa", linewidth=0.7))
+    # 图例：内置无遮挡，与 group4/group5 字号对齐
+    ax1.legend([bars1, line_obj], ["Mean CFT", "任务成功率"],
+               loc="upper left", fontsize=16, frameon=True,
+               fancybox=False, framealpha=0.95, edgecolor="black")
 
-    # 图例：合并两轴，放坐标轴内部左上角
-    ax1.legend([bars1, bars2, line_obj], ["Mean CFT", "P95 CFT", "任务成功率"],
-               loc="upper left", fontsize=11, frameon=True,
-               fancybox=False, framealpha=0.95, edgecolor="#aaaaaa",
-               prop=FONT_CN)
-
-    fig.subplots_adjust(left=0.10, right=0.88, bottom=0.11, top=0.96)
+    fig.tight_layout(pad=0.1)
     out = fig_dir / "fig_ablation_performance.png"
-    fig.savefig(out, dpi=320, bbox_inches="tight", pad_inches=0.03)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02, facecolor="white")
     plt.close(fig)
     print(f"  已导出: {out.relative_to(OUTPUT_DIR)}")
     return out
@@ -380,12 +351,11 @@ def generate_results_table(results: Dict[str, dict]) -> Path:
     out = table_dir / "ablation_results.csv"
     df_out.to_csv(out, index=False, encoding="utf-8-sig")
     print(f"  已导出表格: {out.relative_to(OUTPUT_DIR)}")
-    print(df_out.to_string(index=False))
     return out
 
 
 # ---------------------------------------------------------------------------
-# 主函数
+# 主函数（删除报错代码，完全恢复正常）
 # ---------------------------------------------------------------------------
 
 def main() -> int:
@@ -414,7 +384,7 @@ def main() -> int:
         if m:
             results[name] = m
 
-    # 2b. 用 ablation_results.json 中已修正的值覆盖（防止原始 CSV 数据覆盖修正后数据）
+    # 2b. 用 ablation_results.json 中已修正的值覆盖
     json_path = OUTPUT_DIR / "ablation_results.json"
     if json_path.exists():
         with open(json_path, "r", encoding="utf-8") as _f:

@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
 Group 5: 系统负载实验 — V3（分组柱状图，与 Group4 风格完全一致）
-只保留 Group4 评估的 5 个算法：TERA-MAPPO / F-MAPPO / IPPO / Greedy / Local-Only
-算法名映射（CSV → 显示名）：
-  MAPPO     → TERA-MAPPO
-  F-MAPPO   → F-MAPPO
-  IPPO      → IPPO
-  NRO       → Greedy
-  LO        → Local-Only
-
-只保留：RSU 算力 (rsu_cpu_factor) — SR 单图 / CFT 单图 / SR+CFT 组合图
+修改：宋体+无加粗+移除数值标注+统一画布+最小空白
 """
 from __future__ import annotations
 from pathlib import Path
@@ -24,22 +16,22 @@ BASE_DIR    = SCRIPT_PATH.parent
 FIG_DIR     = BASE_DIR / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 全局样式（与 Group4 完全对齐）──────────────────────────────────────────
-mpl.rcParams["font.sans-serif"]    = ["SimHei", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
+# ── 全局样式（与 Group4 完全对齐：宋体+无加粗+大字号）──────────────────────
+mpl.rcParams["font.sans-serif"]    = ["SimSun", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
 mpl.rcParams["axes.unicode_minus"] = False
 mpl.rcParams["axes.spines.top"]    = True
 mpl.rcParams["axes.spines.right"]  = True
 mpl.rcParams["axes.spines.left"]   = True
 mpl.rcParams["axes.spines.bottom"] = True
-mpl.rcParams["lines.linewidth"]    = 0.8
-mpl.rcParams["font.size"]          = 12
+mpl.rcParams["lines.linewidth"]    = 1.0
+mpl.rcParams["font.size"]          = 18  # 全局统一字号
+mpl.rcParams["font.weight"]        = "normal"  # 全局无加粗
 
 DPI   = 300
 FIG_W = 10
-FIG_H = 7
+FIG_H = 8  # 统一高度，与Group4一致
 
 # ── Group4 算法配置（顺序、显示名、颜色） ────────────────────────────────
-# CSV列名 → (显示名, 十六进制颜色)
 ALGO_MAP = {
     "MAPPO":   ("TERA-MAPPO", "#2068b8"),
     "F-MAPPO": ("F-MAPPO",    "#51b848"),
@@ -47,13 +39,10 @@ ALGO_MAP = {
     "NRO":     ("Greedy",     "#d86358"),
     "LO":      ("Local-Only", "#9854a7"),
 }
-# 显示顺序（从弱到强，与 Group4 保持一致）
 ALGOS_CSV = ["Local-Only", "Greedy", "IPPO", "F-MAPPO", "TERA-MAPPO"]
-# 逆映射：显示名 → (csv_key, color)
 _DISPLAY_TO_CSV = {v[0]: (k, v[1]) for k, v in ALGO_MAP.items()}
 
-# 按显示名顺序整理
-ALGOS      = ALGOS_CSV          # 显示名列表
+ALGOS      = ALGOS_CSV
 COLORS     = {d: _DISPLAY_TO_CSV[d][1] for d in ALGOS}
 CSV_KEYS   = {d: _DISPLAY_TO_CSV[d][0] for d in ALGOS}
 
@@ -61,29 +50,28 @@ BAR_W = 0.15
 N_ALGO = len(ALGOS)
 
 
-# ── 工具 ─────────────────────────────────────────────────────────────────────
+# ── 工具函数（与Group4完全统一）────────────────────────────────────────────
 def _style_ax(ax, ylabel: str, xlabel: str,
               xtick_labels, ylim=None,
               legend_loc: str | None = "upper right",
-              fontsize: int = 14):
-    """与 Group4 _style_ax 保持一致的轴样式"""
+              fontsize: int = 20):  # 坐标轴标题字号统一20
     x = np.arange(len(xtick_labels))
-    ax.set_ylabel(ylabel, fontsize=fontsize, fontweight="normal")
-    ax.set_xlabel(xlabel, fontsize=fontsize, fontweight="normal")
+    ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
     ax.set_xticks(x)
-    ax.set_xticklabels(xtick_labels, fontsize=fontsize - 1)
+    ax.set_xticklabels(xtick_labels, fontsize=fontsize-2)
     if ylim:
         ax.set_ylim(ylim)
     ax.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(1.2)  # 边框统一宽度
         spine.set_color("black")
-    ax.tick_params(axis="both", labelsize=fontsize - 2)
+    ax.tick_params(axis="both", labelsize=fontsize-2)
     if legend_loc:
         ax.legend(
             loc=legend_loc,
-            fontsize=12,
+            fontsize=16,  # 图例字号统一放大
             frameon=True,
             edgecolor="black",
             facecolor="white",
@@ -93,18 +81,15 @@ def _style_ax(ax, ylabel: str, xlabel: str,
 
 
 def save_fig(fig: plt.Figure, stem: str) -> None:
+    # 最小化空白
     for ext in ("png", "pdf", "eps"):
         out = FIG_DIR / f"{stem}.{ext}"
         fig.savefig(out, dpi=DPI, bbox_inches="tight",
-                    pad_inches=0.1, facecolor="white")
+                    pad_inches=0.02, facecolor="white")
     print(f"  saved  {FIG_DIR / stem}.[png|pdf|eps]")
 
 
 def _build_data(df: pd.DataFrame, x_col: str, metric: str):
-    """
-    返回 (x_labels, data_matrix)
-    data_matrix[i][j] = j-th 算法在 x_labels[i] 处的值，缺失为 NaN
-    """
     x_vals  = sorted(df[x_col].unique())
     x_labels = [str(v) for v in x_vals]
     matrix = []
@@ -120,11 +105,11 @@ def _build_data(df: pd.DataFrame, x_col: str, metric: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 单指标分组柱状图
+# 单指标分组柱状图（已删除数值标注）
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_bar_single(df, x_col, metric, ylabel, xlabel,
                     ylim, legend_loc, filename,
-                    decimal=3, panel_label=None, fontsize=14):
+                    panel_label=None, fontsize=20):
     x_labels, mat = _build_data(df, x_col, metric)
     n_group = len(x_labels)
     x       = np.arange(n_group)
@@ -137,36 +122,30 @@ def plot_bar_single(df, x_col, metric, ylabel, xlabel,
             v = vals[gi]
             if np.isnan(v):
                 continue
-            bar = ax.bar(
+            ax.bar(
                 x[gi] + offsets[j], v,
                 width=BAR_W,
                 color=COLORS[disp],
                 label=disp if gi == 0 else "_nolegend_",
                 edgecolor="black",
-                linewidth=0.8,
+                linewidth=1.0,
                 zorder=3,
             )
-            ax.text(
-                x[gi] + offsets[j], v,
-                f"{v:.{decimal}f}",
-                ha="center", va="bottom",
-                fontsize=9, zorder=4,
-            )
-
+    # 样式设置
     _style_ax(ax, ylabel, xlabel, x_labels,
               ylim=ylim, legend_loc=legend_loc, fontsize=fontsize)
     if panel_label:
         ax.text(0.02, 0.98, panel_label,
                 transform=ax.transAxes,
-                fontsize=fontsize + 1, fontweight="bold",
-                va="top", ha="left")
-    fig.tight_layout(pad=0.5)
+                fontsize=fontsize + 1,
+                va="top", ha="left")  # 移除加粗
+    fig.tight_layout(pad=0.1)  # 最小化内边距
     save_fig(fig, filename)
     plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 组合图（1×2：左=SR, 右=CFT）
+# 组合图（统一尺寸+无数值标注）
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_bar_combined(df, x_col, xlabel,
                       sr_ylim, cft_ylim, filename):
@@ -175,9 +154,10 @@ def plot_bar_combined(df, x_col, xlabel,
     n_group = len(x_labels)
     x       = np.arange(n_group)
     offsets = np.array([(i - (N_ALGO - 1) / 2) * BAR_W for i in range(N_ALGO)])
-    pfs = 12  # panel fontsize
+    pfs = 18  # 面板字号统一
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    # 组合图尺寸统一，保证坐标轴矩形一致
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
 
     for ax_idx, (ax, mat, ylabel, ylim, legend_loc, panel_lbl) in enumerate([
         (axes[0], mat_sr,  "任务完成率",      sr_ylim,  "lower right", "(a)"),
@@ -195,33 +175,28 @@ def plot_bar_combined(df, x_col, xlabel,
                     color=COLORS[disp],
                     label=disp if gi == 0 else "_nolegend_",
                     edgecolor="black",
-                    linewidth=0.7,
+                    linewidth=0.8,
                     zorder=3,
                 )
-                ax.text(
-                    x[gi] + offsets[j], v,
-                    f"{v:.3f}",
-                    ha="center", va="bottom",
-                    fontsize=8, zorder=4,
-                )
+        # 样式
         _style_ax(ax, ylabel, xlabel, x_labels,
                   ylim=ylim, legend_loc=legend_loc, fontsize=pfs)
         ax.text(0.02, 0.98, panel_lbl,
                 transform=ax.transAxes,
-                fontsize=pfs + 2, fontweight="bold",
-                va="top", ha="left")
+                fontsize=pfs + 2,
+                va="top", ha="left")  # 移除加粗
 
-    fig.tight_layout(pad=0.8, w_pad=1.5)
+    fig.tight_layout(pad=0.1, w_pad=1.0)
     save_fig(fig, filename)
     plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# [B] RSU 算力
+# RSU 算力绘图
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_rsu_cpu():
     df = pd.read_csv(BASE_DIR / "rsu_cpu_data.csv")
-    xlabel = "RSU 算力因子"
+    xlabel = "RSU算力(GHz)"
 
     plot_bar_single(
         df, "rsu_cpu_factor", "success_rate",
@@ -229,7 +204,6 @@ def plot_rsu_cpu():
         ylim=[0.40, 1.06],
         legend_loc="upper left",
         filename="fig_v3_sr_vs_rsu_cpu",
-        decimal=3,
     )
     plot_bar_single(
         df, "rsu_cpu_factor", "mean_cft",
@@ -237,7 +211,6 @@ def plot_rsu_cpu():
         ylim=[1.00, 2.10],
         legend_loc="upper right",
         filename="fig_v3_cft_vs_rsu_cpu",
-        decimal=3,
     )
     plot_bar_combined(
         df, "rsu_cpu_factor", xlabel,
@@ -252,7 +225,7 @@ def plot_rsu_cpu():
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("=" * 60)
-    print("Group 5 System Load — V3 分组柱状图（Group4 风格）")
+    print("Group 5 System Load — V3 分组柱状图（Group4 统一风格）")
     print("算法：TERA-MAPPO / F-MAPPO / IPPO / Greedy / Local-Only")
     print("=" * 60)
 

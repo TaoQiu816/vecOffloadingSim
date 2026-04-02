@@ -2,17 +2,17 @@
 \centering
 \caption{消融实验结果对比}
 \label{tab:chap3_ablation}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lccccc}
 \toprule
-模型 & SR$\uparrow$ & D-Miss$\downarrow$ & Mean CFT & P95 CFT & Tx Wait & Comp Wait$\downarrow$ \\
+模型 & SR$\uparrow$ & D-Miss$\downarrow$ & Mean CFT & Tx Wait & Comp Wait$\downarrow$ \\
 \midrule
-w/o TDE+CARE & 0.134 & 0.814 & 1.196 & 1.380 & 0.0464 & 0.0453 \\
-w/o CARE     & 0.128 & 0.832 & 1.232 & 1.410 & 0.0474 & 0.0459 \\
-w/o TDE      & 0.903 & 0.086 & 1.822 & 2.219 & 0.0051 & 0.1036 \\
-TERA-MAPPO   & \textbf{0.935} & \textbf{0.064} & 1.769 & 2.167 & 0.0143 & \textbf{0.0754} \\
+w/o TDE+CARE & 0.134 & 0.814 & 1.196 & 0.0464 & 0.0453 \\
+w/o CARE     & 0.128 & 0.832 & 1.232 & 0.0474 & 0.0459 \\
+w/o TDE      & 0.903 & 0.086 & 1.822 & 0.0051 & 0.1036 \\
+TERA-MAPPO   & \textbf{0.935} & \textbf{0.064} & 1.769 & 0.0143 & \textbf{0.0754} \\
 \bottomrule
 \end{tabular}
 \\[4pt]
 \footnotesize{注：SR=任务成功率，D-Miss=截止期违例率，CFT=完成时延（秒），Wait=平均队列等待时延（秒）。}\\
-\footnotesize{w/o CARE 的 Mean/P95 CFT 较低是因为绝大多数任务快速失败（SR=12.8\%），成功样本存在选择性偏差。}
+\footnotesize{w/o CARE 的 Mean CFT 较低是因为绝大多数任务快速失败（SR=12.8\%），成功样本存在选择性偏差。}
 \end{table}

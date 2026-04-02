@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Group 4: 拓扑鲁棒性对比 (V2 — SR / CFT / CWT(堆叠) / FoV)
-CWT 柱图分解为两种颜色：通信等待(cwt_comm) + 计算排队等待(cwt_cpu_q)
+修改说明：
+- 大幅调大所有文字尺寸
+- 去掉柱子上的数字标注
+- 统一图片比例，减小空白
+- 保留完整边框
+- 中文标准宋体 + 全无加粗
 """
 from __future__ import annotations
 from pathlib import Path
@@ -15,15 +20,16 @@ SCRIPT_PATH = Path(__file__).resolve()
 FIG_DIR = SCRIPT_PATH.parent / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 字体与全局样式设置 ────────────────────────────────────────────────────────
-mpl.rcParams["font.sans-serif"] = ["SimHei", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
+# ── 字体与全局样式设置【核心修改：宋体 + 无加粗 + 更大字号】────────────────────
+mpl.rcParams["font.sans-serif"] = ["SimSun", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
 mpl.rcParams["axes.unicode_minus"] = False
 mpl.rcParams["axes.spines.top"] = True
 mpl.rcParams["axes.spines.right"] = True
 mpl.rcParams["axes.spines.left"] = True
 mpl.rcParams["axes.spines.bottom"] = True
-mpl.rcParams["lines.linewidth"] = 0.8
-mpl.rcParams["font.size"] = 12
+mpl.rcParams["lines.linewidth"] = 1.0
+mpl.rcParams["font.size"] = 18  # 全局字号再增大
+mpl.rcParams["font.weight"] = "normal"  # 全局禁止加粗
 
 # ── 加载 extra_metrics.json 中的分解数据 ──────────────────────────────────────
 EXTRA_JSON = SCRIPT_PATH.parent / "extra_metrics.json"
@@ -94,7 +100,7 @@ FOV = {
 }
 
 # ── 绘图参数 ──────────────────────────────────────────────────────────────────
-FIG_W, FIG_H = 10, 7
+FIG_W, FIG_H = 10, 8
 DPI = 300
 N_ALGO = len(ALGOS)
 N_TOPO = len(TOPOS)
@@ -103,22 +109,24 @@ offsets = np.array([(i - (N_ALGO - 1) / 2) * BAR_W for i in range(N_ALGO)])
 x = np.arange(N_TOPO)
 
 
-def _style_ax(ax, ylabel, xlabel="任务拓扑类型", ylim=None, legend_loc="upper right", fontsize=14):
-    ax.set_ylabel(ylabel, fontsize=fontsize, fontweight="normal")
-    ax.set_xlabel(xlabel, fontsize=fontsize, fontweight="normal")
+def _style_ax(ax, ylabel, xlabel="任务拓扑类型", ylim=None, legend_loc="upper right", fontsize=20):
+    """修改：字号增大 + 无加粗"""
+    ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
     ax.set_xticks(x)
-    ax.set_xticklabels(TOPOS, fontsize=fontsize-1)
+    ax.set_xticklabels(TOPOS, fontsize=fontsize-2)
+    ax.tick_params(axis='y', labelsize=fontsize-2)
     if ylim:
         ax.set_ylim(ylim)
     ax.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(1.2)
         spine.set_color("black")
     if legend_loc:
         ax.legend(
             loc=legend_loc,
-            fontsize=12,
+            fontsize=16,  # 图例字号增大
             frameon=True,
             edgecolor="black",
             facecolor="white",
@@ -134,42 +142,31 @@ def save_fig(fig: plt.Figure, stem: str) -> None:
             out,
             dpi=DPI,
             bbox_inches="tight",
-            pad_inches=0.1,
+            pad_inches=0.02,
             facecolor="white"
         )
     print(f"  saved  {FIG_DIR / stem}.[png|pdf]")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 普通分组柱图（SR / CFT / FoV）
+# 普通分组柱图
 # ═══════════════════════════════════════════════════════════════════════════════
-def plot_metric(data_dict, ylabel, filename, ylim=None, legend_loc="upper right", decimal=3):
+def plot_metric(data_dict, ylabel, filename, ylim=None, legend_loc="upper right"):
     fig, ax = plt.subplots(figsize=(FIG_W, FIG_H))
     for i, algo in enumerate(ALGOS):
         vals = np.array(data_dict[algo], dtype=float)
-        bars = ax.bar(
+        ax.bar(
             x + offsets[i],
             vals,
             width=BAR_W,
             color=COLORS[algo],
             label=algo,
             edgecolor="black",
-            linewidth=0.8,
+            linewidth=1.0,
             zorder=3
         )
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                height,
-                f"{height:.{decimal}f}",
-                ha="center",
-                va="bottom",
-                fontsize=10,
-                zorder=4
-            )
     _style_ax(ax, ylabel, ylim=ylim, legend_loc=legend_loc)
-    fig.tight_layout(pad=0.5)
+    fig.tight_layout(pad=0.1)
     save_fig(fig, filename)
     plt.close(fig)
 
@@ -188,7 +185,6 @@ def plot_cwt_stacked(filename="fig_group4_topology_cwt_v2"):
     for i, algo in enumerate(ALGOS):
         comm = np.array(CWT_COMM[algo], dtype=float)
         cpuq = np.array(CWT_CPU_Q[algo], dtype=float)
-        total = comm + cpuq
         color = COLORS[algo]
         ax.bar(
             x + offsets[i],
@@ -197,7 +193,7 @@ def plot_cwt_stacked(filename="fig_group4_topology_cwt_v2"):
             color=color,
             hatch=HATCH_COMM,
             edgecolor="black",
-            linewidth=0.8,
+            linewidth=1.0,
             zorder=3
         )
         ax.bar(
@@ -208,91 +204,70 @@ def plot_cwt_stacked(filename="fig_group4_topology_cwt_v2"):
             color=color,
             hatch=HATCH_CPU_Q,
             edgecolor="black",
-            linewidth=0.8,
+            linewidth=1.0,
             alpha=0.65,
             zorder=3
         )
-        for idx, val in enumerate(total):
-            ax.text(
-                x[idx] + offsets[i],
-                val,
-                f"{val:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=10,
-                zorder=4
-            )
 
     all_totals = [v for algo in ALGOS for v in CWT_TOTAL[algo]]
     _auto_max = max(all_totals) * 1.15
     _style_ax(ax, "子任务平均等待时间 (s)", ylim=[0.0, _auto_max], legend_loc=None)
 
     algo_handles = [
-        Patch(facecolor=COLORS[algo], edgecolor="black", linewidth=0.8, label=algo)
+        Patch(facecolor=COLORS[algo], edgecolor="black", linewidth=1.0, label=algo)
         for algo in ALGOS
     ]
     type_handles = [
-        Patch(facecolor="gray", hatch=HATCH_COMM,  edgecolor="black", linewidth=0.8, label="通信等待"),
-        Patch(facecolor="gray", hatch=HATCH_CPU_Q, edgecolor="black", linewidth=0.8, alpha=0.65, label="计算排队等待"),
+        Patch(facecolor="gray", hatch=HATCH_COMM,  edgecolor="black", linewidth=1.0, label="通信等待"),
+        Patch(facecolor="gray", hatch=HATCH_CPU_Q, edgecolor="black", linewidth=1.0, alpha=0.65, label="计算排队等待"),
     ]
 
     leg1 = ax.legend(
         handles=algo_handles,
         loc="upper right",
-        fontsize=10,
+        fontsize=14,
         frameon=True,
         edgecolor="black",
         ncol=1,
-        title_fontsize=11
+        title_fontsize=14
     )
     ax.add_artist(leg1)
     ax.legend(
         handles=type_handles,
         loc="upper left",
-        fontsize=10,
+        fontsize=14,
         frameon=True,
         edgecolor="black",
-        title_fontsize=11
+        title_fontsize=14
     )
 
-    fig.tight_layout(pad=0.5)
+    fig.tight_layout(pad=0.1)
     save_fig(fig, filename)
     plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2×2 综合面板
+# 2×2 综合面板【核心修改：删除所有 fontweight="bold"】
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_combined_panel():
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
     axes_flat = axes.flatten()
-    panel_fontsize = 12
+    panel_fontsize = 18
 
     # ── (a) 任务成功率 SR ──
     ax = axes_flat[0]
     for i, algo in enumerate(ALGOS):
         vals = np.array(SR[algo], dtype=float)
-        bars = ax.bar(
+        ax.bar(
             x + offsets[i],
             vals,
             width=BAR_W,
             color=COLORS[algo],
             label=algo,
             edgecolor="black",
-            linewidth=0.7,
+            linewidth=0.8,
             zorder=3
         )
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                height,
-                f"{height:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                zorder=4
-            )
     _style_ax(
         ax,
         "任务成功率",
@@ -303,14 +278,13 @@ def plot_combined_panel():
     ax.text(
         0.02, 0.98, "(a)",
         transform=ax.transAxes,
-        fontsize=panel_fontsize+1,
-        fontweight="bold",
+        fontsize=panel_fontsize+2,
         va="top",
         ha="left"
     )
     ax.legend(
         loc="lower right",
-        fontsize=9,
+        fontsize=12,
         frameon=True,
         edgecolor="black",
         ncol=1
@@ -320,27 +294,16 @@ def plot_combined_panel():
     ax = axes_flat[1]
     for i, algo in enumerate(ALGOS):
         vals = np.array(CFT[algo], dtype=float)
-        bars = ax.bar(
+        ax.bar(
             x + offsets[i],
             vals,
             width=BAR_W,
             color=COLORS[algo],
             label=algo,
             edgecolor="black",
-            linewidth=0.7,
+            linewidth=0.8,
             zorder=3
         )
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                height,
-                f"{height:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                zorder=4
-            )
     _style_ax(
         ax,
         "任务平均完成时间 (s)",
@@ -351,8 +314,7 @@ def plot_combined_panel():
     ax.text(
         0.02, 0.98, "(b)",
         transform=ax.transAxes,
-        fontsize=panel_fontsize+1,
-        fontweight="bold",
+        fontsize=panel_fontsize+2,
         va="top",
         ha="left"
     )
@@ -365,7 +327,6 @@ def plot_combined_panel():
     for i, algo in enumerate(ALGOS):
         comm = np.array(CWT_COMM[algo], dtype=float)
         cpuq = np.array(CWT_CPU_Q[algo], dtype=float)
-        total = comm + cpuq
         color = COLORS[algo]
         ax.bar(
             x + offsets[i],
@@ -389,16 +350,6 @@ def plot_combined_panel():
             alpha=0.65,
             zorder=3
         )
-        for idx, val in enumerate(total):
-            ax.text(
-                x[idx] + offsets[i],
-                val,
-                f"{val:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                zorder=4
-            )
 
     _all_totals = [v for algo in ALGOS for v in CWT_TOTAL[algo]]
     _auto_max_c = max(_all_totals) * 1.15
@@ -412,8 +363,7 @@ def plot_combined_panel():
     ax.text(
         0.02, 0.98, "(c)",
         transform=ax.transAxes,
-        fontsize=panel_fontsize+1,
-        fontweight="bold",
+        fontsize=panel_fontsize+2,
         va="top",
         ha="left"
     )
@@ -429,49 +379,38 @@ def plot_combined_panel():
     leg1 = ax.legend(
         handles=algo_handles,
         loc="upper right",
-        fontsize=7,
+        fontsize=10,
         frameon=True,
         edgecolor="black",
         title="算法",
-        title_fontsize=8,
+        title_fontsize=11,
         ncol=1
     )
     ax.add_artist(leg1)
     ax.legend(
         handles=type_handles,
         loc="upper left",
-        fontsize=7,
+        fontsize=10,
         frameon=True,
         edgecolor="black",
         title="等待类型",
-        title_fontsize=8
+        title_fontsize=11
     )
 
     # ── (d) 车辆公平性指数 FoV ──
     ax = axes_flat[3]
     for i, algo in enumerate(ALGOS):
         vals = np.array(FOV[algo], dtype=float)
-        bars = ax.bar(
+        ax.bar(
             x + offsets[i],
             vals,
             width=BAR_W,
             color=COLORS[algo],
             label=algo,
             edgecolor="black",
-            linewidth=0.7,
+            linewidth=0.8,
             zorder=3
         )
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                height,
-                f"{height:.3f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                zorder=4
-            )
     _style_ax(
         ax,
         "车辆公平性指数 (Jain)",
@@ -482,13 +421,12 @@ def plot_combined_panel():
     ax.text(
         0.02, 0.98, "(d)",
         transform=ax.transAxes,
-        fontsize=panel_fontsize+1,
-        fontweight="bold",
+        fontsize=panel_fontsize+2,
         va="top",
         ha="left"
     )
 
-    fig.tight_layout(pad=0.8, w_pad=1.0, h_pad=1.2)
+    fig.tight_layout(pad=0.5, w_pad=1.0, h_pad=1.2)
     save_fig(fig, "fig_group4_topology_combined_v2")
     plt.close(fig)
 
@@ -497,7 +435,7 @@ def plot_combined_panel():
 # 执行绘图
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("Generating Group 4 Topology Figures...")
+    print("Generating Group 4 Topology Figures (宋体大字号版)...")
 
     plot_metric(
         SR,
@@ -512,8 +450,7 @@ if __name__ == "__main__":
         "平均任务完成时间 (s)",
         "fig_group4_topology_cft_v2",
         ylim=[1.0, 2.3],
-        legend_loc="upper right",
-        decimal=3
+        legend_loc="upper right"
     )
 
     plot_cwt_stacked("fig_group4_topology_cwt_v2")
@@ -523,8 +460,7 @@ if __name__ == "__main__":
         "车辆公平性指数 (Jain)",
         "fig_group4_topology_fov_v2",
         ylim=[0.90, 1.02],
-        legend_loc="upper right",
-        decimal=3
+        legend_loc="upper right"
     )
 
     plot_combined_panel()

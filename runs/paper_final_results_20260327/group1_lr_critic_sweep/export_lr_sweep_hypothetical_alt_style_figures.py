@@ -5,17 +5,15 @@ from pathlib import Path
 from typing import List
 
 import matplotlib
+import matplotlib as mpl
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import to_rgba
-from matplotlib.font_manager import FontProperties
 
 
-ROOT = Path(__file__).resolve().parents[2]
-PACK_ROOT = ROOT / "runs" / "paper_final_results_20260327" / "lr_critic_sweep"
+PACK_ROOT = Path(__file__).resolve().parent  # group1_lr_critic_sweep/
 TABLE_PATH = PACK_ROOT / "tables" / "lr_critic_main_training_table_hypothetical_3e4_minus5pct.csv"
 FIG_DIR = PACK_ROOT / "figures" / "3e4_minus5pct_alt_style_overview_thin"
 
@@ -32,56 +30,39 @@ PALETTE = {
 }
 METRICS_MAIN = [
     ("reward_mean", "平均奖励", "平均奖励"),
-    ("reward_total", "总奖励", "总奖励"),
+    ("reward_total", "奖励", "奖励"),
     ("task_sr", "任务成功率", "任务成功率"),
     ("deadline_miss_rate", "截止期违约率", "截止期违约率"),
     ("mean_cft_completed", "已完成任务平均 CFT", "平均 CFT"),
     ("avg_rsu_queue", "RSU 平均队列长度", "队列长度"),
 ]
-LEGEND_SIZE = (0.22, 0.18)
-LEGEND_CANDIDATES = [
-    (0.03, 0.78),
-    (0.75, 0.78),
-    (0.03, 0.04),
-    (0.75, 0.04),
-]
-
-
-FONT_CN = FontProperties(family="Songti SC")
-
-
+# ── 全局样式（与 group4/group5 完全对齐）─────────────────────────────────────
 def _set_style() -> None:
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    matplotlib.rcParams["font.family"] = "serif"
-    matplotlib.rcParams["font.serif"] = [
-        "Times New Roman",
-        "Times",
-        "Nimbus Roman No9 L",
-        "DejaVu Serif",
-    ]
-    matplotlib.rcParams["mathtext.fontset"] = "custom"
-    matplotlib.rcParams["mathtext.rm"] = "Times New Roman"
-    matplotlib.rcParams["mathtext.it"] = "Times New Roman:italic"
-    matplotlib.rcParams["mathtext.bf"] = "Times New Roman:bold"
-    matplotlib.rcParams["font.size"] = 14
-    matplotlib.rcParams["axes.titlesize"] = 16
-    matplotlib.rcParams["axes.labelsize"] = 16
-    matplotlib.rcParams["legend.fontsize"] = 12
-    matplotlib.rcParams["xtick.labelsize"] = 12
-    matplotlib.rcParams["ytick.labelsize"] = 12
-    matplotlib.rcParams["figure.facecolor"] = "white"
-    matplotlib.rcParams["axes.facecolor"] = "#fbfbfb"
-    matplotlib.rcParams["savefig.facecolor"] = "white"
+    mpl.rcParams["font.sans-serif"]    = ["SimSun", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
+    mpl.rcParams["axes.unicode_minus"] = False
+    mpl.rcParams["axes.spines.top"]    = True
+    mpl.rcParams["axes.spines.right"]  = True
+    mpl.rcParams["axes.spines.left"]   = True
+    mpl.rcParams["axes.spines.bottom"] = True
+    mpl.rcParams["lines.linewidth"]    = 1.0
+    mpl.rcParams["font.size"]          = 18   # 全局统一字号
+    mpl.rcParams["font.weight"]        = "normal"  # 全局禁止加粗
+    mpl.rcParams["figure.facecolor"]   = "white"
+    mpl.rcParams["axes.facecolor"]     = "white"
+    mpl.rcParams["savefig.facecolor"]  = "white"
 
 
-def _style_axis(ax: plt.Axes, title: str, ylabel: str, xlabel: str = "训练轮次") -> None:
-    ax.set_ylabel(ylabel, fontproperties=FONT_CN, fontsize=18)
-    ax.set_xlabel(xlabel, fontproperties=FONT_CN, fontsize=18)
-    ax.grid(True, alpha=0.18, linewidth=0.7)
+def _style_axis(ax: plt.Axes, title: str, ylabel: str, xlabel: str = "训练轮次",
+                fontsize: int = 20) -> None:
+    """坐标轴统一样式（与 group4/group5 完全一致）"""
+    ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
+    ax.tick_params(axis="both", labelsize=fontsize - 2)
+    ax.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_alpha(0.75)
-        spine.set_linewidth(1.05)
+        spine.set_linewidth(1.2)
+        spine.set_color("black")
 
 
 def _boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
@@ -128,7 +109,7 @@ def _choose_layout(
 
 
 def _plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str) -> Path:
-    fig, ax = plt.subplots(figsize=(7.35, 5.05))
+    fig, ax = plt.subplots(figsize=(10, 8))   # 与 group4/group5 统一尺寸
     curves: List[tuple[np.ndarray, np.ndarray]] = []
     for key in SERIES_KEYS:
         smooth = pd.to_numeric(df[f"{metric}__{key}__smooth"], errors="coerce")
@@ -146,21 +127,19 @@ def _plot_metric(df: pd.DataFrame, metric: str, title: str, ylabel: str) -> Path
     _style_axis(ax, title, ylabel)
     if metric in {"task_sr", "deadline_miss_rate"}:
         ax.set_ylim(0.0, 1.0)
-    legend_xy = _choose_layout(ax, curves)
     ax.legend(
-        loc="lower left",
-        bbox_to_anchor=legend_xy,
-        bbox_transform=ax.transAxes,
+        loc="best",           # 自动选择遮挡曲线最少的位置，始终在坐标轴内
         ncol=1,
         frameon=True,
         fancybox=False,
         framealpha=0.96,
-        edgecolor="#d0d0d0",
-        borderaxespad=0.0,
+        edgecolor="black",
+        borderaxespad=0.5,
+        fontsize=16,          # 与 group4/group5 图例字号对齐
     )
-    fig.subplots_adjust(left=0.11, right=0.995, bottom=0.095, top=0.995)
+    fig.tight_layout(pad=0.1)
     out = FIG_DIR / f"fig_{metric}_alt_overview_thin.png"
-    fig.savefig(out, dpi=320, bbox_inches="tight", pad_inches=0.03)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02, facecolor="white")
     plt.close(fig)
     return out
 

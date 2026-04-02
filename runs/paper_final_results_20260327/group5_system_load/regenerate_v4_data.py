@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
 Group 5: V4 绘图脚本（仅车辆规模）
-修改点：
-1. fig_v4_cft_vs_vehicles.png 图例放在左上方
-2. fig_v4_sr_vs_vehicles.png 图例放在右上方
-3. 路径已恢复为原来的设置
+统一修改：宋体+无加粗+移除数值标注+统一画布+最小空白
 """
 from __future__ import annotations
 from pathlib import Path
@@ -20,19 +17,20 @@ DATA_DIR    = BASE_DIR
 FIG_DIR     = BASE_DIR / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 全局样式（完全保留）────────────────────────────────────────────────────
-mpl.rcParams["font.sans-serif"]    = ["SimHei", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
+# ── 全局样式（统一规范：宋体+无加粗+大字号）────────────────────────────────
+mpl.rcParams["font.sans-serif"]    = ["SimSun", "Songti SC", "Arial Unicode MS", "DejaVu Sans"]
 mpl.rcParams["axes.unicode_minus"] = False
 mpl.rcParams["axes.spines.top"]    = True
 mpl.rcParams["axes.spines.right"]  = True
 mpl.rcParams["axes.spines.left"]   = True
 mpl.rcParams["axes.spines.bottom"] = True
-mpl.rcParams["lines.linewidth"]    = 0.8
-mpl.rcParams["font.size"]          = 12
+mpl.rcParams["lines.linewidth"]    = 1.0
+mpl.rcParams["font.size"]          = 18
+mpl.rcParams["font.weight"]        = "normal"
 
 DPI   = 300
 FIG_W = 10
-FIG_H = 7
+FIG_H = 8  # 统一高度
 
 # ── 算法配置（完全保留）────────────────────────────────────────────────────
 ALGO_MAP = {
@@ -53,28 +51,28 @@ BAR_W = 0.15
 N_ALGO = len(ALGOS)
 
 
-# ── 工具函数（完全保留）────────────────────────────────────────────────────
+# ── 工具函数（统一规范：无加粗+大字号）────────────────────────────────────
 def _style_ax(ax, ylabel: str, xlabel: str,
               xtick_labels, ylim=None,
               legend_loc: str | None = "upper right",
-              fontsize: int = 14):
+              fontsize: int = 20):
     x = np.arange(len(xtick_labels))
-    ax.set_ylabel(ylabel, fontsize=fontsize, fontweight="normal")
-    ax.set_xlabel(xlabel, fontsize=fontsize, fontweight="normal")
+    ax.set_ylabel(ylabel, fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
     ax.set_xticks(x)
-    ax.set_xticklabels(xtick_labels, fontsize=fontsize - 1)
+    ax.set_xticklabels(xtick_labels, fontsize=fontsize - 2)
     if ylim:
         ax.set_ylim(ylim)
     ax.grid(axis="y", linestyle="--", alpha=0.7, color="#cccccc", zorder=0)
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(1.2)
         spine.set_color("black")
     ax.tick_params(axis="both", labelsize=fontsize - 2)
     if legend_loc:
         ax.legend(
             loc=legend_loc,
-            fontsize=12,
+            fontsize=16,
             frameon=True,
             edgecolor="black",
             facecolor="white",
@@ -87,7 +85,7 @@ def save_fig(fig: plt.Figure, stem: str) -> None:
     for ext in ("png", "pdf", "eps"):
         out = FIG_DIR / f"{stem}.{ext}"
         fig.savefig(out, dpi=DPI, bbox_inches="tight",
-                    pad_inches=0.1, facecolor="white")
+                    pad_inches=0.02, facecolor="white")
     print(f"  saved  {FIG_DIR / stem}.[png|pdf|eps]")
 
 
@@ -107,11 +105,10 @@ def _build_data(df: pd.DataFrame, x_col: str, metric: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 单指标分组柱状图
+# 单指标分组柱状图（已移除数值标注）
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_bar_single(df, x_col, metric, ylabel, xlabel,
-                    ylim, legend_loc, filename,
-                    decimal=3, fontsize=14):
+                    ylim, legend_loc, filename, fontsize=20):
     x_labels, mat = _build_data(df, x_col, metric)
     n_group = len(x_labels)
     x       = np.arange(n_group)
@@ -124,32 +121,26 @@ def plot_bar_single(df, x_col, metric, ylabel, xlabel,
             v = vals[gi]
             if np.isnan(v):
                 continue
-            bar = ax.bar(
+            ax.bar(
                 x[gi] + offsets[j], v,
                 width=BAR_W,
                 color=COLORS[disp],
                 label=disp if gi == 0 else "_nolegend_",
                 edgecolor="black",
-                linewidth=0.8,
+                linewidth=1.0,
                 zorder=3,
-            )
-            ax.text(
-                x[gi] + offsets[j], v,
-                f"{v:.{decimal}f}",
-                ha="center", va="bottom",
-                fontsize=9, zorder=4,
             )
 
     _style_ax(ax, ylabel, xlabel, x_labels,
               ylim=ylim, legend_loc=legend_loc, fontsize=fontsize)
     
-    fig.tight_layout(pad=0.5)
+    fig.tight_layout(pad=0.1)
     save_fig(fig, filename)
     plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 组合图
+# 组合图（统一尺寸+无数值标注）
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_bar_combined(df, x_col, xlabel,
                       sr_ylim, cft_ylim, filename):
@@ -158,9 +149,9 @@ def plot_bar_combined(df, x_col, xlabel,
     n_group = len(x_labels)
     x       = np.arange(n_group)
     offsets = np.array([(i - (N_ALGO - 1) / 2) * BAR_W for i in range(N_ALGO)])
-    pfs = 12
+    pfs = 18
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
 
     plot_configs = [
         (axes[0], mat_sr,  "任务完成率",      sr_ylim,  "lower right"),
@@ -180,25 +171,19 @@ def plot_bar_combined(df, x_col, xlabel,
                     color=COLORS[disp],
                     label=disp if gi == 0 else "_nolegend_",
                     edgecolor="black",
-                    linewidth=0.7,
+                    linewidth=0.8,
                     zorder=3,
-                )
-                ax.text(
-                    x[gi] + offsets[j], v,
-                    f"{v:.3f}",
-                    ha="center", va="bottom",
-                    fontsize=8, zorder=4,
                 )
         _style_ax(ax, ylabel, xlabel, x_labels,
                   ylim=ylim, legend_loc=legend_loc, fontsize=pfs)
 
-    fig.tight_layout(pad=0.8, w_pad=1.5)
+    fig.tight_layout(pad=0.1, w_pad=1.0)
     save_fig(fig, filename)
     plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 车辆规模绘图
+# 车辆规模绘图（保留图例位置）
 # ═══════════════════════════════════════════════════════════════════════════════
 def plot_vehicle_scale():
     csv_path = DATA_DIR / "vehicle_scale_data_v4.csv"
@@ -213,10 +198,9 @@ def plot_vehicle_scale():
     plot_bar_single(
         df, "num_vehicles", "success_rate",
         ylabel="任务完成率", xlabel=xlabel,
-        ylim=[0.50, 1.06],
-        legend_loc="upper right",  # 图例：右上方
+        ylim=[0.50, 1.10],
+        legend_loc="upper left",
         filename="fig_v4_sr_vs_vehicles",
-        decimal=3,
     )
 
     print("正在生成 CFT 单图（图例：左上方）...")
@@ -224,9 +208,8 @@ def plot_vehicle_scale():
         df, "num_vehicles", "mean_cft",
         ylabel="平均完成时延 (s)", xlabel=xlabel,
         ylim=[0.90, 2.40],
-        legend_loc="upper left",   # 图例：左上方
+        legend_loc="upper left",
         filename="fig_v4_cft_vs_vehicles",
-        decimal=3,
     )
 
     print("正在生成 SR+CFT 组合图...")
